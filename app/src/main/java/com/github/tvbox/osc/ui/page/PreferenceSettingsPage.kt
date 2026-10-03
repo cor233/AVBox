@@ -9,30 +9,44 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.github.tvbox.osc.R
+import com.github.tvbox.osc.event.RefreshEvent
+import com.github.tvbox.osc.ui.components.AVBoxAlertDialog
 import com.github.tvbox.osc.ui.components.AppTopBarScaffold
+import com.github.tvbox.osc.ui.components.LocalSheetDismiss
+import com.github.tvbox.osc.ui.components.LocalSheetDismissThen
 import com.github.tvbox.osc.ui.components.SettingsCard
 import com.github.tvbox.osc.ui.components.SettingsCardPosition
 import com.github.tvbox.osc.ui.components.SettingsGroup
+import com.github.tvbox.osc.ui.components.SettingsOptionMenuRow
 import com.github.tvbox.osc.ui.components.SettingsRow
 import com.github.tvbox.osc.ui.components.SettingsSliderRow
 import com.github.tvbox.osc.ui.components.SettingsSwitchRow
 import com.github.tvbox.osc.ui.components.TopBarActionBox
+import com.github.tvbox.osc.util.AppLanguage
 import com.github.tvbox.osc.util.HawkConfig
+import com.github.tvbox.osc.util.HistoryMerge
+import com.github.tvbox.osc.util.LanguageManager
+import com.github.tvbox.osc.util.restartApp
 import kotlin.math.roundToInt
+import org.greenrobot.eventbus.EventBus
 
 @Composable
 fun PreferenceSettingsScreen(onNavigateBack: () -> Unit, vm: SettingsViewModel = viewModel()) {
     val state by vm.state
-    // 滑块拖动中值(松手才落盘;key 绑定 state,落盘刷新后自动与持久值同步)
     var sliderSpeed by remember(state.longPressSpeed) { mutableStateOf(state.longPressSpeed) }
     var sliderBuffer by remember(state.bufferTimes) { mutableStateOf(state.bufferTimes) }
     var sliderThreads by remember(state.searchThreads) { mutableStateOf(state.searchThreads) }
@@ -42,13 +56,13 @@ fun PreferenceSettingsScreen(onNavigateBack: () -> Unit, vm: SettingsViewModel =
     AppTopBarScaffold(
         titleContent = {
             Text(
-                text = "偏好设置",
+                text = stringResource(R.string.settings_preference_title),
                 style = MaterialTheme.typography.headlineSmall,
                 color = MaterialTheme.colorScheme.onSurface,
             )
         },
         navigationIcon = {
-            TopBarActionBox(R.drawable.ic_arrow_left, "返回", onClick = onNavigateBack)
+            TopBarActionBox(R.drawable.ic_arrow_left, stringResource(R.string.common_back), onClick = onNavigateBack)
         },
     ) { topPad, _ ->
         Column(
@@ -58,59 +72,119 @@ fun PreferenceSettingsScreen(onNavigateBack: () -> Unit, vm: SettingsViewModel =
                 .padding(horizontal = 16.dp)
                 .padding(bottom = 8.dp),
         ) {
-            // 顶部占位 = 顶栏高度 + 8dp:首卡与顶栏间距与设置页一致(2026-09-12 用户定稿,原 -8+28=+20)
             Spacer(Modifier.height(topPad + 8.dp))
 
-            SettingsGroup(title = null) {
+            SettingsGroup(title = stringResource(R.string.settings_group_language_layout)) {
+                SettingsCard(SettingsCardPosition.FIRST) {
+                    LanguageRow()
+                }
+                SettingsCard(SettingsCardPosition.LAST) {
+                    CollectColumnsRow(
+                        columns = state.collectColumns,
+                        onSelect = { columns ->
+                            vm.put(HawkConfig.COLLECT_COLUMNS, columns)
+                            EventBus.getDefault().post(RefreshEvent(RefreshEvent.TYPE_COLLECT_LAYOUT_CHANGE))
+                        },
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(28.dp))
+
+            SettingsGroup(title = stringResource(R.string.settings_group_privacy)) {
                 SettingsCard(SettingsCardPosition.FIRST) {
                     SettingsSwitchRow(
-                        title = "自动换线",
-                        checked = state.autoSwitchLine,
-                        onCheckedChange = { vm.put(HawkConfig.AUTO_SWITCH_LINE, it) },
+                        title = stringResource(R.string.settings_history_merge),
+                        leadingIconRes = R.drawable.ic_pref_history_merge,
+                        checked = state.historyMerge,
+                        onCheckedChange = {
+                            HistoryMerge.setEnabled(it)
+                            vm.refresh()
+                            EventBus.getDefault().post(RefreshEvent(RefreshEvent.TYPE_HISTORY_REFRESH))
+                        },
                     )
                 }
                 SettingsCard(SettingsCardPosition.MIDDLE) {
                     SettingsSwitchRow(
-                        title = "M3U8 净化",
-                        checked = state.m3u8Purify,
-                        onCheckedChange = { vm.put(HawkConfig.M3U8_PURIFY, it) },
-                    )
-                }
-                // 无痕模式(2026-09-12):开启后搜索历史与观看历史都不再写入,手动收藏照常
-                SettingsCard(SettingsCardPosition.MIDDLE) {
-                    SettingsSwitchRow(
-                        title = "无痕模式",
+                        title = stringResource(R.string.settings_incognito),
+                        leadingIconRes = R.drawable.ic_pref_incognito,
                         checked = state.incognito,
-                        onCheckedChange = { vm.put(HawkConfig.INCOGNITO, it) },
+                        onCheckedChange = {
+                            vm.put(HawkConfig.INCOGNITO, it)
+                            // 历史页据此立刻切到"无痕提示"或恢复列表(不必重进页面)
+                            EventBus.getDefault().post(RefreshEvent(RefreshEvent.TYPE_HISTORY_REFRESH))
+                        },
                     )
                 }
-                // 禁用手势控制(2026-09-13):开启后播放器不再响应上下滑调亮度/音量(单击/双击/横滑进度不受影响)
                 SettingsCard(SettingsCardPosition.MIDDLE) {
                     SettingsSwitchRow(
-                        title = "禁用手势控制",
-                        subtitle = "开启后将禁用手势控制亮度和音量",
+                        title = stringResource(R.string.settings_gesture_disable),
+                        leadingIconRes = R.drawable.ic_pref_gesture,
+                        subtitle = stringResource(R.string.settings_gesture_disable_subtitle),
                         checked = state.gestureControlDisabled,
                         onCheckedChange = { vm.put(HawkConfig.GESTURE_CONTROL_DISABLED, it) },
                     )
                 }
                 SettingsCard(SettingsCardPosition.MIDDLE) {
                     SettingsSwitchRow(
-                        title = "弹幕开关",
+                        title = stringResource(R.string.settings_nav_animation_disable),
+                        leadingIconRes = R.drawable.ic_pref_nav_animation,
+                        subtitle = stringResource(R.string.settings_nav_animation_disable_subtitle),
+                        checked = state.navAnimationDisabled,
+                        onCheckedChange = { vm.put(HawkConfig.NAV_ANIMATION_DISABLED, it) },
+                    )
+                }
+                SettingsCard(SettingsCardPosition.LAST) {
+                    SettingsSwitchRow(
+                        title = stringResource(R.string.settings_nav_live_hidden),
+                        leadingIconRes = R.drawable.ic_pref_nav_live_hidden,
+                        subtitle = stringResource(R.string.settings_nav_live_hidden_subtitle),
+                        checked = state.navLiveHidden,
+                        onCheckedChange = { vm.put(HawkConfig.NAV_LIVE_HIDDEN, it) },
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(28.dp))
+
+            SettingsGroup(title = stringResource(R.string.settings_group_play_search)) {
+                SettingsCard(SettingsCardPosition.FIRST) {
+                    SettingsSwitchRow(
+                        title = stringResource(R.string.settings_auto_switch_line),
+                        leadingIconRes = R.drawable.ic_pref_auto_switch_line,
+                        checked = state.autoSwitchLine,
+                        onCheckedChange = { vm.put(HawkConfig.AUTO_SWITCH_LINE, it) },
+                    )
+                }
+                SettingsCard(SettingsCardPosition.MIDDLE) {
+                    SettingsSwitchRow(
+                        title = stringResource(R.string.settings_m3u8_purify),
+                        leadingIconRes = R.drawable.ic_pref_m3u8_purify,
+                        checked = state.m3u8Purify,
+                        onCheckedChange = { vm.put(HawkConfig.M3U8_PURIFY, it) },
+                    )
+                }
+                SettingsCard(SettingsCardPosition.MIDDLE) {
+                    SettingsSwitchRow(
+                        title = stringResource(R.string.settings_danmu_switch),
+                        leadingIconRes = R.drawable.ic_pref_danmu,
                         checked = state.danmuOpen,
                         onCheckedChange = { vm.put(HawkConfig.DANMU_OPEN, it) },
                     )
                 }
                 SettingsCard(SettingsCardPosition.MIDDLE) {
                     SettingsRow(
-                        title = "弹幕 API",
-                        valueText = state.danmuApi.ifEmpty { "未设置" },
+                        title = stringResource(R.string.settings_danmu_api),
+                        leadingIconRes = R.drawable.ic_pref_danmu_api,
+                        // 不显示接口链接本身:填过什么只有编辑弹窗里可见
+                        valueText = stringResource(if (state.danmuApi.isEmpty()) R.string.common_not_set else R.string.common_set),
                         onClick = { danmuApiDialog = true },
                     )
                 }
-                // 长按倍速(2026-09-12):长按画面临时提速倍率,2x~10x 步长 1(9 档);松手落盘,长按触发时实时读 KV
                 SettingsCard(SettingsCardPosition.MIDDLE) {
                     SettingsSliderRow(
-                        title = "长按倍速",
+                        title = stringResource(R.string.settings_long_press_speed),
+                        leadingIconRes = R.drawable.ic_pref_long_press_speed,
                         value = sliderSpeed.toFloat(),
                         valueText = "${sliderSpeed}x",
                         valueRange = 2f..10f,
@@ -125,7 +199,8 @@ fun PreferenceSettingsScreen(onNavigateBack: () -> Unit, vm: SettingsViewModel =
                 }
                 SettingsCard(SettingsCardPosition.MIDDLE) {
                     SettingsSliderRow(
-                        title = "缓冲时间",
+                        title = stringResource(R.string.settings_buffer_time),
+                        leadingIconRes = R.drawable.ic_pref_buffer_time,
                         value = sliderBuffer.toFloat(),
                         valueText = "${sliderBuffer}x",
                         valueRange = 1f..10f,
@@ -140,7 +215,8 @@ fun PreferenceSettingsScreen(onNavigateBack: () -> Unit, vm: SettingsViewModel =
                 }
                 SettingsCard(SettingsCardPosition.LAST) {
                     SettingsSliderRow(
-                        title = "搜索线程",
+                        title = stringResource(R.string.settings_search_threads),
+                        leadingIconRes = R.drawable.ic_pref_search_threads,
                         value = sliderThreads.toFloat(),
                         valueText = "$sliderThreads",
                         valueRange = 16f..64f,
@@ -161,7 +237,7 @@ fun PreferenceSettingsScreen(onNavigateBack: () -> Unit, vm: SettingsViewModel =
 
     if (danmuApiDialog) {
         TextEditDialog(
-            title = "弹幕 API",
+            title = stringResource(R.string.settings_danmu_api),
             initialText = state.danmuApi,
             onDismiss = { danmuApiDialog = false },
             onConfirm = { text ->
@@ -170,4 +246,88 @@ fun PreferenceSettingsScreen(onNavigateBack: () -> Unit, vm: SettingsViewModel =
             },
         )
     }
+}
+
+@Composable
+private fun CollectColumnsRow(columns: Int, onSelect: (Int) -> Unit) {
+    val options = listOf(
+        stringResource(R.string.settings_collect_columns_three),
+        stringResource(R.string.settings_collect_columns_two),
+    )
+    val selectedIndex = if (columns == 3) 0 else 1
+    SettingsOptionMenuRow(
+        title = stringResource(R.string.settings_collect_columns),
+        leadingIconRes = R.drawable.ic_pref_collect_columns,
+        valueText = options[selectedIndex],
+        options = options,
+        selectedIndex = selectedIndex,
+        onSelect = { idx -> onSelect(if (idx == 0) 3 else 2) },
+    )
+}
+
+/** 语言入口:选中即写 KV(给落盘留出弹窗交互的时间),确认后立即自重启;取消回滚 */
+@Composable
+private fun LanguageRow() {
+    val available = LanguageManager.available()
+    val current = LanguageManager.current()
+    val context = LocalContext.current
+    var pending by remember { mutableStateOf<AppLanguage?>(null) }
+    var rollback by remember { mutableStateOf(AppLanguage.System) }
+    var restarting by remember { mutableStateOf(false) }
+    SettingsOptionMenuRow(
+        title = stringResource(R.string.settings_language),
+        leadingIconRes = R.drawable.ic_pref_language,
+        subtitle = stringResource(R.string.settings_language_subtitle),
+        valueText = stringResource(languageLabelRes(current)),
+        options = available.map { stringResource(languageLabelRes(it)) },
+        selectedIndex = available.indexOf(current),
+        onSelect = { idx ->
+            val target = available.getOrNull(idx)
+            if (target != null && target != current) {
+                rollback = current
+                LanguageManager.set(target)
+                pending = target
+            }
+        },
+    )
+    val cancel = {
+        LanguageManager.set(rollback)
+        pending = null
+    }
+    pending?.let {
+        AVBoxAlertDialog(
+            onDismissRequest = cancel,
+            text = { Text(stringResource(R.string.settings_language_restart_message)) },
+            dismissButton = {
+                val dismissAnimated = LocalSheetDismiss.current
+                TextButton(onClick = { dismissAnimated() }) { Text(stringResource(R.string.common_cancel)) }
+            },
+            confirmButton = {
+                // 确认走"先播退场动画再执行动作":动作(pending 清空 + 置重启中)与取消(回滚语言)收尾不同,
+                // 所以这里不能复用 onDismissRequest
+                val dismissThen = LocalSheetDismissThen.current
+                TextButton(onClick = {
+                    dismissThen {
+                        pending = null
+                        restarting = true
+                    }
+                }) { Text(stringResource(R.string.common_confirm)) }
+            },
+        )
+    }
+    if (restarting) {
+        LaunchedEffect(Unit) {
+            withFrameNanos { }
+            withFrameNanos { }
+            restartApp(context.applicationContext)
+        }
+    }
+}
+
+private fun languageLabelRes(lang: AppLanguage): Int = when (lang) {
+    AppLanguage.System -> R.string.settings_language_system
+    AppLanguage.SimplifiedChinese -> R.string.settings_language_zh_hans
+    AppLanguage.English -> R.string.settings_language_en
+    AppLanguage.TraditionalTW -> R.string.settings_language_zh_hant_tw
+    AppLanguage.TraditionalHK -> R.string.settings_language_zh_hant_hk
 }

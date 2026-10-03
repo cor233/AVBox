@@ -5,6 +5,9 @@ import android.content.Context;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import com.github.tvbox.osc.util.kv.KVCodec;
 import com.tencent.mmkv.MMKV;
 
@@ -33,6 +36,11 @@ public final class KV {
      *
      * <p>无数据迁移:应用未发布、无存量用户,Hawk 与其旧库已一并移除(见 spec §8 R1/R2),
      * 首装即原生 MMKV,旧库数据不再搬运。
+     *
+     * <p>⚠️ 关于"崩溃路径必须落盘":MMKV 是**异步写**(写进 Scheduler,约 1 秒后落盘),且 2.4.2
+     * **没有**同步写 flag(只有 {@code SINGLE_PROCESS_MODE} 等模式位),{@code sync()} 也只是等
+     * "当前 pending 批"。实测进程级崩溃处理里写的崩溃时刻 **没落盘**(设备上一直停在几分钟前)
+     * ⇒ 需要绝对可靠的崩溃记录不能走 KV,见 {@link BootGuard} 的同步标记文件。
      */
     public static void init(@NonNull Context context) {
         Context appContext = context.getApplicationContext();
@@ -95,11 +103,25 @@ public final class KV {
         requireStore().removeValueForKey(key);
     }
 
+    /**
+     * 按前缀列出全部键(传空串即全部,不接受 null);只服务孤儿清理类冷路径 —— MMKV 的 allKeys() 每次都取整张键表。
+     */
+    @NonNull
+    public static List<String> keys(@NonNull String prefix) {
+        String[] all = requireStore().allKeys();
+        List<String> matched = new ArrayList<>();
+        if (all == null) return matched;
+        for (String key : all) {
+            if (key != null && key.startsWith(prefix)) matched.add(key);
+        }
+        return matched;
+    }
+
     /** 先于 {@link #init} 调用属编码错误:故意抛异常,避免静默降级成"到处读默认值" */
     @NonNull
     private static MMKV requireStore() {
         MMKV instance = store;
-        if (instance == null) throw new IllegalStateException("KV.init(Context) 未调用");
+        if (instance == null) throw new IllegalStateException("KV.init(Context) 未调用"); // i18n: keep(异常消息)
         return instance;
     }
 }

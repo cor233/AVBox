@@ -5,6 +5,7 @@ import androidx.annotation.NonNull;
 
 import com.github.catvod.Proxy;
 import com.github.catvod.crawler.js.rsa.RSAEncrypt;
+import com.github.tvbox.osc.util.LOG;
 import com.whl.quickjs.wrapper.ContextSetter;
 import com.whl.quickjs.wrapper.Function;
 import com.whl.quickjs.wrapper.JSArray;
@@ -159,28 +160,28 @@ public class Global {
                 try {
                     mConfig = (String) op.get("config");
                 } catch (Exception e) {
-                    e.printStackTrace();
+                    LOG.e("Global", e);
                 }
             }
             if (op.has("type")) {
                 try {
                     mType = ((Double) op.get("type")).intValue();
                 } catch (Exception e) {
-                    e.printStackTrace();
+                    LOG.e("Global", e);
                 }
             }
             if (op.has("long")) {
                 try {
                     mLong = ((Double) op.get("long")).intValue();
                 } catch (Exception e) {
-                    e.printStackTrace();
+                    LOG.e("Global", e);
                 }
             }
             if (op.has("block")) {
                 try {
                     mBlock = (Boolean) op.get("block");
                 } catch (Exception e) {
-                    e.printStackTrace();
+                    LOG.e("Global", e);
                 }
             }
         }
@@ -237,28 +238,28 @@ public class Global {
                 try {
                     mConfig = (String) op.get("config");
                 } catch (Exception e) {
-                    e.printStackTrace();
+                    LOG.e("Global", e);
                 }
             }
             if (op.has("type")) {
                 try {
                     mType = ((Double) op.get("type")).intValue();
                 } catch (Exception e) {
-                    e.printStackTrace();
+                    LOG.e("Global", e);
                 }
             }
             if (op.has("long")) {
                 try {
                     mLong = ((Double) op.get("long")).intValue();
                 } catch (Exception e) {
-                    e.printStackTrace();
+                    LOG.e("Global", e);
                 }
             }
             if (op.has("block")) {
                 try {
                     mBlock = (Boolean) op.get("block");
                 } catch (Exception e) {
-                    e.printStackTrace();
+                    LOG.e("Global", e);
                 }
             }
         }
@@ -355,6 +356,7 @@ public class Global {
                             try {
                                 res.close();
                             } catch (Throwable ignored) {
+                                LOG.d("Global", "close response failed");
                             }
                         }
                     });
@@ -369,6 +371,7 @@ public class Global {
                 try {
                     executor.submit(() -> complete.call(Connect.error(runtime)));
                 } catch (RejectedExecutionException ignored) {
+                    LOG.d("Global", "executor shutdown, drop error callback");
                 }
             }
         };

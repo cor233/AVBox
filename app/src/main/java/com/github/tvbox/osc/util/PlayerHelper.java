@@ -1,18 +1,17 @@
 package com.github.tvbox.osc.util;
 
+import com.github.tvbox.osc.util.LOG;
 import android.app.Activity;
 import android.content.Context;
 
-import com.github.tvbox.osc.api.ApiConfig;
-import com.github.tvbox.osc.bean.IJKCode;
+import com.github.tvbox.osc.R;
 import com.github.tvbox.osc.player.ExoMediaPlayerFactory;
-import com.github.tvbox.osc.player.IjkMediaPlayer;
+import com.github.tvbox.osc.player.ExoPlayer;
 import com.github.tvbox.osc.player.MyVideoView;
 import com.github.tvbox.osc.player.render.SurfaceRenderViewFactory;
 import com.github.tvbox.osc.player.thirdparty.Kodi;
 import com.github.tvbox.osc.player.thirdparty.MXPlayer;
 import com.github.tvbox.osc.player.thirdparty.ReexPlayer;
-import com.github.tvbox.osc.player.thirdparty.RemoteTVBox;
 import com.github.tvbox.osc.player.thirdparty.VlcPlayer;
 import com.github.tvbox.osc.util.KV;
 
@@ -26,7 +25,6 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
 
-import tv.danmaku.ijk.media.player.IjkLibLoader;
 import xyz.doikki.videoplayer.player.PlayerFactory;
 import xyz.doikki.videoplayer.player.VideoView;
 import xyz.doikki.videoplayer.render.RenderViewFactory;
@@ -36,48 +34,25 @@ public class PlayerHelper {
     public static void updateCfg(VideoView videoView, JSONObject playerCfg) {
         updateCfg(videoView,playerCfg,-1);
     }
+
+    /** forcePlayerType 为历史遗留(内核对仅剩 EXO,不再有可强制的目标),保留入参以稳定既有调用方 */
     public static void updateCfg(VideoView videoView, JSONObject playerCfg,int forcePlayerType) {
-        int playerType = KV.get(HawkConfig.PLAY_TYPE, 2);
         int renderType = KV.get(HawkConfig.PLAY_RENDER, 1);
-        String ijkCode = KV.get(HawkConfig.IJK_CODEC, "硬解码");
+        String exoDecode = KV.get(HawkConfig.EXO_DECODE, "硬解码"); // i18n: keep
         int scale = KV.get(HawkConfig.PLAY_SCALE, 0);
         try {
-            playerType = playerCfg.getInt("pl");
             renderType = playerCfg.getInt("pr");
-            ijkCode = playerCfg.getString("ijk");
             scale = playerCfg.getInt("sc");
         } catch (JSONException e) {
-            e.printStackTrace();
+            LOG.e("PlayerHelper", e);
         }
-        if(forcePlayerType>=0)playerType = forcePlayerType;
-        IJKCode codec = ApiConfig.get().getIJKCodec(ijkCode);
-        PlayerFactory playerFactory;
-        if (playerType == 1) {
-            playerFactory = new PlayerFactory<IjkMediaPlayer>() {
-                @Override
-                public IjkMediaPlayer createPlayer(Context context) {
-                    return new IjkMediaPlayer(context, codec);
-                }
-            };
-            try {
-                tv.danmaku.ijk.media.player.IjkMediaPlayer.loadLibrariesOnce(new IjkLibLoader() {
-                    @Override
-                    public void loadLibrary(String s) throws UnsatisfiedLinkError, SecurityException {
-                        try {
-                            System.loadLibrary(s);
-                        } catch (Throwable th) {
-                            th.printStackTrace();
-                        }
-                    }
-                });
-            } catch (Throwable th) {
-                th.printStackTrace();
-            }
-        } else if (playerType == 2) {
-            playerFactory = ExoMediaPlayerFactory.create();
-        } else {
-            playerFactory = ExoMediaPlayerFactory.create();
-        }
+        // exo 键单独用 optString 读(2026-09-17):不塞进上面的 try —— 该 try 遇第一个缺失键即中断,
+        // 老播放记录/直播配置没有 exo 键时会把后面的 sc 一起吞掉
+        exoDecode = playerCfg.optString("exo", exoDecode);
+        // EXO 解码方式下发(2026-09-17):进程级静态位,与 videoView 实例无关(故不放在下面的判空块里),
+        // 每次起播前按"本剧配置 → 全局设置"的有效值推一次
+        boolean exoDecodeChanged = applyExoDecode(exoDecode);
+        PlayerFactory playerFactory = ExoMediaPlayerFactory.create();
         RenderViewFactory renderViewFactory = null;
         switch (renderType) {
             case 0:
@@ -91,125 +66,45 @@ public class PlayerHelper {
         if(videoView!=null){
             videoView.setPlayerFactory(playerFactory);
             if (videoView instanceof MyVideoView) {
-                ((MyVideoView) videoView).saveConfiguredFactory(playerFactory);
+                // EXO 解码方式变了且当前还活着一个 EXO 内核(换集复用路径):media3 不会重选解码器,
+                // 只改静态位不生效 —— 标记本次起播必须重建内核(见 MyVideoView.consumeKernelRebuildRequired)
+                if (exoDecodeChanged && ((MyVideoView) videoView).getMediaPlayer() instanceof ExoPlayer) {
+                    ((MyVideoView) videoView).requireKernelRebuild();
+                    LOG.i("echo-exo-decode-changed: rebuild kernel on next start");
+                }
             }
             videoView.setRenderViewFactory(renderViewFactory);
             videoView.setScreenScaleType(scale);
         }
     }
 
-    public static void updateCfg(VideoView videoView) {
-        int playType = KV.get(HawkConfig.PLAY_TYPE, 2);
-        PlayerFactory playerFactory;
-        if (playType == 1) {
-            playerFactory = new PlayerFactory<IjkMediaPlayer>() {
-                @Override
-                public IjkMediaPlayer createPlayer(Context context) {
-                    return new IjkMediaPlayer(context, null);
-                }
-            };
-            try {
-                tv.danmaku.ijk.media.player.IjkMediaPlayer.loadLibrariesOnce(new IjkLibLoader() {
-                    @Override
-                    public void loadLibrary(String s) throws UnsatisfiedLinkError, SecurityException {
-                        try {
-                            System.loadLibrary(s);
-                        } catch (Throwable th) {
-                            th.printStackTrace();
-                        }
-                    }
-                });
-            } catch (Throwable th) {
-                th.printStackTrace();
-            }
-        } else if (playType == 2) {
-            playerFactory = ExoMediaPlayerFactory.create();
-        } else {
-            playerFactory = ExoMediaPlayerFactory.create();
-        }
-        int renderType = KV.get(HawkConfig.PLAY_RENDER, 1);
-        RenderViewFactory renderViewFactory = null;
-        switch (renderType) {
-            case 0:
-            default:
-                renderViewFactory = TextureRenderViewFactory.create();
-                break;
-            case 1:
-                renderViewFactory = SurfaceRenderViewFactory.create();
-                break;
-        }
-        videoView.setPlayerFactory(playerFactory);
-        if (videoView instanceof MyVideoView) {
-            ((MyVideoView) videoView).saveConfiguredFactory(playerFactory);
-        }
-        videoView.setRenderViewFactory(renderViewFactory);
-    }
-
-
-    public static void init() {
-        try {
-            tv.danmaku.ijk.media.player.IjkMediaPlayer.loadLibrariesOnce(new IjkLibLoader() {
-                @Override
-                public void loadLibrary(String s) throws UnsatisfiedLinkError, SecurityException {
-                    try {
-                        System.loadLibrary(s);
-                    } catch (Throwable th) {
-                        th.printStackTrace();
-                    }
-                }
-            });
-        } catch (Throwable th) {
-            th.printStackTrace();
-        }
+    private static boolean applyExoDecode(String exoDecode) {
+        boolean prefer = "软解码".equals(exoDecode); // i18n: keep
+        if (ExoPlayer.isPreferSoftwareDecode() == prefer) return false;
+        ExoPlayer.setPreferSoftwareDecode(prefer);
+        return true;
     }
 
     /**
-     * rtmp 协议仅 ijk 引擎支持(media3 已移除 rtmp 扩展):
-     * rtmp 源强制切换 ijk,其他协议恢复用户配置的引擎,避免直播切台时状态泄漏
+     * 存活内核**已生效**的解码方式是否与 cfg 目标值一致;静态位只在起播链路下发,而 media3 不给复用内核重选解码器 ——
+     * 不一致就只能重建内核(D6 同片接管这类不走起播的路径据此判断)。
      */
-    public static void applyRtmpSchemeOverride(VideoView videoView, String url) {
-        if (!(videoView instanceof MyVideoView)) return;
-        MyVideoView view = (MyVideoView) videoView;
-        boolean rtmp = url != null && url.trim().toLowerCase().startsWith("rtmp://");
-        if (!rtmp) {
-            view.restoreConfiguredFactory();
-            return;
-        }
-        if (view.isRtmpForced()) return;
-        LOG.i("echo-rtmp-force-ijk: " + url);
-        IJKCode codec = ApiConfig.get().getIJKCodec(KV.get(HawkConfig.IJK_CODEC, "硬解码"));
-        view.forceIjkFactory(new PlayerFactory<IjkMediaPlayer>() {
-            @Override
-            public IjkMediaPlayer createPlayer(Context context) {
-                return new IjkMediaPlayer(context, codec);
-            }
-        });
+    public static boolean isExoDecodeApplied(JSONObject playerCfg) {
+        String exoDecode = playerCfg == null ? null : playerCfg.optString("exo", "硬解码"); // i18n: keep
+        return isExoDecodeApplied(exoDecode, ExoPlayer.isPreferSoftwareDecode());
     }
 
-    /**
-     * 本地代理 URL 判定(2026-09-13):spider 自建代理(网盘)/M3U8 净化/DASH 代理都是
-     * 127.0.0.1 上 App 内服务的地址,不是稳定的可随机访问 HTTP 文件源。
-     * 边播缓存的 CacheDataSource 与这类 URL 的区间读取语义不兼容 —— 实测夸克 4K mp4 源
-     * 需跳读文件尾 moov 时抛 ERROR_CODE_IO_READ_POSITION_OUT_OF_RANGE,EXO 直接无法起播
-     * (关掉边播缓存即恢复正常);直连 URL(可随机访问)不受影响。
-     * 故这类 URL 跳过磁盘缓存,与预载侧 PreloadCoordinator 的排除口径一致。
-     */
+    /** 上一条的口径本体(exo 值只认"软解码",缺键/空串按硬解);独立出来供 JVM 单测锁真值表 */
+    static boolean isExoDecodeApplied(String exoDecode, boolean preferSoftwareDecode) {
+        return "软解码".equals(exoDecode) == preferSoftwareDecode; // i18n: keep
+    }
+
     public static boolean isLocalProxyUrl(String url) {
         if (url == null) return false;
         return url.startsWith("http://127.0.0.1") || url.startsWith("https://127.0.0.1")
                 || url.startsWith("http://localhost") || url.startsWith("https://localhost");
     }
 
-    /**
-     * 从 getPlay 结果 JSON 提取请求头(header/headers 字段,兼容 JSONObject 与 JSON 文本两种形态)。
-     *
-     * <p>2026-09-13 修复:预载({@code PreloadCoordinator.extractHeaders})与播放
-     * ({@code PlayContainer.getHeaders})必须共用本方法 —— 此前预载侧只认 JSONObject、
-     * 播放侧还认 String,源返回 {@code "header":"{\"User-Agent\":\"...\"}"} 时两侧的
-     * {@code keyOf(url,headers)} 不一致,预载内存数据永不命中(仅剩磁盘兜底)。
-     *
-     * @return 提取到的请求头(键值均原样保留,不 trim);无任何头时返回 null(与旧实现语义一致)
-     */
     public static HashMap<String, String> extractPlayHeaders(JSONObject playResult) {
         if (playResult == null) return null;
         HashMap<String, String> headers = new HashMap<>();
@@ -239,43 +134,39 @@ public class PlayerHelper {
                     headers.put(key, json.optString(key, ""));
                 }
             }
-        } catch (Throwable ignored) {
+        } catch (Throwable th) {
+            LOG.e("PlayerHelper", "play headers parse failed", th);
         }
     }
 
+    /** 播放器名;每次调用重取文案(不缓存字符串 —— 缓存会让切语言后停在旧语言) */
     public static String getPlayerName(int playType) {
-        HashMap<Integer, String> playersInfo = getPlayersInfo();
-        if (playersInfo.containsKey(playType)) {
-            return playersInfo.get(playType);
-        } else {
-            return "EXO播放器";
+        switch (playType) {
+            case 10:
+                return str(R.string.player_mx);
+            case 11:
+                return str(R.string.player_reex);
+            case 12:
+                return str(R.string.player_kodi);
+            case 13:
+                return str(R.string.player_nearby_tvbox);
+            case 14:
+                return str(R.string.player_vlc);
+            default:
+                return str(R.string.player_exo);
         }
     }
 
-    private static HashMap<Integer, String> mPlayersInfo = null;
     public static HashMap<Integer, String> getPlayersInfo() {
-        if (mPlayersInfo == null) {
-            HashMap<Integer, String> playersInfo = new HashMap<>();
-            playersInfo.put(1, "IJK播放器");
-            playersInfo.put(2, "EXO播放器");
-            playersInfo.put(10, "MX播放器");
-            playersInfo.put(11, "Reex播放器");
-            playersInfo.put(12, "Kodi播放器");
-            playersInfo.put(13, "附近TVBox");
-            playersInfo.put(14, "VLC播放器");
-            mPlayersInfo = playersInfo;
+        HashMap<Integer, String> playersInfo = new HashMap<>();
+        for (int type : new int[]{2, 10, 11, 12, 13, 14}) {
+            playersInfo.put(type, getPlayerName(type));
         }
-        return mPlayersInfo;
+        return playersInfo;
     }
 
     private static HashMap<Integer, Boolean> mPlayersExistInfo = null;
 
-    /**
-     * 作废"可用播放器"缓存(2026-09-13)。
-     * ⚠️ 该表是**进程级缓存**(首次调用后不再重算),而 13 号 RemoteTVBox 的可用性取决于
-     * `HawkConfig.REMOTE_TVBOX` —— 投屏扫描/投屏成功时才写入。不重置缓存的话,
-     * 「RemoteTVBox 播放器」选项在本次进程内永远不会出现。
-     */
     public static void invalidatePlayersExistInfo() {
         mPlayersExistInfo = null;
     }
@@ -283,7 +174,6 @@ public class PlayerHelper {
     public static HashMap<Integer, Boolean> getPlayersExistInfo() {
         if (mPlayersExistInfo == null) {
             HashMap<Integer, Boolean> playersExist = new HashMap<>();
-            playersExist.put(1, true);
             playersExist.put(2, true);
             playersExist.put(10, MXPlayer.getPackageInfo() != null);
             playersExist.put(11, ReexPlayer.getPackageInfo() != null);
@@ -354,49 +244,35 @@ public class PlayerHelper {
         }
     }
 
+    /** 画面缩放名;每次调用重取文案(不缓存字符串 —— 缓存会让切语言后停在旧语言) */
     public static String getScaleName(int screenScaleType) {
-        String scaleText = "默认";
         switch (screenScaleType) {
-            case VideoView.SCREEN_SCALE_DEFAULT:
-                scaleText = "默认";
-                break;
             case VideoView.SCREEN_SCALE_16_9:
-                scaleText = "16:9";
-                break;
+                return "16:9";
             case VideoView.SCREEN_SCALE_4_3:
-                scaleText = "4:3";
-                break;
+                return "4:3";
             case VideoView.SCREEN_SCALE_MATCH_PARENT:
-                scaleText = "填充";
-                break;
+                return str(R.string.player_scale_fill);
             case VideoView.SCREEN_SCALE_ORIGINAL:
-                scaleText = "原始";
-                break;
+                return str(R.string.player_scale_origin);
             case VideoView.SCREEN_SCALE_CENTER_CROP:
-                scaleText = "裁剪";
-                break;
+                return str(R.string.player_scale_crop);
+            default:
+                return str(R.string.common_default);
         }
-        return scaleText;
+    }
+
+    private static String str(int resId) {
+        Context app = AppContextHolder.context();
+        return app == null ? "" : LanguageManager.INSTANCE.localized(app).getString(resId);
     }
 
     public static String getDisplaySpeed(long speed,boolean show) {
         if(speed > 1048576)
-            return new DecimalFormat("#.00").format(speed / 1048576d) + "Mb/s";
+            return new DecimalFormat("#.00").format(speed / 1048576d) + "MB/s";
         else if(speed > 1024)
-            return (speed / 1024) + "Kb/s";
+            return (speed / 1024) + "KB/s";
         else
             return speed > 0?speed + "B/s":(show?"0B/s":"");
-    }
-    public static String getDisplaySpeedBps(long speed, boolean show) {
-        long bitSpeed = speed * 8; // 字节转比特
-        if (bitSpeed >= 1_000_000_000) {
-            return new DecimalFormat("0.00").format(bitSpeed / 1_000_000_000d) + "Gbps";
-        } else if (bitSpeed >= 1_000_000) {
-            return new DecimalFormat("0.0").format(bitSpeed / 1_000_000d) + "Mbps";
-        } else if (bitSpeed >= 1_000) {
-            return new DecimalFormat("0.0").format(bitSpeed / 1_000d) + "Kbps";
-        } else {
-            return bitSpeed > 0 ? bitSpeed + "bps" : (show ? "0bps" : "");
-        }
     }
 }

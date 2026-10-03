@@ -18,15 +18,11 @@ public class LivePlayerManager {
 
     public void init(VideoView videoView) {
         try {
-            defaultPlayerConfig.put("pl", KV.get(HawkConfig.LIVE_PLAY_TYPE, KV.get(HawkConfig.PLAY_TYPE, 2)));
-            if (defaultPlayerConfig.optInt("pl", 2) == 0) {
-                defaultPlayerConfig.put("pl", 2);
-            }
-            defaultPlayerConfig.put("ijk", KV.get(HawkConfig.IJK_CODEC, "硬解码"));
+            defaultPlayerConfig.put("exo", KV.get(HawkConfig.EXO_DECODE, "硬解码")); // i18n: keep
             defaultPlayerConfig.put("pr", KV.get(HawkConfig.PLAY_RENDER, 1));
             defaultPlayerConfig.put("sc", KV.get(HawkConfig.LIVE_PLAY_SCALE, 0));
         } catch (JSONException e) {
-            e.printStackTrace();
+            LOG.e("LivePlayerManager", e);
         }
         getDefaultLiveChannelPlayer(videoView);
     }
@@ -36,7 +32,7 @@ public class LivePlayerManager {
         try {
             currentPlayerConfig = new JSONObject(defaultPlayerConfig.toString());
         } catch (JSONException e) {
-            e.printStackTrace();
+            LOG.e("LivePlayerManager", e);
         }
     }
 
@@ -48,23 +44,10 @@ public class LivePlayerManager {
         return currentPlayerConfig != null ? currentPlayerConfig : defaultPlayerConfig;
     }
 
+    /** 直播「播放解码」档位下标:0=硬解 1=软解(取值"直播配置 → 缺省全局 EXO_DECODE") */
     public int getLivePlayerType() {
-        JSONObject config = currentOrDefaultConfig();
-        int playerTypeIndex = 2;
-        int playerType = config.optInt("pl", 2);
-        String ijkCodec = config.optString("ijk", "硬解码");
-        switch (playerType) {
-            case 1:
-                if (ijkCodec.equals("硬解码"))
-                    playerTypeIndex = 0;
-                else
-                    playerTypeIndex = 1;
-                break;
-            case 2:
-                playerTypeIndex = 2;
-                break;
-        }
-        return playerTypeIndex;
+        String decode = currentOrDefaultConfig().optString("exo", KV.get(HawkConfig.EXO_DECODE, "硬解码")); // i18n: keep
+        return "软解码".equals(decode) ? 1 : 0; // i18n: keep
     }
 
     public int getLivePlayerScale() {
@@ -79,60 +62,14 @@ public class LivePlayerManager {
             playerConfig = new JSONObject();
         }
         try {
-            switch (playerType) {
-                case 0:
-                    playerConfig.put("pl", 1);
-                    playerConfig.put("ijk", "硬解码");
-                    break;
-                case 1:
-                    playerConfig.put("pl", 1);
-                    playerConfig.put("ijk", "软解码");
-                    break;
-                case 2:
-                    playerConfig.put("pl", 2);
-                    playerConfig.put("ijk", "软解码");
-                    break;
-            }
+            String decode = playerType == 1 ? "软解码" : "硬解码"; // i18n: keep
+            playerConfig.put("exo", decode); // i18n: keep
+            defaultPlayerConfig.put("exo", decode); // i18n: keep
         } catch (JSONException e) {
-            e.printStackTrace();
+            LOG.e("LivePlayerManager", e);
         }
         PlayerHelper.updateCfg(videoView, playerConfig);
-
-        try {
-            defaultPlayerConfig.put("pl", playerConfig.getInt("pl"));
-            defaultPlayerConfig.put("ijk", playerConfig.getString("ijk"));
-            KV.put(HawkConfig.LIVE_PLAY_TYPE, playerConfig.getInt("pl"));
-            KV.put(HawkConfig.IJK_CODEC, playerConfig.getString("ijk"));
-        } catch (JSONException e) {
-            e.printStackTrace();
-        }
-
         currentPlayerConfig = playerConfig;
-    }
-
-    public boolean switchLivePlayer(VideoView videoView) {
-        JSONObject playerConfig = currentPlayerConfig;
-        if (playerConfig == null) {
-            LOG.i("echo-liveSwitchPlayer: skip empty player config");
-            return false;
-        }
-        try {
-            int playerType = playerConfig.getInt("pl");
-            int switchPlayerType = (playerType == 1) ? 2 : (playerType == 2) ? 1 : playerType;
-            if (switchPlayerType == playerType) {
-                LOG.i("echo-liveSwitchPlayer: skip unsupported playerType=" + playerType);
-                return false;
-            }
-            LOG.i("echo-liveSwitchPlayer: " + playerType + " -> " + switchPlayerType);
-            playerConfig.put("pl", switchPlayerType);
-        } catch (JSONException e) {
-            LOG.i("echo-liveSwitchPlayer error: " + e.getMessage());
-            return false;
-        }
-        PlayerHelper.updateCfg(videoView, playerConfig);
-
-        currentPlayerConfig = playerConfig;
-        return true;
     }
 
     public void changeLivePlayerScale(@NonNull VideoView videoView, int playerScale){
@@ -149,7 +86,7 @@ public class LivePlayerManager {
             playerConfig.put("sc", playerScale);
             defaultPlayerConfig.put("sc", playerScale);
         } catch (JSONException e) {
-            e.printStackTrace();
+            LOG.e("LivePlayerManager", e);
         }
 
         currentPlayerConfig = playerConfig;

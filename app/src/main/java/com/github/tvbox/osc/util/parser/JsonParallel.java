@@ -1,6 +1,8 @@
 package com.github.tvbox.osc.util.parser;
 import android.util.Base64;
 import com.github.catvod.crawler.SpiderDebug;
+import com.github.tvbox.osc.util.HeaderGuard;
+import com.github.tvbox.osc.util.LOG;
 import org.json.JSONObject;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -40,11 +42,13 @@ public class JsonParallel {
             try {
                 client.dispatcher().cancelAll();
             } catch (Throwable ignored) {
+                LOG.d("JsonParallel", "cancel dispatcher calls failed");
             }
             for (Future<JSONObject> future : futures) {
                 try {
                     future.cancel(true);
                 } catch (Throwable ignored) {
+                    LOG.d("JsonParallel", "cancel in-flight future failed");
                 }
             }
             futures.clear();
@@ -151,15 +155,23 @@ public class JsonParallel {
                 JSONObject jsonObject = new JSONObject(ext);
                 if (jsonObject.has("header")) {
                     JSONObject headerJson = jsonObject.optJSONObject("header");
-                    Iterator<String> keys = headerJson.keys();
-                    while (keys.hasNext()) {
-                        String key = keys.next();
-                        reqHeaders.put(key, headerJson.optString(key, ""));
+                    if (headerJson != null) {
+                        Iterator<String> keys = headerJson.keys();
+                        while (keys.hasNext()) {
+                            String key = keys.next();
+                            String value = headerJson.optString(key, "");
+                            // 聚合解析器的 ext 头来自配置:非法字符会让 Headers.of 抛 IAE,该解析器静默失效
+                            if (!HeaderGuard.isSendable(key, value)) {
+                                LOG.d("JsonParallel", "drop illegal header: " + key);
+                                continue;
+                            }
+                            reqHeaders.put(key, value);
+                        }
                     }
                 }
                 reqHeaders.put("url", newUrl);
             } catch (Throwable th) {
-
+                LOG.d("JsonParallel", "cat_ext param decode failed, ignore extended headers");
             }
         }
         return reqHeaders;

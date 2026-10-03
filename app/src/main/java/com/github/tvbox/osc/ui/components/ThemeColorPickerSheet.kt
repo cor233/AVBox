@@ -33,12 +33,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import com.github.tvbox.osc.R
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.sqrt
-
 
 @Composable
 fun ThemeColorPickerSheet(
@@ -54,7 +55,6 @@ fun ThemeColorPickerSheet(
     val currentColor = remember(hsv) { android.graphics.Color.HSVToColor(hsv) }
 
     AVBoxBottomSheet(onDismissRequest = onDismiss, title = title) {
-        // 此处读取发生在 SheetOverlay 的 provider 作用域内;防抖防滑出窗口内双触发 onConfirm
         val dismissAnimated = LocalSheetDismiss.current
         var accepted by remember { mutableStateOf(false) }
         Column(
@@ -68,7 +68,7 @@ fun ThemeColorPickerSheet(
             Spacer(Modifier.height(12.dp))
 
             Text(
-                text = "亮度 " + (hsv[2] * 100f).toInt() + "%",
+                text = stringResource(R.string.theme_brightness_value, (hsv[2] * 100f).toInt()),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -92,7 +92,7 @@ fun ThemeColorPickerSheet(
                         accepted = true
                         dismissAnimated()
                     }
-                }) { Text("取消") }
+                }) { Text(stringResource(R.string.common_cancel)) }
                 Spacer(Modifier.width(8.dp))
                 Button(onClick = {
                     if (!accepted) {
@@ -100,7 +100,7 @@ fun ThemeColorPickerSheet(
                         onConfirm(currentColor)
                         dismissAnimated()
                     }
-                }) { Text("确定") }
+                }) { Text(stringResource(R.string.common_confirm)) }
             }
         }
     }
@@ -113,8 +113,8 @@ private fun ColorCompareRow(initialColor: Int, currentColor: Int) {
         horizontalArrangement = Arrangement.SpaceEvenly,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        ColorPreviewColumn(label = "初始颜色", color = initialColor)
-        ColorPreviewColumn(label = "当前颜色", color = currentColor)
+        ColorPreviewColumn(label = stringResource(R.string.theme_initial_color), color = initialColor)
+        ColorPreviewColumn(label = stringResource(R.string.theme_current_color), color = currentColor)
     }
 }
 
@@ -131,10 +131,6 @@ private fun ColorPreviewColumn(label: String, color: Int) {
     }
 }
 
-/**
- * HSV 色轮选择器:Canvas 自绘色相/饱和度圆盘 + 选择圆圈。
- * 圆盘角度 → H(0-360),半径 → S(0-1,中心为 0,边缘为 1)。
- */
 @Composable
 private fun HueSatWheelPicker(
     hsv: FloatArray,
@@ -159,7 +155,6 @@ private fun HueSatWheelPicker(
         modifier = modifier
             .size(wheelSize)
             .pointerInput(Unit) {
-                // ⚠️ 用 awaitEachGesture 而非 detectDragGestures:后者超过 touch slop 才触发,纯点击不更新 hsv
                 awaitEachGesture {
                     val down = awaitFirstDown()
                     updateHsvFromTouch(down.position, radiusPx, hsv, onHsvChanged)
@@ -171,22 +166,20 @@ private fun HueSatWheelPicker(
             },
     ) {
         val center = Offset(radiusPx, radiusPx)
-        // 色相圆盘:sweepGradient 一次绘出 360° 色相(起点 3 点钟方向,与 atan2 角度起点对齐)
         drawCircle(
             brush = Brush.sweepGradient(
                 colors = listOf(
-                    Color.Red, // 0°
-                    Color.Yellow, // 60°
-                    Color.Green, // 120°
-                    Color.Cyan, // 180°
-                    Color.Blue, // 240°
-                    Color.Magenta, // 300°
-                    Color.Red, // 360° 闭合
+                    Color.Red,
+                    Color.Yellow,
+                    Color.Green,
+                    Color.Cyan,
+                    Color.Blue,
+                    Color.Magenta,
+                    Color.Red,
                 ),
                 center = center,
             ),
         )
-        // 饱和度模拟:中心白(S=0)→ 边缘原色(S=1),径向渐变叠加
         drawCircle(
             brush = Brush.radialGradient(
                 colors = listOf(Color.White, Color.White.copy(alpha = 0f)),
@@ -199,10 +192,6 @@ private fun HueSatWheelPicker(
     }
 }
 
-/**
- * 触摸坐标 → HSV(距圆心距离 → S,角度 → H)。
- * ⚠️ 当前亮度为 0(BLACK)时自动提升到 1,让首次点色轮立即看到真实颜色。
- */
 private fun updateHsvFromTouch(
     offset: Offset,
     radiusPx: Float,

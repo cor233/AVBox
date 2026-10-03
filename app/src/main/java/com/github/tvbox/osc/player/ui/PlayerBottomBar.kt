@@ -3,19 +3,18 @@ package com.github.tvbox.osc.player.ui
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -27,32 +26,24 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.focus.focusProperties
-import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
-import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.input.key.Key
-import androidx.compose.ui.input.key.KeyEventType
-import androidx.compose.ui.input.key.key
-import androidx.compose.ui.input.key.onKeyEvent
-import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.github.tvbox.osc.R
 import com.github.tvbox.osc.api.ApiConfig
 import com.github.tvbox.osc.player.state.PlayerActions
 import com.github.tvbox.osc.player.state.PlayerUiState
-import xyz.doikki.videoplayer.player.VideoView
 import xyz.doikki.videoplayer.util.PlayerUtils.stringForTime
 
 /** SeekBar max 照搬旧布局 android:max="1000" */
@@ -61,33 +52,24 @@ private const val SEEK_MAX = 1000
 /** 预览态（竖屏详情页）进度行播放/暂停钮的触摸盒尺寸：与详情页右下角全屏入口同款 40dp 盒 / 22dp 图形 */
 private val PreviewPlayPauseBox = 40.dp
 
-/**
- * 底部菜单（图二布局：进度行在上、菜单行在下）：
- * - 菜单用 FlowRow 自动铺开（SpaceBetween），不再横向滚动；已裁剪 下一集/上一集/重置/屏显
- *   （上/下一集移至中央控制组，重置经片头/片尾长按可达）；
- * - 左右边距按窗口宽度分档（compact 16dp / ≥600dp 24dp，`playerEdgePadding()`）；上下边距 10dp / 16dp；
- * - 预览态（竖屏详情页）进度行左侧多一颗播放/暂停钮（2026-09-13 用户要求），与进度条、
- *   详情页右下角全屏入口共用同一水平中心线；
- * - 按钮可见性全部由 PlayerUiState 衍生规则驱动。
- */
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun PlayerBottomBar(
     state: PlayerUiState,
     actions: PlayerActions,
-    focus: PlayerFocusTargets,
+    iconBox: Dp,
     modifier: Modifier = Modifier,
 ) {
     if (!state.controlsVisible) return
-    // 左右边距按窗口宽度分档（竖屏预览 16dp / 横屏全屏与平板 24dp，见 playerEdgePadding）
+    // 左右边距按窗口宽度分档（竖屏预览 16dp / 横屏全屏与平板 48dp，见 playerEdgePadding）
     val edge = playerEdgePadding()
     // 预览态进度行左侧多了播放/暂停钮（40dp 触摸盒，行高因此变高）：底距改成
     // `16dp + vs_30/2 - 40dp/2`（与详情页右下角全屏入口的 bottom 偏移同一式子，见 DetailActivity 注释），
     // 使「暂停钮 / 进度条 / 全屏钮」共用同一水平中心线，且进度条中心线位置与改动前一致。
     val bottomPad = if (state.previewMode) {
-        16.dp + playerDim(R.dimen.vs_30) / 2 - PreviewPlayPauseBox / 2
+        // vs_30 太小时该式子会变负(Compose 的 padding 要求非负)，钳到 0
+        (16.dp + playerDim(R.dimen.vs_30) / 2 - PreviewPlayPauseBox / 2).coerceAtLeast(0.dp)
     } else {
-        16.dp
+        6.dp
     }
     Column(
         modifier
@@ -96,12 +78,23 @@ fun PlayerBottomBar(
             .background(
                 Brush.verticalGradient(
                     0f to Color.Transparent,
-                    1f to Color.Black.copy(alpha = 0.72f),
+                    1f to Color.Black.copy(alpha = 0.5f),
                 )
             )
             .padding(start = edge, end = edge, top = 10.dp, bottom = bottomPad)
     ) {
-        // —— 进度行（时间 - 进度条 - 总时长，横竖屏同款；预览态左侧多一颗播放/暂停钮） ——
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .padding(bottom = 4.dp)
+        ) {
+            if (!state.previewMode) {
+                PlayerTimePill(state = state, modifier = Modifier.align(Alignment.CenterStart))
+                VideoSizePill(state = state, modifier = Modifier.align(Alignment.CenterEnd))
+            }
+        }
+
+        // —— 进度行（预览态 = 播放/暂停钮 + 时间 - 进度条 - 总时长；全屏态 = 进度条整行） ——
         // 预览态右侧预留 44dp 给详情页右下角全屏入口图标，进度行与其融合不重叠
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -110,124 +103,47 @@ fun PlayerBottomBar(
             if (state.previewMode) {
                 PreviewPlayPauseButton(state, actions)
             }
-            // 时间按内容自适应完整显示（照搬哔哩哔哩），进度条 weight 占据剩余宽度
-            // (2026-09-14 BugFix) 拆出只读 seekPreviewOrPosition 的 CurrentTimeText：
-            // 拖拽/步进期间 onSeekPreview 每帧写 seekPreviewPositionMs，若在本体组合期
-            // 读取，整条底栏（含 FlowRow 菜单行）会每帧重组
-            CurrentTimeText(state)
+           
+            if (state.previewMode) {
+                CurrentTimeText(state)
+            }
             PlayerSeekRow(
                 state = state,
                 actions = actions,
-                focus = focus,
-                modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(horizontal = if (state.previewMode) 8.dp else 0.dp),
             )
-            Text(
-                text = stringForTime(state.duration),
-                color = Color.White,
-                fontSize = playerTextSize(R.dimen.ts_20),
-                fontWeight = FontWeight.Medium,
-                maxLines = 1,
-                modifier = Modifier.widthIn(min = 48.dp),
-            )
+            if (state.previewMode) {
+                Text(
+                    text = stringForTime(state.duration),
+                    color = Color.White,
+                    fontSize = playerTextSize(R.dimen.ts_20),
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    modifier = Modifier.widthIn(min = 48.dp),
+                )
+            }
         }
 
-        // —— 菜单行（FlowRow 自动铺开）；预览态不显示，避免抬高进度条 ——
+        // —— 菜单行；预览态不显示，避免抬高进度条 ——
         if (!state.previewMode) {
-        FlowRow(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 8.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            PlayerMenuButton(
-                "重播",
-                onClick = actions::onRetryClicked,
-                // 播放按钮已移除，showBottom 默认焦点改落在首个底栏按钮（替代 mNextBtn.requestFocus()）
-                focusRequester = focus.nextBtn,
+            PlayerActionPill(
+                actions = actions,
+                iconBox = iconBox,
+                modifier = Modifier.padding(top = 6.dp),
             )
-            if (state.landscape) {
-                PlayerMenuButton("刷新", onClick = actions::onRefreshClicked)
-            }
-            if (state.landscape) {
-                PlayerMenuButton(
-                    state.scaleBtnText,
-                    onClick = actions::onScaleClicked,
-                    onLongClick = actions::onScaleLongClicked,
-                )
-            }
-            if (state.landscape && state.liveButtonsVisible) {
-                PlayerMenuButton(
-                    state.speedBtnText,
-                    onClick = actions::onSpeedClicked,
-                    onLongClick = actions::onSpeedLongClicked,
-                )
-            }
-            PlayerMenuButton(
-                state.playerBtnText,
-                onClick = actions::onPlayerClicked,
-                onLongClick = actions::onPlayerLongClicked,
-            )
-            if (state.ijkBtnVisible) {
-                PlayerMenuButton(state.ijkBtnText, onClick = actions::onIjkClicked)
-            }
-            if (state.landscape && state.liveButtonsVisible) {
-                PlayerMenuButton(
-                    state.timeStartText,
-                    onClick = actions::onTimeStartClicked,
-                    onLongClick = actions::onTimeStartLongClicked,
-                )
-                PlayerMenuButton(
-                    state.timeEndText,
-                    onClick = actions::onTimeEndClicked,
-                    onLongClick = actions::onTimeEndLongClicked,
-                )
-            }
-            if (state.castBtnVisible) {
-                PlayerMenuButton("投屏", onClick = actions::onCastClicked)
-            }
-            if (state.landscape) {
-                PlayerMenuButton(
-                    "字幕",
-                    onClick = actions::onSubtitleClicked,
-                    onLongClick = actions::onSubtitleLongClicked,
-                )
-            }
-            if (state.trackBtnVisible) {
-                PlayerMenuButton("音轨", onClick = actions::onAudioTrackClicked)
-            }
-            if (state.trackBtnVisible) {
-                PlayerMenuButton("视轨", onClick = actions::onVideoTrackClicked)
-            }
-            if (state.danmuBtnVisible) {
-                PlayerMenuButton(
-                    "弹幕",
-                    onClick = actions::onDanmuSettingClicked,
-                    onLongClick = actions::onDanmuSettingLongClicked,
-                )
-            }
-            if (state.danmuSearchBtnVisible) {
-                PlayerMenuButton(
-                    "搜弹幕",
-                    onClick = actions::onDanmuSearchClicked,
-                    onLongClick = actions::onDanmuSearchLongClicked,
-                )
-            }
-            if (state.landscapePortraitVisible) {
-                PlayerMenuButton(state.landscapePortraitText, onClick = actions::onLandscapePortraitClicked)
-            }
-        }
         }
 
-        // —— 解析行（旧 parse_root + mGridParseView） ——
-        if (state.showParseRow && state.landscape) {
-            val parseList = remember(state.parseListVersion) { ApiConfig.get().parseBeanList }
+        // —— 解析行（旧 parse_root + mGridParseView）；预览态不显示，与菜单行同规则 ——
+        if (state.showParseRow && !state.previewMode) {
+            val parseList = remember(state.parseListVersion) { ApiConfig.get().parseBeanList.toList() }
             Row(
                 Modifier.padding(top = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    text = "解析",
+                    text = stringResource(R.string.player_menu_parse),
                     color = Color.White,
                     fontSize = playerTextSize(R.dimen.ts_20),
                     maxLines = 1,
@@ -239,7 +155,6 @@ fun PlayerBottomBar(
                         PlayerMenuButton(
                             item.name,
                             onClick = { actions.onParseSelected(index) },
-                            focusRequester = if (index == 0) focus.parseFirst else null,
                             textColor = if (item.isDefault) Color(0xFF02F8E1) else Color.White,
                             textSizeId = R.dimen.ts_20,
                         )
@@ -250,13 +165,143 @@ fun PlayerBottomBar(
     }
 }
 
+/** 覆盖层胶囊底色的不透明度。底栏时间胶囊与手势提示药丸（`PlayerLayers.HintPill`）共用同一值，
+ *  避免两处各写一个数后慢慢漂开（手势提示要与左下角进度胶囊同值）。 */
+internal const val OVERLAY_PILL_ALPHA = 0.2f
 
-/**
- * 进度行左侧当前时间（2026-09-14 BugFix 自 PlayerBottomBar 拆出）：
- * 拖拽/按键步进中显示预览位置，否则显示真实播放位置。
- * seekPreviewPositionMs 为帧级写入（拖拽每帧）、position 为 1Hz 写入（mShowProgress），
- * 单独成 scope 后二者只重组本 Text，不再令整条 PlayerBottomBar 失效。
- */
+private const val PILL_DIVIDER_ALPHA = 0.3f
+
+@Composable
+private fun PlayerActionPill(
+    actions: PlayerActions,
+    iconBox: Dp,
+    modifier: Modifier = Modifier,
+) {
+    val gap = playerDim(R.dimen.vs_8)
+    Row(
+        modifier
+            .fillMaxWidth()
+            .padding(horizontal = gap),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        PlayerPillIconButton(
+            iconRes = R.drawable.player_ic_menu_refresh,
+            label = stringResource(R.string.common_refresh),
+            box = iconBox,
+            onClick = actions::onRefreshClicked,
+            modifier = Modifier.weight(1f),
+        )
+        PlayerPillIconButton(
+            iconRes = R.drawable.ic_detail_cast,
+            label = stringResource(R.string.common_cast),
+            box = iconBox,
+            onClick = actions::onCastClicked,
+            modifier = Modifier.weight(1f),
+        )
+        PlayerPillIconButton(
+            iconRes = R.drawable.player_ic_menu_subtitle,
+            label = stringResource(R.string.player_menu_subtitle),
+            box = iconBox,
+            onClick = actions::onSubtitleClicked,
+            onLongClick = actions::onSubtitleLongClicked,
+            modifier = Modifier.weight(1f),
+        )
+        PlayerPillIconButton(
+            iconRes = R.drawable.player_ic_menu_danmu,
+            label = stringResource(R.string.player_menu_danmu),
+            box = iconBox,
+            onClick = actions::onDanmuSettingClicked,
+            onLongClick = actions::onDanmuSettingLongClicked,
+            modifier = Modifier.weight(1f),
+        )
+        PlayerPillIconButton(
+            iconRes = R.drawable.player_ic_menu_audio,
+            label = stringResource(R.string.player_menu_audio_track),
+            box = iconBox,
+            onClick = actions::onAudioTrackClicked,
+            modifier = Modifier.weight(1f),
+        )
+        PlayerPillIconButton(
+            iconRes = R.drawable.player_ic_menu_video,
+            label = stringResource(R.string.player_menu_video_track),
+            box = iconBox,
+            onClick = actions::onVideoTrackClicked,
+            modifier = Modifier.weight(1f),
+        )
+        PlayerPillDivider(iconBox)
+        PlayerPillIconButton(
+            iconRes = R.drawable.player_ic_menu_episodes,
+            label = stringResource(R.string.detail_episodes),
+            box = iconBox,
+            onClick = actions::onEpisodeClicked,
+            modifier = Modifier.weight(1f),
+        )
+        PlayerPillIconButton(
+            iconRes = R.drawable.player_ic_params,
+            label = stringResource(R.string.player_menu_more),
+            box = iconBox,
+            onClick = actions::onParamsClicked,
+            modifier = Modifier.weight(1f),
+        )
+    }
+}
+
+@Composable
+private fun PlayerPillDivider(iconBox: Dp) {
+    Box(
+        Modifier
+            .padding(horizontal = playerDim(R.dimen.vs_8))
+            .width(1.dp)
+            .height(iconBox * ICON_TO_BOX_RATIO)
+            .background(Color.White.copy(alpha = PILL_DIVIDER_ALPHA), RoundedCornerShape(50)),
+    )
+}
+
+@Composable
+private fun PlayerInfoPill(modifier: Modifier = Modifier, content: @Composable RowScope.() -> Unit) {
+    Row(
+        modifier
+            .background(Color.Black.copy(alpha = OVERLAY_PILL_ALPHA), RoundedCornerShape(50))
+            .padding(
+                horizontal = playerDim(R.dimen.vs_10),
+                vertical = playerDim(R.dimen.vs_5),
+            ),
+        verticalAlignment = Alignment.CenterVertically,
+        content = content,
+    )
+}
+
+@Composable
+private fun PlayerTimePill(state: PlayerUiState, modifier: Modifier = Modifier) {
+    PlayerInfoPill(modifier) { TimeRangeText(state) }
+}
+
+@Composable
+private fun VideoSizePill(state: PlayerUiState, modifier: Modifier = Modifier) {
+    if (state.videoSize.isBlank()) return
+    PlayerInfoPill(modifier) {
+        Text(
+            text = state.videoSize,
+            color = Color.White,
+            fontSize = playerTextSize(R.dimen.ts_20),
+            fontWeight = FontWeight.Medium,
+            maxLines = 1,
+        )
+    }
+}
+
+/** 与 [CurrentTimeText] 同理单独成 scope：拖拽期 seekPreviewPositionMs 每帧写入时只重组本 Text */
+@Composable
+private fun TimeRangeText(state: PlayerUiState) {
+    Text(
+        text = stringForTime(state.seekPreviewOrPosition) + " / " + stringForTime(state.duration),
+        color = Color.White,
+        fontSize = playerTextSize(R.dimen.ts_20),
+        fontWeight = FontWeight.Medium,
+        maxLines = 1,
+    )
+}
+
 @Composable
 private fun CurrentTimeText(state: PlayerUiState, modifier: Modifier = Modifier) {
     Text(
@@ -270,19 +315,9 @@ private fun CurrentTimeText(state: PlayerUiState, modifier: Modifier = Modifier)
     )
 }
 
-
-/**
- * 预览态（竖屏详情页）进度行左侧的播放/暂停钮（2026-09-13 用户要求）：
- * - 触摸盒 40dp、图形 22dp、白色 90% —— 与详情页右下角全屏入口完全同款（该入口 = 40dp 盒 + 9dp padding + 90% 白 tint），
- *   二者分列进度条左右两端且同一水平中心线；左侧边距与全屏入口的右侧边距一致（都取 `playerEdgePadding()`）。
- * - 图标状态判定与中央控制组一致：`BUFFERING` / `BUFFERED` 也算“播放中”——dkplayer 缓冲结束停在
- *   `STATE_BUFFERED` 不回 `STATE_PLAYING`，只判 `STATE_PLAYING` 会让图标反显（实际在播却显示“播放”）。
- */
 @Composable
 private fun PreviewPlayPauseButton(state: PlayerUiState, actions: PlayerActions) {
-    val playing = state.playState == VideoView.STATE_PLAYING ||
-            state.playState == VideoView.STATE_BUFFERING ||
-            state.playState == VideoView.STATE_BUFFERED
+    val playing = state.playbackActive
     Box(
         modifier = Modifier
             .size(PreviewPlayPauseBox)
@@ -295,61 +330,27 @@ private fun PreviewPlayPauseButton(state: PlayerUiState, actions: PlayerActions)
             painter = painterResource(
                 if (playing) R.drawable.player_ic_pause else R.drawable.player_ic_play
             ),
-            contentDescription = if (playing) "暂停" else "播放",
+            contentDescription = stringResource(if (playing) R.string.common_pause else R.string.common_play),
             colorFilter = ColorFilter.tint(Color.White.copy(alpha = 0.9f)),
             modifier = Modifier.size(22.dp),
         )
     }
 }
 
-/**
- * 自绘进度条：视觉照搬 shape_player_control_vod_seek（轨道 #4DFFFFFF / 缓冲 #66FFFFFF /
- * 进度 #FF4081，圆角 2dp）与 CircleThumbDrawable（12dp 白圆 + #FF4081 2dp 描边，激活 16dp）。
- * 交互：触摸拖拽/点按、TV 方向键步进、鼠标滚轮步进（旧 SeekBar 三种方式等价）。
- * 性能（2026-09-14 BugFix）：progress/buffered 在 Canvas 绘制块内读取 state，
- * 拖拽每帧/播放每秒只重绘本进度条，不触发 PlayerSeekRow 重组。
- */
 @Composable
 private fun PlayerSeekRow(
     state: PlayerUiState,
     actions: PlayerActions,
-    focus: PlayerFocusTargets,
     modifier: Modifier,
 ) {
-    val enabled = state.duration > 0
-    var focused by remember { mutableStateOf(false) }
     var draggingLocal by remember { mutableStateOf(false) }
     var dragProgress by remember { mutableStateOf(0f) }
 
-    // thumbActive 随焦点/拖拽起止翻转，低频，组合期读取无妨
-    val thumbActive = focused || draggingLocal || state.dragging
+    // thumbActive 随拖拽起止翻转，低频，组合期读取无妨
+    val thumbActive = draggingLocal || state.dragging
 
     var seekModifier = modifier
         .height(playerDim(R.dimen.vs_30))
-        .onFocusChanged {
-            focused = it.isFocused
-            if (it.isFocused) actions.keepControlsAlive()
-        }
-        .focusProperties {
-            up = if (state.showParseRow && state.landscape) focus.parseFirst else focus.nextBtn
-        }
-        .focusable(enabled = enabled)
-        .onKeyEvent { event ->
-            if (!enabled) return@onKeyEvent false
-            if (event.type == KeyEventType.KeyDown) {
-                when (event.key) {
-                    Key.DirectionLeft -> {
-                        actions.onSeekStep(-1); true
-                    }
-                    Key.DirectionRight -> {
-                        actions.onSeekStep(1); true
-                    }
-                    else -> false
-                }
-            } else {
-                false
-            }
-        }
         .pointerInput(Unit) {
             // 鼠标滚轮步进（旧 onGenericMotionEvent ACTION_SCROLL）
             awaitPointerEventScope {
@@ -412,7 +413,7 @@ private fun PlayerSeekRow(
         }
 
     Canvas(seekModifier) {
-        // (2026-09-14 BugFix) progress/buffered 计算移入绘制块：拖拽期间
+        // progress/buffered 计算移入绘制块：拖拽期间
         // seekPreviewPositionMs 每帧写入、播放期间 position 每秒写入，绘制期读取
         // 只触发本 Canvas 重绘；组合期求值会令 PlayerSeekRow 每帧/每秒重组
         val progress: Float = when {

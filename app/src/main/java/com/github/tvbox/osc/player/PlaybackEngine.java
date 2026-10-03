@@ -12,17 +12,18 @@ import androidx.annotation.Nullable;
 import androidx.appcompat.view.ContextThemeWrapper;
 
 import com.github.tvbox.osc.R;
-import com.github.tvbox.osc.cache.CacheManager;
 import com.github.tvbox.osc.player.usecase.PlayerSwitchUseCase;
-import com.github.tvbox.osc.ui.player.PlayContainer;
-import com.github.tvbox.osc.ui.player.PreloadCoordinator;
+import com.github.tvbox.osc.util.HawkConfig;
+import com.github.tvbox.osc.util.KV;
 import com.github.tvbox.osc.util.LOG;
-import com.github.tvbox.osc.util.MD5;
+import com.github.tvbox.osc.util.PlayerHelper;
+import com.github.tvbox.osc.util.WatchProgressStore;
 
 import org.json.JSONObject;
 
 import java.lang.ref.WeakReference;
 import java.util.HashMap;
+import java.util.List;
 
 import xyz.doikki.videoplayer.player.AbstractPlayer;
 import xyz.doikki.videoplayer.player.ProgressManager;
@@ -33,7 +34,7 @@ import xyz.doikki.videoplayer.player.VideoView;
  *
  * <p>**所有权模型**(照搬 fongmi,但落地为"进程级引擎 + 宿主服务"):播放器实例
  * ({@link MyVideoView} + {@link PlaybackController})由本引擎持有、由 {@link PlaybackService} 托管,
- * 页面({@link PlayContainer})只提供显示宿主与控制器覆盖层 ——
+ * 页面({@code PlayContainer})只提供显示宿主与控制器覆盖层 ——
  * 进入页面 = 把渲染容器(`VideoView.mPlayerContainer`)搬进页面宿主,离开页面 = 摘回引擎。
  * 由此"跨页复用播放器"成立:进出详情页不再重建 ExoPlayer/RenderView
  * (改造前 12 次进出 = 36 个内核实例 / 249 线程,见 MEMORY.md hprof 取证)。
@@ -81,7 +82,7 @@ public final class PlaybackEngine implements PlaybackHostApi {
     private final ProgressManager progressManager = new ProgressManager() {
         @Override
         public void saveProgress(String url, long progress) {
-            CacheManager.save(MD5.string2MD5(url), progress);
+            WatchProgressStore.save(controller.progressOwner(), url, progress, videoView.getDuration());
             if (controller.webPlayUrl() != null && progress > 0) {
                 controller.markPlaybackStarted();
                 activeView().hideTipOnUiThread();
@@ -93,7 +94,7 @@ public final class PlaybackEngine implements PlaybackHostApi {
             return controller.getSavedProgress(url);
         }
     };
-    private WeakReference<PlayContainer> pageRef;
+    private WeakReference<PlaybackPage> pageRef;
     private PlaybackSession session;
     private boolean released;
     /** 直播模式(P4):同一实例被直播页接管期间,点播侧(进度/预载/媒体会话/弹幕)一概不参与 */
@@ -122,8 +123,14 @@ public final class PlaybackEngine implements PlaybackHostApi {
     }
 
     @Nullable
-    public PlayContainer attachedPage() {
+    public PlaybackPage attachedPage() {
         return pageRef == null ? null : pageRef.get();
+    }
+
+    /** 无页面时的视图桥:非页面实现(音乐播放页)的桥按接口委托复用它,只覆写 UI 相关动作 */
+    @NonNull
+    public PlaybackViewBridge headlessBridge() {
+        return headlessView;
     }
 
     // ==================== 挂摘协议(§2.3) ====================
@@ -141,12 +148,29 @@ public final class PlaybackEngine implements PlaybackHostApi {
                 // 尤其 handlePlayStateForMusicSession 会去 updateSession,那会在没有引擎的情况下
                 // 建出一条空通知并持有 wake/wifi 锁,而释放路径已经跑完、没人再来放锁(2026-09-14 审查)
                 if (released) return;
+                // 播放错误落一条盘:本机 ROM 吞 logcat,只有 App 文件日志能取证(白名单已含 echo-player)
+                if (playState == VideoView.STATE_ERROR) {
+                    LOG.i("echo-player error: kernel="
+                            + (videoView.getMediaPlayer() == null ? "null" : videoView.getMediaPlayer().getClass().getSimpleName())
+                            + " pos=" + videoView.getCurrentPosition()
+                            + " started=" + controller.isPlaybackStarted()
+                            + " url=" + controller.webPlayUrl());
+                }
+                // 遮黑帧的揭开与点播/直播无关:直播页共用同一块容器,漏揭就是"有声无画",
+                // 故必须在下面的 liveMode 短路**之前**。纯音频没有画面可露、海报就是它的背景
+                // (只有确认是影视才需要「收黑帧 + 撤封面」的互斥)
+                if (playState == VideoView.STATE_PLAYING) {
+                    if (controller.isConfirmedAudioOnly()) {
+                        videoView.hideVideoFrameCover();
+                    } else {
+                        videoView.showVideoFrame();
+                    }
+                }
                 // 直播模式(P4):直播页有自己的控制层与状态机(自动换源/时移),点播侧的
                 // 预载排期、进度落盘、媒体会话、弹幕启动一概不参与 —— 否则会拿上一部点播的
                 // vod 去更新通知/预载(错内容)或把直播画面当成点播起播
                 if (liveMode) return;
-                if (playState == VideoView.STATE_PLAYING && !released) {
-                    videoView.showVideoFrame();
+                if (playState == VideoView.STATE_PLAYING) {
                     // 纯音频渲染兜底(2026-09-13):URL 预判漏网(无后缀音乐直链)时,轨道信息就绪后补切
                     controller.ensureAudioOnlyRender();
                     // 正片稳定播放 → 延迟评估下一集预载(预载方案第一期)
@@ -194,11 +218,12 @@ public final class PlaybackEngine implements PlaybackHostApi {
         // ① 渲染容器还挂在点播页槽位 → 直播页 Compose 树拿到空壳(无画面);
         // ② 点播音频与直播叠加;③ 点播通知与 wake/wifi 锁残留到直播期间(点通知还会把点播声音叠上来)。
         // ⚠️ detach 必须在 liveMode 置位**之前**(detach 对直播模式直接让路,见其 liveMode 守卫)
-        PlayContainer page = attachedPage();
+        PlaybackPage page = attachedPage();
         if (page != null) detach(page);
         controller.stopMusicSessionForFailedPlayback();
         PlaybackService.forceStopSession(appContext);
         liveMode = true;
+        setLiveFlag(true);
         cancelIdleRelease();
         LOG.i(TAG + " re-enter live state (after vod takeover)");
         session = null;
@@ -224,13 +249,16 @@ public final class PlaybackEngine implements PlaybackHostApi {
         // 点播页面若还在栈里(未销毁):先把渲染容器收回来(否则它仍挂在那个页面的槽位里,
         // 直播页的 Compose 树拿到的只是一张空壳),并清掉对页面 View 的引用。
         // ⚠️ 必须在 liveMode 置位**之前**:detach 对直播模式直接让路(见 detach 的 liveMode 守卫)
-        PlayContainer page = attachedPage();
+        PlaybackPage page = attachedPage();
         if (page != null) detach(page);
         liveMode = true;
+        setLiveFlag(true);
         // 直播接管期间播放器有人用(直播页不是 PlayContainer、不走 attach),取消空闲释放排期
         cancelIdleRelease();
-        // 直播接管这一个播放器:点播一律停(含"确认纯音频"的场景,避免与直播双声)
-        if (videoView.isPlaying()) videoView.pause();
+        // 直播接管这一个播放器:旧内容一律停死(含"确认纯音频"的场景,避免与直播双声)。
+        // 只 pause 不够:退页面后内核本就停在 PAUSED,pause() 是空操作,旧内容会留下被直播页 onResume 的 resume() 恢复出声。
+        // 释放须在摘进度管理器之前 —— 那一刻进度键还是旧内容的,正好把它的观看位置落盘(直播无进度语义)
+        releasePlayer();
         videoView.setProgressManager(null);
         // 边播边缓存是点播特性(直播流是 m3u8 直播片,缓存数据源无意义甚至影响起播):直播期间关掉
         videoView.setExoDiskCacheEnabled(false);
@@ -286,6 +314,10 @@ public final class PlaybackEngine implements PlaybackHostApi {
     private void scheduleIdleRelease() {
         main.removeCallbacks(idleRelease);
         if (released) return;
+        if (PrewarmPolicy.idleReleaseDelayMs(prewarmEnabled(), IDLE_RELEASE_DELAY_MS) == PrewarmPolicy.NO_IDLE_RELEASE) {
+            LOG.i(TAG + " idle release suppressed: kernel prewarm on");
+            return;
+        }
         main.postDelayed(idleRelease, IDLE_RELEASE_DELAY_MS);
     }
 
@@ -304,10 +336,23 @@ public final class PlaybackEngine implements PlaybackHostApi {
         }
     };
 
+    /**
+     * 直播/点播标记(2026-09-15 修复):唯一写入点是**引擎的模式切换**,不再跟直播页的 onCreate/onDestroy 走。
+     *
+     * <p>{@code ApiConfig.proxyLocal()} 取流时读它(决定爬虫路由),{@code ExoPlayer.setDataSource} 也用它
+     * 决定 rtmp 是否补 live=1;而 Activity 的销毁时机与"引擎已切回点播"没有时序关系 —— 直播页还在栈里/
+     * 销毁未完成时,点播起播会读到滞后的直播参数。
+     * 引擎模式切换(enterLive/enterLiveState/exitLiveState/release)严格早于对应播放的起播 ⇒ 读到的值必然正确。
+     */
+    private static void setLiveFlag(boolean live) {
+        KV.put(HawkConfig.PLAYER_IS_LIVE, live);
+    }
+
     /** 只切"人格":还回点播的进度管理器与磁盘缓存标记(不动控制器 —— 调用方自己管) */
     private void exitLiveState() {
         if (released || !liveMode) return;
         liveMode = false;
+        setLiveFlag(false);
         LOG.i(TAG + " exit live mode");
         videoView.setProgressManager(progressManager);
         videoView.setExoDiskCacheEnabled(true);
@@ -323,13 +368,17 @@ public final class PlaybackEngine implements PlaybackHostApi {
     }
 
     /** 页面挂载:搬渲染容器进页面宿主,并把视图桥切到页面(提示/弹幕/字幕/控制器动作都在页面) */
-    public void attach(@NonNull PlayContainer page, @NonNull ViewGroup slot) {
+    public void attach(@NonNull PlaybackPage page) {
         if (released) return;
         // 只切人格:exitLive() 会清控制器,而页面构造期(initView)刚把自己的控制器设上去,
         // 这里清掉会导致返回点播页后失去控制器手势/按键(见 exitLiveState 注释)
         if (liveMode) exitLiveState();
         pageRef = new WeakReference<>(page);
-        videoView.attachContainerTo(slot);
+        // 挂载时页面还不知道要播什么(会话要等详情数据回来),而旧内容若停在 PAUSED,渲染容器一进
+        // 新页面就会带出上一部的最后一帧(media3 在 Surface 重建时重渲染)。先遮黑,起播由状态回调揭开;
+        // 正在播的内容属于"本次接管"(音乐页交接/页面返回),遮了没人来揭,故不动
+        if (!videoView.isPlaying()) videoView.coverVideoFrame();
+        videoView.attachContainerTo(page.renderSlot());
         controller.setViewBridge(page.viewBridge());
         // 有人接手了,撤销空闲释放排期
         cancelIdleRelease();
@@ -346,28 +395,45 @@ public final class PlaybackEngine implements PlaybackHostApi {
      * <p>两个容易漏的点:① 不 release 就没人触发进度落盘 → 必须显式 `saveCurrentProgress()`;
      * ② 在途取流/解析若不停,退出后会在后台把这一集播起来(无声页面却在响)→ `stopPlaybackForPageExit()`。
      */
-    public void detach(@NonNull PlayContainer page) {
+    public void detach(@NonNull PlaybackPage page) {
+        detach(page, false);
+    }
+
+    /**
+     * 把页面交给下一个页面(音乐播放页):摘视图但**不停播、不撤会话**。
+     *
+     * <p>用于"详情页发现是纯音频 → 拉起音乐页"的交接:老页面随后销毁时不能再走 {@link #detach}
+     * (那样会把刚交接的音频停掉),故提前用本方法摘净视图并置空页面引用;若新页面最终没来接管,
+     * 空闲释放(见 {@link #IDLE_RELEASE_DELAY_MS})仍会给实例一个上界。
+     */
+    public void detachForHandover(@NonNull PlaybackPage page) {
+        detach(page, true);
+    }
+
+    private void detach(@NonNull PlaybackPage page, boolean keepPlayback) {
         if (released) return;
         // ⓪ 直播接管期间播放器属于**直播页**:此时被销毁的点播页(它可能只是被系统回收,或用户
         // 从详情跳直播后旧页才走 onDestroy)不得再动播放器 —— 否则会停掉直播流、撤掉直播通知、
         // 并把渲染容器从直播页的 Compose 树里摘走(直播黑屏)。
-        // 直播页自己不走 attach(没有 PlayContainer),所以归属守卫 `cur != page` 拦不住这种情况。
+        // 直播页自己不走 attach(没有 PlaybackPage),所以归属守卫 `cur != page` 拦不住这种情况。
         if (liveMode) return;
         // ① 进度落盘**先于归属判定**(2026-09-14):"快速返回再进入"时新页面可能已经 attach 了引擎,
         // 归属守卫会让下面的收尾整段跳过;若不在这里先存,这一集的观看进度就随着页面销毁丢了
         // (播放器里还是旧内容/旧 progressKey,存下来正是旧集该存的那一份)。
         videoView.saveCurrentProgress();
-        PlayContainer cur = attachedPage();
+        PlaybackPage cur = attachedPage();
         if (cur != null && cur != page) return;
         pageRef = null;
-        // ① 停播(一律,含"确认纯音频"的音乐):退页面即停
-        videoView.pause();
-        // ③ 刚点播放就退出(PREPARING/BUFFERING):pause() 无效,必须停内核,否则页面销毁后自己播起来
-        videoView.stopPlaybackKeepPlayer();
-        // ③ 收在途:撤取流/超时/解析 + 停会话(撤通知、放 wake/wifi 锁)
-        controller.stopPlaybackForPageExit();
-        // 归属守卫可能让 ③ 的停会话被跳过(owner 是页面 vs host 也是页面 —— 通常一致,这里再兜一次)
-        PlaybackService.forceStopSession(appContext);
+        if (!keepPlayback) {
+            // ① 停播(一律,含"确认纯音频"的音乐):退页面即停
+            videoView.pause();
+            // ③ 刚点播放就退出(PREPARING/BUFFERING):pause() 无效,必须停内核,否则页面销毁后自己播起来
+            videoView.stopPlaybackKeepPlayer();
+            // ③ 收在途:撤取流/超时/解析 + 停会话(撤通知、放 wake/wifi 锁)
+            controller.stopPlaybackForPageExit();
+            // 归属守卫可能让 ③ 的停会话被跳过(owner 是页面 vs host 也是页面 —— 通常一致,这里再兜一次)
+            PlaybackService.forceStopSession(appContext);
+        }
         // ④ 摘视图与页面 View 引用(防引擎持有页面)
         videoView.setVideoController(null);
         videoView.setDanmuView(null);
@@ -376,7 +442,7 @@ public final class PlaybackEngine implements PlaybackHostApi {
         // 页面已摘、播放已停,但实例仍留着(跨页复用的收益所在)—— 给它一个释放上界:
         // 到点还没人来取就释放内核(见 IDLE_RELEASE_DELAY_MS)
         scheduleIdleRelease();
-        LOG.i(TAG + " detach page=" + page.hashCode());
+        LOG.i(TAG + (keepPlayback ? " detach for handover page=" : " detach page=") + page.hashCode());
     }
 
     /**
@@ -396,12 +462,79 @@ public final class PlaybackEngine implements PlaybackHostApi {
         controller.clearStartedContent();
     }
 
+    /**
+     * 预热播放内核(建 Exo 实例与渲染视图,不 prepare):开关开启时由启动/回前台/开关确认触发。
+     * 幂等(已有内核直接返回)、异常兜底(失败不影响正常起播)。
+     */
+    public void prewarmKernel() {
+        if (released) return;
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            main.post(this::prewarmKernel);
+            return;
+        }
+        if (videoView.getMediaPlayer() != null) return;
+        try {
+            // 先按全局设置下发解码/渲染/缩放,否则预热实例用的是 VideoView 构造期的默认配置
+            PlayerHelper.updateCfg(videoView, new JSONObject());
+            videoView.prewarmKernel();
+            LOG.i(TAG + " prewarm kernel");
+        } catch (Throwable th) {
+            LOG.e(TAG + " prewarm failed: " + th.getMessage());
+        }
+    }
+
+    /**
+     * 内核预热开关变更:开启 = 取消在途空闲释放并立即预热;关闭 = 不打断在用实例,
+     * 仅补排一次空闲释放(无人持有时)。
+     */
+    public void onPrewarmPreferenceChanged(boolean enabled) {
+        if (released) return;
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            main.post(() -> onPrewarmPreferenceChanged(enabled));
+            return;
+        }
+        if (enabled) {
+            cancelIdleRelease();
+            prewarmKernel();
+            return;
+        }
+        if (PrewarmPolicy.shouldScheduleOnDisable(attachedPage() != null || liveMode)) {
+            scheduleIdleRelease();
+        }
+    }
+
+    private static boolean prewarmEnabled() {
+        return KV.get(HawkConfig.KERNEL_PREWARM, false);
+    }
+
+    /**
+     * 这些片的历史不再保留(单条删除/清空/容量淘汰):播放器里若还留着其中一份,丢掉"已起播内容"归属。
+     * 同片接管只看归属、不看进度记录,不作废就会接着旧位置播、退出时再把旧位置写回记录(删了等于没删)。
+     */
+    public void discardStartedContentOf(@NonNull List<String> owners) {
+        if (released) return;
+        // 归属字段只在主线程读写:历史页的级联跑在 IO 协程上,必须回主线程改,否则可能丢更新
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            main.post(() -> discardStartedContentOf(owners));
+            return;
+        }
+        PlaybackSession current = session;
+        if (current == null || owners.isEmpty()) return;
+        // owner 约定与 WatchProgressStore.ownerOf / PlaybackProgress.key 同构:源|片id
+        String owner = current.sourceKey() + "|" + current.vod().id;
+        if (!owners.contains(owner)) return;
+        LOG.i("echo-progress discard-session owner=" + owner);
+        controller.clearStartedContent();
+    }
+
     /** 释放播放器(宿主服务销毁/任务移除;之后本引擎不可再用) */
     public void release() {
         if (released) return;
         released = true;
+        // 引擎死亡必须复位直播标记(2026-09-15):否则"直播中被释放"会把 true 留给下一个引擎/后续点播
+        setLiveFlag(false);
         LOG.i(TAG + " engine release");
-        PlayContainer page = attachedPage();
+        PlaybackPage page = attachedPage();
         pageRef = null;
         if (page != null) page.onServiceStopped();
         // 桥切回无页面桥:否则已释放的控制器仍指向那个页面,后续迟到的超时消息会把提示/错误弹到已销毁的页面上
@@ -421,7 +554,7 @@ public final class PlaybackEngine implements PlaybackHostApi {
 
     /** 当前生效的视图桥:页面在时用页面桥,否则用无页面桥 */
     private PlaybackViewBridge activeView() {
-        PlayContainer page = attachedPage();
+        PlaybackPage page = attachedPage();
         if (page == null) return headlessView;
         return page.viewBridge();
     }
@@ -611,6 +744,11 @@ public final class PlaybackEngine implements PlaybackHostApi {
         }
 
         @Override
+        public boolean isKernelErrored() {
+            return !released && videoView.isKernelErrored();
+        }
+
+        @Override
         public void releasePlayer() {
             // 与页面桥同一入口:走引擎的意图方法(所有权收口,见 PlaybackEngine.releasePlayer)
             PlaybackEngine.this.releasePlayer();
@@ -681,17 +819,36 @@ public final class PlaybackEngine implements PlaybackHostApi {
         }
 
         @Override
+        public void playM3u8(String url, HashMap<String, String> headers, int gen) {
+            // 无页面桥不做净化(净化用例在页面),与 2 参实现一致直接起播,但同样要过代际
+            if (!controller.isParseResultCurrent(gen)) return;
+            startVideoPlayback(url, headers, false);
+        }
+
+        @Override
         public void startVideoPlayback(String url, HashMap<String, String> headers, boolean forceExoPlayer) {
             if (released) return;
-            // 与页面桥一致的复用/释放防线:stopPlaybackKeepPlayer 可能留下"IDLE + 内核仍在"的组合,
-            // 直接 start() 会走 initPlayer() 新建内核并覆盖旧的(旧的无人 release,见 fork 同名注释)。
-            // 无页面时到达的取流结果窗口窄(退页面即 cancelInFlight),但迟到的嗅探/OkGo 回调仍可能撞上。
-            boolean reusePlayer = !forceExoPlayer && videoView.getMediaPlayer() != null;
-            if (!reusePlayer && videoView.getMediaPlayer() != null) releasePlayer();
+            // 错误态兜底:复用判定放行后内核仍可能报错,坏内核不能接着 reset 用(与页面桥同一口径)
+            if (videoView.isKernelErrored()) {
+                videoView.requireKernelRebuild();
+                LOG.i(TAG + " rebuild errored kernel on start (headless)");
+            }
+            // 与页面桥同一判定;重建标记必须消费,否则复用内核会沿用旧渲染/解码方式(无页面时迟到的取流回调同样能撞上)。
+            boolean kernelPresent = videoView.getMediaPlayer() != null;
+            boolean rebuildKernel = videoView.consumeKernelRebuildRequired();
+            boolean reusePlayer = KernelReusePolicy.decide(kernelPresent, rebuildKernel, forceExoPlayer, true)
+                    == KernelDecision.REUSE;
+            if (!reusePlayer && kernelPresent) releasePlayer();
             // 归属记录须在 releasePlayer 之后(它会 clearStartedContent)
             controller.markContentStarted();
+            // 无页面 = 没有轨道菜单 = 没有用户选择:清键,免得上一部片的键留在内核上(页面起播前会重新下发)
+            videoView.setTrackMemoryKey("");
             videoView.setUrl(url, headers);
             if (reusePlayer) {
+                // 同内容重播才补落盘:换内容那份已由 play() 在键易主前落好,此处落盘会把新内容的起点写进旧键
+                if (controller.isSameStartedContent()) videoView.saveCurrentProgress();
+                // 复用起播走 replay、不经 startPlay ⇒ 续播位置只能在这里灌;缺了它会从上一段内容的位置接着播
+                videoView.skipPositionWhenPlay((int) controller.playTimeoutBasePosition());
                 videoView.replay(false);
             } else {
                 videoView.start();

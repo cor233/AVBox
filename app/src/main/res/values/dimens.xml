@@ -8,10 +8,9 @@
     <dimen name="ts_26">26mm</dimen>
     <dimen name="ts_30">30mm</dimen>
 
-    <dimen name="vs_1">1mm</dimen>
     <dimen name="vs_2">2mm</dimen>
     <dimen name="vs_5">5mm</dimen>
-    <dimen name="vs_6">6mm</dimen>
+    <dimen name="vs_8">8mm</dimen>
     <dimen name="vs_10">10mm</dimen>
     <dimen name="vs_12">12mm</dimen>
     <dimen name="vs_15">15mm</dimen>
@@ -21,6 +20,7 @@
     <dimen name="vs_40">40mm</dimen>
     <dimen name="vs_50">50mm</dimen>
     <dimen name="vs_60">60mm</dimen>
+    <dimen name="vs_70">70mm</dimen>
     <dimen name="vs_120">120mm</dimen>
     <dimen name="vs_140">140mm</dimen>
     <dimen name="vs_200">200mm</dimen>

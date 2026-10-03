@@ -3,7 +3,6 @@ package com.github.catvod.crawler;
 
 import android.util.Log;
 
-import com.github.tvbox.osc.base.App;
 
 import com.github.tvbox.osc.util.FileUtils;
 import com.github.tvbox.osc.util.LOG;
@@ -22,6 +21,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 import dalvik.system.DexClassLoader;
 import okhttp3.Response;
+import com.github.tvbox.osc.util.AppContextHolder;
 
 public class JsLoader {
     private static final ConcurrentHashMap<String, Spider> spiders = new ConcurrentHashMap<>();
@@ -56,10 +56,10 @@ public class JsLoader {
         boolean success = false;
         Class<?> classInit = null;
         try {
-            File cacheDir = new File(App.getInstance().getCacheDir().getAbsolutePath() + "/catvod_jsapi");
+            File cacheDir = new File(AppContextHolder.context().getCacheDir().getAbsolutePath() + "/catvod_jsapi");
             if (!cacheDir.exists())
                 cacheDir.mkdirs();
-            DexClassLoader classLoader = new DexClassLoader(jar, cacheDir.getAbsolutePath(), null, App.getInstance().getClassLoader());
+            DexClassLoader classLoader = new DexClassLoader(jar, cacheDir.getAbsolutePath(), null, AppContextHolder.context().getClassLoader());
             int count = 0;
             do {
                 try {
@@ -79,7 +79,7 @@ public class JsLoader {
                     }
                     Thread.sleep(200);
                 } catch (Throwable th) {
-                    th.printStackTrace();
+                    LOG.e("JsLoader", th);
                 }
                 count++;
             } while (count < 5);
@@ -88,7 +88,7 @@ public class JsLoader {
                 classes.put(key, classInit);
             }
         } catch (Throwable th) {
-            th.printStackTrace();
+            LOG.e("JsLoader", th);
         }
         return success;
     }
@@ -98,13 +98,14 @@ public class JsLoader {
             Log.i("JSLoader", "echo-loadJarInternal cached");
             return classes.get(key);
         }
-        File cache = new File(App.getInstance().getFilesDir().getAbsolutePath() + "/csp/" + key + ".jar");
+        File cache = new File(AppContextHolder.context().getFilesDir().getAbsolutePath() + "/csp/" + key + ".jar");
         try {
             // BugReview #15:csp 父目录只有全局 jar 下载路径会创建;仅含站点级 jar 时目录
             // 不存在,new FileOutputStream(cache) 抛 FileNotFoundException,js 源全变 SpiderNull
             File parent = cache.getParentFile();
             if (parent != null && !parent.exists()) parent.mkdirs();
         } catch (Throwable ignored) {
+            LOG.d("JsLoader", "create csp dir failed");
         }
         if (!md5.isEmpty()) {
             if (cache.exists() && MD5.getFileMd5(cache).equalsIgnoreCase(md5)) {
@@ -133,13 +134,13 @@ public class JsLoader {
                     is.close();
                     os.close();
                 } catch (Exception e) {
-                    e.printStackTrace();
+                    LOG.e("JsLoader", e);
                 }
             }
             loadClassLoader(cache.getAbsolutePath(), key);
             return classes.get(key);
         } catch (Throwable e) {
-            e.printStackTrace();
+            LOG.e("JsLoader", e);
         }
         return null;
     }
@@ -166,7 +167,7 @@ public class JsLoader {
             Log.i("JSLoader", "echo-getSpider load");
             sp = new JsSpider(key, api, classLoader);
             sp.siteKey = key;
-            sp.init(App.getInstance(), ext);
+            sp.init(AppContextHolder.context(), ext);
             spiders.put(key, sp);
             return sp;
         } catch (Throwable th) {
@@ -175,6 +176,7 @@ public class JsLoader {
                 try {
                     sp.destroy();
                 } catch (Throwable ignored) {
+                    LOG.d("JsLoader", "destroy spider failed");
                 }
             }
         }
@@ -188,6 +190,7 @@ public class JsLoader {
                 return proxyFun.proxyLocal(params);
             }
         } catch (Throwable th) {
+            LOG.e("JsLoader", "proxy invoke failed", th);
         }
         return null;
     }

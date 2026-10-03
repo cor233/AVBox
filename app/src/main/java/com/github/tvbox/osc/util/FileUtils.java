@@ -1,11 +1,11 @@
 package com.github.tvbox.osc.util;
 
+import com.github.tvbox.osc.util.LOG;
 import android.os.Environment;
 import android.text.TextUtils;
 import android.util.Base64;
 
 import com.github.catvod.net.OkHttp;
-import com.github.tvbox.osc.base.App;
 import com.github.tvbox.osc.server.ControlManager;
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
@@ -44,7 +44,7 @@ public class FileUtils {
             bos.close();
             return true;
         } catch (IOException e) {
-            e.printStackTrace();
+            LOG.e("FileUtils", e);
         }
         return false;
     }
@@ -58,7 +58,7 @@ public class FileUtils {
             bis.close();
             return data;
         } catch (IOException e) {
-            e.printStackTrace();
+            LOG.e("FileUtils", e);
         }
         return null;
     }
@@ -104,12 +104,13 @@ public class FileUtils {
             }
             in.close();
         } catch (IOException e) {
-            e.printStackTrace();
+            LOG.e("FileUtils", e);
         } finally {
             if (in != null) {
                 try {
                     in.close();
                 } catch (IOException el) {
+                    LOG.d("FileUtils", "close reader failed");
                 }
             }
         }
@@ -126,14 +127,14 @@ public class FileUtils {
     }
 
     public static File getCacheDir() {
-        return App.getInstance().getCacheDir();
+        return AppContextHolder.context().getCacheDir();
     }
 
     public static String getCachePath() {
         return getCacheDir().getAbsolutePath();
     }
     public static String getFilePath() {
-        return App.getInstance().getFilesDir().getAbsolutePath();
+        return AppContextHolder.context().getFilesDir().getAbsolutePath();
     }
 
     public static void cleanDirectory(File dir) {
@@ -144,7 +145,7 @@ public class FileUtils {
             try {
                 deleteFile(one);
             } catch (Exception e) {
-                e.printStackTrace();
+                LOG.e("FileUtils", e);
             }
         }
     }
@@ -210,28 +211,103 @@ public class FileUtils {
         }
     }
 
-    public static void cleanPlayerCache() {
-        String ijkCachePath = getCachePath() + "/ijkcaches/";
-        String thunderCachePath = getCachePath() + "/thunder/";
-        File ijkCacheDir = new File(ijkCachePath);
-        File thunderCacheDir = new File(thunderCachePath);
+    /**
+     * 启动自检:清掉私有目录里"假的原生库",避免爬虫把应用拖进开机必崩的死循环(2026-09-21)。
+     *
+     * <p>实测:第三方爬虫在静态初始化里从云存储下载 {@code libwexproxy.so},远端对象已删除时 CDN 返回
+     * 313 字节 XML 报错,爬虫把报错原文当 .so 落盘再 {@code System.load} ⇒ {@code bad ELF magic}。
+     * 坏文件留在原地 ⇒ 每次冷启动都崩一次,用户连换源都进不去;而那段初始化跑在爬虫自己的线程上,
+     * 接不住异常,只能在**装载之前**清掉。
+     *
+     * <p>判据只认"ELF 魔数不符"(合法库必以 {@code 0x7F 'E' 'L' 'F'} 开头),名字只认 {@code *.so}
+     * 与爬虫临时名 {@code .lib*};**.wexstring 之类的非库资源不碰**,也绝不按大小/时间去猜。
+     * 扫描范围 = 私有 files 目录树,失败不抛。
+     *
+     * @return 删掉的坏文件个数
+     */
+    public static int repairBogusNativeLibs() {
         try {
-            if (ijkCacheDir.exists()) cleanDirectory(ijkCacheDir);
-        } catch (Exception e) {
-            e.printStackTrace();
+            return repairBogusNativeLibs(new File(getFilePath()));
+        } catch (Throwable e) {
+            LOG.i("native-lib-repair failed: " + e.getMessage());
+            return 0;
         }
+    }
+
+    /** 扫描指定目录树并清掉假原生库,返回删除个数(公开重载是为了能在临时目录上单测) */
+    public static int repairBogusNativeLibs(File root) {
+        try {
+            return repairBogusNativeLibs(root, 0);
+        } catch (Throwable e) {
+            LOG.i("native-lib-repair failed: " + e.getMessage());
+            return 0;
+        }
+    }
+
+    /** ELF 魔数:0x7F 后跟 ASCII 的 "ELF" */
+    private static final byte[] ELF_MAGIC = {0x7F, 'E', 'L', 'F'};
+
+    /** 目录深度上限:爬虫目录层级很浅(实测 1 层),限制深度避免在大目录上白跑 */
+    private static final int REPAIR_MAX_DEPTH = 3;
+
+    private static int repairBogusNativeLibs(File dir, int depth) {
+        if (dir == null || depth > REPAIR_MAX_DEPTH) return 0;
+        File[] files = dir.listFiles();
+        if (files == null) return 0;
+        int repaired = 0;
+        for (File file : files) {
+            if (file.isDirectory()) {
+                repaired += repairBogusNativeLibs(file, depth + 1);
+                continue;
+            }
+            if (!looksLikeNativeLib(file.getName())) continue;
+            if (hasElfMagic(file)) continue;
+            // 大小要在删之前取:删完 length() 恒为 0(实测这个值就是 313,直接指向 CDN 报错页)
+            long size = file.length();
+            deleteSingle(file);
+            if (!file.exists()) {
+                repaired++;
+                LOG.i("native-lib-repair removed bogus " + file.getAbsolutePath() + " size=" + size);
+            }
+        }
+        return repaired;
+    }
+
+    /** 名字像原生库才检查:{@code *.so} 或爬虫的临时名 {@code .lib*} */
+    private static boolean looksLikeNativeLib(String name) {
+        if (name == null || name.isEmpty()) return false;
+        String lower = name.toLowerCase();
+        return lower.endsWith(".so") || lower.startsWith(".lib");
+    }
+
+    /** 读前 4 字节比对 ELF 魔数;读不到(不存在/无权限)一律当作"不是合法库"留给调用方决定 */
+    private static boolean hasElfMagic(File file) {
+        try (FileInputStream in = new FileInputStream(file)) {
+            byte[] magic = new byte[ELF_MAGIC.length];
+            if (in.read(magic) != ELF_MAGIC.length) return false;
+            for (int i = 0; i < ELF_MAGIC.length; i++) {
+                if (magic[i] != ELF_MAGIC[i]) return false;
+            }
+            return true;
+        } catch (Throwable e) {
+            return false;
+        }
+    }
+
+    public static void cleanPlayerCache() {
+        String thunderCachePath = getCachePath() + "/thunder/";
+        File thunderCacheDir = new File(thunderCachePath);
         try {
             if (thunderCacheDir.exists()) cleanDirectory(thunderCacheDir);
         } catch (Exception e) {
-            e.printStackTrace();
+            LOG.e("FileUtils", e);
         }
     }
 
     /**
-     * 外置缓存中属于**用户数据**、清理时必须保留的一级目录:config/ =
-     * 配置管理页「从本地选择」经 SAF 导入的接口配置(clan:// 地址直接指向该文件),
-     * 删掉等于把用户的订阅源弄丢。⚠️ 系统设置里的「清除缓存」会连同它一起删,属既有设计隐患
-     * (用户数据本不该放在 cacheDir),此处只保证应用内入口不误删。
+     * 外置缓存里属于**用户数据**、清理时必须保留的一级目录:config/ = 老的本地源配置副本
+     * (2026-09-16 起新副本改放外置 files,见 {@link #getExternalFilesPath()};clan:// 地址直接指向该文件,
+     * 删掉等于把订阅源弄丢)。⚠️ 系统「清除缓存」仍会删它(历史遗留:用户数据本不该放在 cacheDir)。
      */
     private static final String EXTERNAL_CACHE_KEEP_DIR = "config";
 
@@ -243,7 +319,7 @@ public class FileUtils {
      */
     public static long getCacheSize() {
         long size = directorySize(getCacheDir(), null);
-        File externalCacheDir = App.getInstance().getExternalCacheDir();
+        File externalCacheDir = AppContextHolder.context().getExternalCacheDir();
         if (externalCacheDir != null && !externalCacheDir.getAbsolutePath().equals(getCachePath())) {
             size += directorySize(externalCacheDir, EXTERNAL_CACHE_KEEP_DIR);
         }
@@ -298,12 +374,12 @@ public class FileUtils {
                 try {
                     deleteFileTree(one);
                 } catch (Exception e) {
-                    e.printStackTrace();
+                    LOG.e("FileUtils", e);
                 }
             }
         }
         // ② 外部缓存:逐项强删,跳过 config(用户订阅源数据)
-        File externalCacheDir = App.getInstance().getExternalCacheDir();
+        File externalCacheDir = AppContextHolder.context().getExternalCacheDir();
         if (externalCacheDir == null) return;
         File[] files = externalCacheDir.listFiles();
         if (files == null) return;
@@ -312,7 +388,7 @@ public class FileUtils {
             try {
                 deleteFileTree(one);
             } catch (Exception e) {
-                e.printStackTrace();
+                LOG.e("FileUtils", e);
             }
         }
     }
@@ -334,7 +410,7 @@ public class FileUtils {
             // purge-incomplete 逐次递减(10→7→3→done),需多次启动才清干净
             deleteFileTree(exoDir);
         } catch (Exception e) {
-            e.printStackTrace();
+            LOG.e("FileUtils", e);
         }
         File[] remaining = exoDir.exists() ? exoDir.listFiles() : null;
         if (remaining == null || remaining.length == 0) {
@@ -435,7 +511,7 @@ public class FileUtils {
             fos.flush();
             fos.close();
         } catch (Throwable th) {
-            th.printStackTrace();
+            LOG.e("FileUtils", th);
         }
     }
 
@@ -450,8 +526,8 @@ public class FileUtils {
         try {
             if (name.contains("gbk.js")) {
                 name = "gbk.js";
-            } else if (name.contains("模板.js")) {
-                name = "模板.js";
+            } else if (name.contains("模板.js")) { // i18n: keep(R4:模板.js 文件名约定)
+                name = "模板.js"; // i18n: keep(R4:模板.js 文件名约定)
             } else if (name.contains("cat.js")) {
                 name = "cat.js";
             }
@@ -484,7 +560,7 @@ public class FileUtils {
                 rel=get("http://" + substring.substring(0, indexOf) + "/file/" + substring.substring(indexOf + 1));
             }
         } catch (Exception e) {
-            e.printStackTrace();
+            LOG.e("FileUtils", e);
         }
         return rel;
     }
@@ -498,7 +574,7 @@ public class FileUtils {
         if (files == null) {
             LOG.i("echo-读取AssetsList");
             try {
-                String[] list = App.getInstance().getAssets().list(dir);
+                String[] list = AppContextHolder.context().getAssets().list(dir);
                 files = new HashSet<>(Arrays.asList(list));
             } catch (IOException e) {
                 files = Collections.emptySet();
@@ -511,12 +587,12 @@ public class FileUtils {
 
     public static String getAsOpen(String name) {
         try {
-            InputStream is = App.getInstance().getAssets().open(name);
+            InputStream is = AppContextHolder.context().getAssets().open(name);
             byte[] data = new byte[is.available()];
             is.read(data);
             return new String(data, "UTF-8");
         } catch (Exception e) {
-            e.printStackTrace();
+            LOG.e("FileUtils", e);
         }
         return "";
     }
@@ -548,7 +624,7 @@ public class FileUtils {
             jSONObject.put("data", data);
             writeSimple(jSONObject.toString().getBytes(), open(name));
         } catch (Exception e) {
-            e.printStackTrace();
+            LOG.e("FileUtils", e);
         }
     }
 
@@ -556,7 +632,7 @@ public class FileUtils {
         try {
             writeSimple(byteMerger("//DRPY".getBytes(), Base64.encode(data, Base64.URL_SAFE)), open("B_" + name));
         } catch (Exception e) {
-            e.printStackTrace();
+            LOG.e("FileUtils", e);
         }
     }
 
@@ -583,10 +659,22 @@ public class FileUtils {
         return new File(getExternalCachePath() + "/qjscache_" + str + ".js");
     }
     public static String getExternalCachePath() {
-        File externalCacheDir = App.getInstance().getExternalCacheDir();
+        File externalCacheDir = AppContextHolder.context().getExternalCacheDir();
         if (externalCacheDir == null){
             return getCachePath();
         }
         return externalCacheDir.getAbsolutePath();
+    }
+
+    /**
+     * 外置私有 files 目录:本地源配置副本等用户数据的落点(2026-09-16 起由外置 cache 迁来,避免被
+     * 系统「清除缓存」删掉后只能静默回落到 filesDir 旧快照);外置不可用时回落内部 files 目录。
+     */
+    public static String getExternalFilesPath() {
+        File externalFilesDir = AppContextHolder.context().getExternalFilesDir(null);
+        if (externalFilesDir == null) {
+            return getFilePath();
+        }
+        return externalFilesDir.getAbsolutePath();
     }
 }

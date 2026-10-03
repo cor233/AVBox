@@ -2,20 +2,20 @@ package com.github.tvbox.osc.ui.activity
 
 import android.content.Context
 import android.content.Intent
-import androidx.activity.enableEdgeToEdge
+import android.net.Uri
+import com.github.tvbox.osc.ui.theme.enableTransparentEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.platform.ComposeView
 import com.github.tvbox.osc.R
 import com.github.tvbox.osc.base.BaseActivity
+import com.github.tvbox.osc.ui.components.SheetHostScaffold
 import com.github.tvbox.osc.ui.page.ConfigManageScreen
 import com.github.tvbox.osc.ui.theme.AVBoxTheme
+import com.github.tvbox.osc.util.PermissionHelper
 import com.github.tvbox.osc.util.handleLocalConfigResult
+import com.github.tvbox.osc.util.handleLocalSourceTreeResult
 import com.github.tvbox.osc.util.startLocalConfig
 
-/**
- * 配置管理页(2026-09-11):设置 tab →「配置管理」进入,管理订阅源(添加 / 开关切换 / 长按删除)。
- * 添加订阅 dialog 的「从本地选择」走系统 SAF(OpenDocument),结果回填链接输入框。
- */
 class ConfigManageActivity : BaseActivity() {
 
     companion object {
@@ -24,15 +24,37 @@ class ConfigManageActivity : BaseActivity() {
         }
     }
 
-    /** 系统文件选择器(SAF;2026-09-11 替代自绘 LocalFileActivity) */
+    /** 导入读盘在后台跑,收尾(权限页 / 目录选择器)由回调触发 */
     private val localConfigLauncher =
         registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-            if (uri != null) handleLocalConfigResult(this, uri)
+            if (uri != null) {
+                handleLocalConfigResult(this, uri) { needTree -> if (needTree) settleUnreachableSource(uri) }
+            }
         }
 
-    /** Compose 入口调用:选择本地配置文件,结果经 onResult(clan:// 接口地址)回调 */
+    private val sourceTreeLauncher =
+        registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+            handleLocalSourceTreeResult(this, uri)
+        }
+
+    /** 不预检存储权限:能不能直引由"应用此刻是否真读得到"决定,预检会让读得到的设备白跳一次设置页 */
     fun launchLocalConfig(onResult: (api: String) -> Unit) {
         startLocalConfig(localConfigLauncher) { api -> onResult(api) }
+    }
+
+    /** 复制后还缺同目录引用:先争「所有文件访问」(拿到多半直接改成直引),拿不到再要目录授权;地址已可用,取消也照样完成导入 */
+    private fun settleUnreachableSource(uri: Uri) {
+        if (PermissionHelper.isStorageGranted(this)) {
+            sourceTreeLauncher.launch(null)
+            return
+        }
+        PermissionHelper.requestStorage(this) { granted, _ ->
+            if (granted.isNullOrEmpty()) {
+                sourceTreeLauncher.launch(null)
+            } else {
+                handleLocalConfigResult(this, uri) { needTree -> if (needTree) sourceTreeLauncher.launch(null) }
+            }
+        }
     }
 
     override fun getLayoutResID(): Int = R.layout.activity_main
@@ -40,14 +62,16 @@ class ConfigManageActivity : BaseActivity() {
     override fun shouldRefreshAutoSize(): Boolean = true
 
     override fun hideSysBar() {
-        // 手机端保留系统栏(§3)
     }
 
     override fun init() {
-        enableEdgeToEdge()
+        enableTransparentEdgeToEdge()
         findViewById<ComposeView>(R.id.compose_view).setContent {
             AVBoxTheme {
-                ConfigManageScreen(onNavigateBack = { finish() })
+                // 独立 Activity 页面:套窗口根槽位,弹层无论写在哪都能全屏弹出(见 SheetHostScaffold)
+                SheetHostScaffold {
+                    ConfigManageScreen(onNavigateBack = { finish() })
+                }
             }
         }
     }

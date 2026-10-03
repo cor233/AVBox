@@ -18,15 +18,12 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import com.github.tvbox.osc.R
 import com.github.tvbox.osc.bean.MovieSort
+import com.github.tvbox.osc.ui.theme.filterChipColors
 
-/**
- * 分类筛选 bottom sheet(§4.1 类型/年份/地区;每组单选胶囊,清除/确定整组生效)。
- * 2026-09-09 由 HomePage 私有实现移出,供栏目二级页(PartitionListActivity)复用。
- * 2026-09-13 清除/确定改走「带动画关闭」:先回调 onConfirm 再滑出,
- * 调用方 onConfirm 里不要再自己关闭 sheet(直接置 false 会跳过滑出动画)。
- */
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun FilterSheet(
@@ -37,9 +34,8 @@ fun FilterSheet(
     var selection by remember(sort.id) { mutableStateOf(sort.filterSelect.toMap()) }
     AVBoxBottomSheet(
         onDismissRequest = onDismiss,
-        title = "筛选 · ${sort.name ?: ""}",
+        title = stringResource(R.string.filter_title, sort.name ?: ""),
     ) {
-        // 此处读取发生在 SheetOverlay 的 provider 作用域内;防抖防滑出窗口内双触发 onConfirm
         val dismissAnimated = LocalSheetDismiss.current
         var accepted by remember { mutableStateOf(false) }
         Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
@@ -67,6 +63,7 @@ fun FilterSheet(
                             },
                             label = { Text(valueName) },
                             shape = RoundedCornerShape(18.dp),
+                            colors = MaterialTheme.colorScheme.filterChipColors(),
                         )
                     }
                 }
@@ -84,14 +81,14 @@ fun FilterSheet(
                         onConfirm(emptyMap())
                         dismissAnimated()
                     }
-                }) { Text("清除") }
+                }) { Text(stringResource(R.string.filter_clear)) }
                 TextButton(onClick = {
                     if (!accepted) {
                         accepted = true
                         onConfirm(selection)
                         dismissAnimated()
                     }
-                }) { Text("确定") }
+                }) { Text(stringResource(R.string.common_confirm)) }
             }
         }
     }

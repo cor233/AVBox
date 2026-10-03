@@ -6,7 +6,6 @@ import android.text.TextUtils;
 import android.util.Log;
 
 import com.github.catvod.net.OkHttp;
-import com.github.tvbox.osc.base.App;
 import com.github.tvbox.osc.server.ControlManager;
 import com.github.tvbox.osc.server.RemoteServer;
 import com.github.tvbox.osc.util.FileUtils;
@@ -27,6 +26,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 import dalvik.system.DexClassLoader;
 import okhttp3.Response;
+import com.github.tvbox.osc.util.AppContextHolder;
 
 public class JarLoader {
 
@@ -41,7 +41,6 @@ public class JarLoader {
     private final ConcurrentHashMap<String, Object> locks = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, String> siteJarKeys = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, String> aliases = new ConcurrentHashMap<>();
-    private final ProtectedInitJar protectedInitJar = new ProtectedInitJar();
     private volatile String recent = MAIN_KEY;
 
     public boolean load(String cache) {
@@ -67,6 +66,7 @@ public class JarLoader {
             try {
                 spider.destroy();
             } catch (Throwable ignored) {
+                LOG.d("JarLoader", "destroy spider failed");
             }
         }
         loaders.clear();
@@ -87,11 +87,8 @@ public class JarLoader {
         try {
             file.setReadOnly();
             String cachePath = jarDir().getAbsolutePath();
-            DexClassLoader loader = new DexClassLoader(file.getAbsolutePath(), cachePath, cachePath, App.getInstance().getClassLoader());
-            if (!invokeInit(loader, file.getAbsolutePath())) {
-                LOG.i("echo--jar-load error key=" + key + ", init returned false");
-                return false;
-            }
+            DexClassLoader loader = new DexClassLoader(file.getAbsolutePath(), cachePath, cachePath, AppContextHolder.context().getClassLoader());
+            invokeInit(loader);
             invokeProxy(key, loader);
             invokeDanmaku(key, loader);
             injectProxyPort(loader);
@@ -100,122 +97,19 @@ public class JarLoader {
             return true;
         } catch (Throwable e) {
             LOG.i("echo--jar-load error key=" + key + ", msg=" + e.getClass().getSimpleName() + ":" + e.getMessage());
-            e.printStackTrace();
+            LOG.e("JarLoader", e);
             return false;
         }
     }
 
-    private boolean invokeInit(DexClassLoader loader, String jar) {
-        boolean riskyJar = false;
+    // init 异常不阻塞加载:是否放行由 jar 自己的闸门决定,宿主侧不做识别
+    private void invokeInit(DexClassLoader loader) {
         try {
             Class<?> clz = loader.loadClass("com.github.catvod.spider.Init");
-            riskyJar = protectedInitJar.check(jar);
-            if (riskyJar) {
-                LOG.i("echo--jar-initProtectedJar file=" + jar);
-                if (protectedInitJar.hasDexNative(jar) && protectedInitJar.init(clz)) {
-                    return true;
-                }
-
-                // 2026-09-14 二轮(反汇编 + 离线解密实证):该 jar 的 Init.init 开头就是包名白名单
-                // 闸门 —— getApplicationInfo(getPackageName()) -> getApplicationLabel,再用内置
-                // AES 密文("XMjUpOPJ...",key/iv 由 Init.short[1664] 运行时解出)解出逗号分隔的包名
-                // 表(共 50 个:com.fongmi.android.tv、com.github.tvbox.osc(MBox)、com.hisense... 等,
-                // **不含本包名 com.github.avbox.osc**);未命中即提示"包名不匹配,当前包名: xxx"
-                // 并在 5 秒后 Process.killProcess。所以本应用无法通过闸门,伪装包名也只会撞上
-                // Android 11+ 包可见性(NameNotFoundException) —— 伪装这条路已废弃。
-                //
-                // 闸门之后 init 真正做、且其它站点依赖的副作用只有 saveConfig():
-                // 往 filesDir/Pizazz/config.json 写入内置默认配置(437 字节 JSON,19 个键:
-                // quarkQuality/quarkThread/proxyMode/pansouUrl/panView/aliThread/xunleiThread...)。
-                // 配置中心(csp_Config)每个分类都要读这些键:
-                //   new JsonParser().parse(读config.json).getAsJsonObject().get("quarkQuality").getAsString()
-                // —— 键缺失 = NPE -> catch(Exception) -> return "" -> 分类空白"暂无内容";
-                // 只有"光鸭"分类不读 config.json,所以它是唯一出卡片的分类(用户截图实证)。
-                // 结论:绕过闸门,只补做 saveConfig,永不进入 killProcess 分支。
-                boolean bound = bindInitContext(clz, App.getInstance());
-                boolean saved = invokeSaveConfig(clz);
-                ensureInitConfig();
-                LOG.i("echo--jar-skip Init.init(whitelist-gated) contextBound=" + bound
-                        + ", saveConfig=" + saved + ", file=" + jar);
-                return true;
-            }
             Method method = clz.getMethod("init", Context.class);
-            method.invoke(null, App.getInstance());
-            return true;
+            method.invoke(null, AppContextHolder.context());
         } catch (Throwable e) {
-            e.printStackTrace();
-        }
-        return !riskyJar;
-    }
-
-    private boolean bindInitContext(Class<?> clz, Context hostContext) {
-        boolean bound = false;
-        try {
-            Object instance = null;
-            try {
-                instance = clz.getMethod("get").invoke(null);
-            } catch (Throwable ignored) {
-            }
-            Context app = hostContext;
-            for (java.lang.reflect.Field field : clz.getDeclaredFields()) {
-                if (!Context.class.isAssignableFrom(field.getType())) continue;
-                field.setAccessible(true);
-                if (java.lang.reflect.Modifier.isStatic(field.getModifiers())) {
-                    if (field.get(null) != null) continue;
-                    field.set(null, app);
-                    bound = true;
-                } else if (instance != null) {
-                    if (field.get(instance) != null) continue;
-                    field.set(instance, app);
-                    bound = true;
-                }
-            }
-        } catch (Throwable e) {
-            LOG.i("echo--jar-bindInitContext error " + e.getClass().getSimpleName() + ":" + e.getMessage());
-        }
-        return bound;
-    }
-
-    /**
-     * 2026-09-14 二轮(实证):jar 的 Init.saveConfig() 位于包名闸门之后,但本身与闸门无关,
-     * 可反射单独调用。它把内置默认配置合并进 filesDir/Pizazz/config.json(已存在的键保留,
-     * 缺失的键补齐,并强制刷新 version)。网盘"配置·中心"各分类(读 quarkQuality /
-     * quarkThread / proxyMode / pansouUrl / panView 等)完全依赖这份默认值,否则
-     * JsonObject.get(key) 返回 null,getAsString() 抛 NPE,分类内容被 catch 成空字符串。
-     */
-    private boolean invokeSaveConfig(Class<?> clz) {
-        try {
-            Method method = clz.getDeclaredMethod("saveConfig");
-            method.setAccessible(true);
-            method.invoke(null);
-            return true;
-        } catch (Throwable e) {
-            LOG.i("echo--jar-saveConfig error " + e.getClass().getSimpleName() + ":" + e.getMessage());
-            return false;
-        }
-    }
-
-    /**
-     * 2026-09-14:Init.saveConfig 本该生成的 filesDir/config.json 缺失时,依赖它的站点
-     * (豆瓣)homeContent 开头 new JSONObject(读文件) 直接 syntaxError(真机堆栈实证)。
-     * 该 JSON 的键均经 optString 带默认值(homePage 等),写 "{}" 即可通过;文件已存在则
-     * 不动(保留后续 init/saveConfig 或用户数据的真实内容)。
-     */
-    private void ensureInitConfig() {
-        try {
-            // jar 的 merge.m.k.d(name) 实际路径 = filesDir/Pizazz/<name>(字节码反汇编实证),
-            // 豆瓣 homeContent 读的就是 filesDir/Pizazz/config.json。
-            java.io.File dir = new java.io.File(App.getInstance().getFilesDir(), "Pizazz");
-            if (!dir.exists()) dir.mkdirs();
-            java.io.File f = new java.io.File(dir, "config.json");
-            if (!f.exists()) {
-                java.io.FileOutputStream out = new java.io.FileOutputStream(f);
-                out.write(new byte[]{'{', '}'});
-                out.close();
-                LOG.i("echo--jar-init config.json created");
-            }
-        } catch (Throwable e) {
-            LOG.i("echo--jar-init config.json error " + e.getClass().getSimpleName() + ":" + e.getMessage());
+            LOG.e("JarLoader", e);
         }
     }
 
@@ -225,7 +119,7 @@ public class JarLoader {
             Method method = clz.getMethod("proxy", Map.class);
             proxyMethods.put(key, method);
         } catch (Throwable e) {
-            e.printStackTrace();
+            LOG.e("echo-proxy-jar: register fail key=" + key + " | " + e);
         }
     }
 
@@ -235,12 +129,15 @@ public class JarLoader {
             try {
                 danmuClickMethods.put(key, clz.getMethod("onClick", String.class, String.class));
             } catch (Throwable ignored) {
+                LOG.d("JarLoader", "danmaku onClick method not found");
             }
             try {
                 danmuLongClickMethods.put(key, clz.getMethod("onLongClick", String.class, String.class));
             } catch (Throwable ignored) {
+                LOG.d("JarLoader", "danmaku onLongClick method not found");
             }
         } catch (Throwable ignored) {
+            LOG.d("JarLoader", "danmaku class not found in jar");
         }
     }
 
@@ -285,7 +182,7 @@ public class JarLoader {
             parseJar(key, jar);
             return loaders.get(key);
         } catch (Throwable e) {
-            e.printStackTrace();
+            LOG.e("JarLoader", e);
             return null;
         }
     }
@@ -322,13 +219,13 @@ public class JarLoader {
                 Spider spider = (Spider) loader.loadClass("com.github.catvod.spider." + className(api)).newInstance();
                 spider.siteKey = key;
                 spider.initApi(new SpiderApi());
-                spider.init(App.getInstance(), ext);
+                spider.init(AppContextHolder.context(), ext);
                 spiders.put(spKey, spider);
                 Log.i(TAG, "getSpider success key=" + spKey);
                 return spider;
             } catch (Throwable e) {
                 Log.i(TAG, "getSpider error key=" + spKey + ", msg=" + e.getMessage());
-                e.printStackTrace();
+                LOG.e("JarLoader", e);
                 return new SpiderNull();
             }
         }
@@ -342,7 +239,7 @@ public class JarLoader {
             if (method == null) return;
             method.invoke(null, name, episode);
         } catch (Throwable e) {
-            e.printStackTrace();
+            LOG.e("JarLoader", e);
         }
     }
 
@@ -356,7 +253,7 @@ public class JarLoader {
             Method method = clz.getMethod("parse", LinkedHashMap.class, String.class);
             return (JSONObject) method.invoke(null, jxs, url);
         } catch (Throwable e) {
-            e.printStackTrace();
+            LOG.e("JarLoader", e);
             return null;
         }
     }
@@ -367,7 +264,7 @@ public class JarLoader {
             Method method = clz.getMethod("parse", LinkedHashMap.class, String.class, String.class, String.class);
             return (JSONObject) method.invoke(null, jxs, name, flag, url);
         } catch (Throwable e) {
-            e.printStackTrace();
+            LOG.e("JarLoader", e);
             return null;
         }
     }
@@ -385,14 +282,35 @@ public class JarLoader {
             result = proxyInvoke(entry.getValue(), params);
             if (result != null) return result;
         }
+        LOG.e("echo-proxy-jar: no result, siteKey=" + siteKey + " recent=" + recent + " jars=" + proxyMethods.keySet());
         return null;
     }
 
     private Object[] proxyInvoke(Method method, Map<String, String> params) {
+        if (method == null) return null;
         try {
-            return method == null ? null : (Object[]) method.invoke(null, params);
+            // jar 会把残余 params 当 HTTP header 透传给直链请求;siteKey 是本端路由专用参数
+            // (jar 自身不读), 中文值(如"虎斑")会被 okhttp 以 Unexpected char 拒绝并冒泡成 500
+            Map<String, String> args = params == null ? null : new HashMap<>(params);
+            if (args != null) args.remove("siteKey");
+            return (Object[]) method.invoke(null, args);
         } catch (Throwable e) {
-            e.printStackTrace();
+            Throwable cause = e.getCause() != null ? e.getCause() : e;
+            StringBuilder bad = new StringBuilder();
+            if (params != null) {
+                for (Map.Entry<String, String> entry : params.entrySet()) {
+                    String v = entry.getValue();
+                    if (v == null) continue;
+                    for (int i = 0; i < v.length(); i++) {
+                        if (v.charAt(i) > 0x7f) {
+                            if (bad.length() > 0) bad.append(',');
+                            bad.append(entry.getKey());
+                            break;
+                        }
+                    }
+                }
+            }
+            LOG.e("echo-proxy-jar: invoke error | " + cause + " | nonAsciiKeys=" + bad);
             return null;
         }
     }
@@ -410,6 +328,7 @@ public class JarLoader {
             try {
                 return loader.loadClass(name);
             } catch (ClassNotFoundException ignored) {
+                LOG.d("JarLoader", "class not in cached loader: " + name);
             }
         }
         loader = loaders.get(MAIN_KEY);
@@ -433,7 +352,7 @@ public class JarLoader {
             }
             os.flush();
         } catch (Throwable e) {
-            e.printStackTrace();
+            LOG.e("JarLoader", e);
         } finally {
             close(is);
             close(os);
@@ -446,7 +365,7 @@ public class JarLoader {
         FileOutputStream os = null;
         try {
             String path = url.replace("assets://", "").replace("assets/", "");
-            is = App.getInstance().getAssets().open(path);
+            is = AppContextHolder.context().getAssets().open(path);
             os = new FileOutputStream(create(file));
             byte[] buffer = new byte[16384];
             int length;
@@ -455,7 +374,7 @@ public class JarLoader {
             }
             os.flush();
         } catch (Throwable e) {
-            e.printStackTrace();
+            LOG.e("JarLoader", e);
         } finally {
             close(is);
             close(os);
@@ -474,7 +393,7 @@ public class JarLoader {
     }
 
     private File jarDir() {
-        File dir = new File(App.getInstance().getCacheDir(), "jar");
+        File dir = new File(AppContextHolder.context().getCacheDir(), "jar");
         if (!dir.exists()) dir.mkdirs();
         return dir;
     }
@@ -536,6 +455,7 @@ public class JarLoader {
             Method set = proxy.getMethod("set", int.class);
             set.invoke(null, getServerPort());
         } catch (Throwable ignored) {
+            LOG.d("JarLoader", "inject proxy port into jar failed");
         }
     }
 
@@ -547,6 +467,7 @@ public class JarLoader {
                 return Integer.parseInt(baseUrl.substring(baseUrl.lastIndexOf(":") + 1));
             }
         } catch (Throwable ignored) {
+            LOG.d("JarLoader", "parse server port failed, use RemoteServer.serverPort");
         }
         return RemoteServer.serverPort;
     }
@@ -555,6 +476,7 @@ public class JarLoader {
         try {
             if (closeable != null) closeable.close();
         } catch (Throwable ignored) {
+            LOG.d("JarLoader", "close failed");
         }
     }
 }

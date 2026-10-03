@@ -1,8 +1,11 @@
 package com.github.tvbox.osc.base;
 
+import com.github.tvbox.osc.util.LOG;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.ActivityInfo;
 import android.content.res.AssetManager;
+import android.content.res.Configuration;
 import android.content.res.Resources;
 import android.graphics.BitmapFactory;
 import android.graphics.drawable.BitmapDrawable;
@@ -15,9 +18,14 @@ import android.view.View;
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.content.PermissionChecker;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsCompat;
+import androidx.core.view.WindowInsetsControllerCompat;
 
 import com.github.tvbox.osc.R;
+import com.github.tvbox.osc.ui.WindowSize;
 import com.github.tvbox.osc.util.AppManager;
+import com.github.tvbox.osc.util.LanguageManager;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -37,7 +45,11 @@ import xyz.doikki.videoplayer.util.CutoutUtil;
 public abstract class BaseActivity extends AppCompatActivity implements CustomAdapt {
     protected Context mContext;
 
+    /** 系统栏被 ROM 放出后的兜底重藏延时：要短于"栏可见"的观感窗口，又不抢系统露出动画 */
+    private static final long SYSBAR_REHIDE_DELAY_MS = 100L;
+
     private static float screenRatio = -100.0f;
+    private int orientationPolicy = Integer.MIN_VALUE;
     private final Runnable refreshAutoSizeRunnable = new Runnable() {
         @Override
         public void run() {
@@ -53,6 +65,12 @@ public abstract class BaseActivity extends AppCompatActivity implements CustomAd
         }
     };
 
+    /** 语言资源包裹;必须早于 AppCompat 的 delegate 建基(它依赖包裹后的 base) */
+    @Override
+    protected void attachBaseContext(Context newBase) {
+        super.attachBaseContext(LanguageManager.INSTANCE.wrap(newBase));
+    }
+
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
         try {
@@ -62,20 +80,26 @@ public abstract class BaseActivity extends AppCompatActivity implements CustomAd
                 updateScreenRatio(dm);
             }
         } catch (Throwable th) {
-            th.printStackTrace();
+            LOG.e("BaseActivity", th);
         }
         super.onCreate(savedInstanceState);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            getWindow().setNavigationBarContrastEnforced(false);
+            getWindow().setStatusBarContrastEnforced(false);
+        }
         setContentView(getLayoutResID());
         mContext = this;
         initSystemUiListener();
         CutoutUtil.adaptCutoutAboveAndroidP(mContext, true);//设置刘海
         AppManager.getInstance().addActivity(this);
+        applyOrientationPolicy();
         init();
     }
 
     @Override
     protected void onResume() {
         super.onResume();
+        applyOrientationPolicy();
         hideSysBar();
         if (shouldRefreshAutoSize()) {
             refreshAutoSize();
@@ -94,6 +118,12 @@ public abstract class BaseActivity extends AppCompatActivity implements CustomAd
             uiOptions |= View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY;
             getWindow().getDecorView().setSystemUiVisibility(uiOptions);
         }
+        // 再走 InsetsController：把"短暂露出后自动收回"显式钉住(不依赖旧 IMMERSIVE_STICKY 的映射)，
+        // 旧接口只保留 LAYOUT_* 的布局语义与下面可见性监听依赖的隐藏位
+        WindowInsetsControllerCompat controller =
+                WindowCompat.getInsetsController(getWindow(), getWindow().getDecorView());
+        controller.setSystemBarsBehavior(WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+        controller.hide(WindowInsetsCompat.Type.systemBars());
     }
 
     private void initSystemUiListener() {
@@ -104,8 +134,9 @@ public abstract class BaseActivity extends AppCompatActivity implements CustomAd
                 public void onSystemUiVisibilityChange(int visibility) {
                     int hiddenBars = View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_FULLSCREEN;
                     if ((visibility & hiddenBars) != hiddenBars) {
+                        // 兜底：ROM 在沉浸进出/横竖屏/回前台会把系统栏放出来，延时要短于显示窗口
                         decorView.removeCallbacks(hideSysBarRunnable);
-                        decorView.postDelayed(hideSysBarRunnable, 300);
+                        decorView.postDelayed(hideSysBarRunnable, SYSBAR_REHIDE_DELAY_MS);
                     }
                 }
             });
@@ -134,6 +165,43 @@ public abstract class BaseActivity extends AppCompatActivity implements CustomAd
         return false;
     }
 
+    /**
+     * 方向策略:sw<600dp 锁竖屏,>=600dp 放开 —— 与平台在 API 36+ 的忽略范围一致,
+     * 故手机档行为不变,大屏交由用户旋转/折叠。
+     */
+    public void applyOrientationPolicy() {
+        try {
+            int desired = orientationPolicyValue();
+            // 只在策略值本身变化时下发,否则会覆盖播放器「旋转」按钮刚设过的方向
+            if (orientationPolicy == desired) {
+                return;
+            }
+            orientationPolicy = desired;
+            setRequestedOrientation(desired);
+        } catch (Throwable th) {
+            LOG.e("BaseActivity", th);
+        }
+    }
+
+    /** 当前窗口档下的策略值;播放器退出全屏时恢复到此值,而不是硬写竖屏 */
+    public int orientationPolicyValue() {
+        try {
+            Configuration configuration = super.getResources().getConfiguration();
+            return WindowSize.shouldLockPortrait(configuration.smallestScreenWidthDp)
+                    ? ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+                    : ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED;
+        } catch (Throwable th) {
+            LOG.e("BaseActivity", th);
+            return ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED;
+        }
+    }
+
+    @Override
+    public void onConfigurationChanged(Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        applyOrientationPolicy();
+    }
+
     private void scheduleRefreshAutoSize() {
         View decorView = getWindow().getDecorView();
         decorView.removeCallbacks(refreshAutoSizeRunnable);
@@ -154,7 +222,7 @@ public abstract class BaseActivity extends AppCompatActivity implements CustomAd
             AutoSizeCompat.autoConvertDensityOfCustomAdapt(super.getResources(), this);
             getWindow().getDecorView().requestLayout();
         } catch (Throwable th) {
-            th.printStackTrace();
+            LOG.e("BaseActivity", th);
         }
     }
 
@@ -180,7 +248,7 @@ public abstract class BaseActivity extends AppCompatActivity implements CustomAd
         try {
             has = PermissionChecker.checkSelfPermission(this, permission) == PermissionChecker.PERMISSION_GRANTED;
         } catch (Exception e) {
-            e.printStackTrace();
+            LOG.e("BaseActivity", e);
         }
         return has;
     }
@@ -206,7 +274,7 @@ public abstract class BaseActivity extends AppCompatActivity implements CustomAd
             }
             return stringBuilder.toString();
         } catch (IOException e) {
-            e.printStackTrace();
+            LOG.e("BaseActivity", e);
         }
         return "";
     }

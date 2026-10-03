@@ -2,6 +2,7 @@ package com.github.catvod.net;
 
 import androidx.collection.ArrayMap;
 
+import com.github.tvbox.osc.util.LOG;
 import com.github.tvbox.osc.util.SSL.SSLSocketFactoryCompat;
 import com.github.tvbox.osc.util.OkGoHelper;
 
@@ -76,7 +77,7 @@ public class OkHttp {
         try (Response res = newCall(url).execute()) {
             return res.body() != null ? res.body().string() : "";
         } catch (Exception e) {
-            e.printStackTrace();
+            LOG.e("OkHttp", e);
             return "";
         }
     }
@@ -86,7 +87,7 @@ public class OkHttp {
         try (Response res = newCall(client(timeout), url).execute()) {
             return res.body() != null ? res.body().string() : "";
         } catch (Exception e) {
-            e.printStackTrace();
+            LOG.e("OkHttp", e);
             return "";
         }
     }
@@ -96,7 +97,7 @@ public class OkHttp {
         try (Response res = newCall(url, headers).execute()) {
             return res.body() != null ? res.body().string() : "";
         } catch (Exception e) {
-            e.printStackTrace();
+            LOG.e("OkHttp", e);
             return "";
         }
     }
@@ -170,7 +171,8 @@ public class OkHttp {
             SSLSocketFactory sslSocketFactory = new SSLSocketFactoryCompat(TRUST_ALL_CERT);
             builder.sslSocketFactory(sslSocketFactory, TRUST_ALL_CERT);
             builder.hostnameVerifier((hostname, session) -> true);
-        } catch (Throwable ignored) {
+        } catch (Throwable th) {
+            LOG.e("OkHttp", "trust-all ssl setup failed, https sites may fail", th);
         }
     }
 

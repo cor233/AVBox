@@ -2,10 +2,16 @@ package com.github.tvbox.osc.ui.page
 
 import android.widget.Toast
 import com.github.tvbox.osc.api.ApiConfig
+import com.github.tvbox.osc.base.App
 import com.github.tvbox.osc.event.RefreshEvent
 import com.github.tvbox.osc.server.ControlManager
 import com.github.tvbox.osc.ui.activity.SearchViewModel
+import com.github.tvbox.osc.util.BootGuard
+import com.github.tvbox.osc.util.FileUtils
 import com.github.tvbox.osc.util.HawkConfig
+import com.github.tvbox.osc.util.HistoryHelper
+import com.github.tvbox.osc.util.KV
+import com.github.tvbox.osc.util.MD5
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -14,12 +20,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import org.greenrobot.eventbus.EventBus
+import java.io.File
 import kotlin.coroutines.resume
 
-/**
- * 应用启动引导:移植自旧 HomeActivity.initData 链(配置加载 → jar 加载 → 就绪),
- * 使用单例而非 ViewModel,避免持有 Activity 引用。
- */
 object AppBootstrap {
 
     sealed interface Boot {
@@ -39,37 +42,29 @@ object AppBootstrap {
     fun start() {
         if (started) return
         started = true
+        // 必须在装载任何爬虫 jar 之前:①清掉私有目录里"假的原生库";②若同一源反复把应用崩掉,
+        // 停用它的启动指针,否则用户连换源都进不去(详见 FileUtils/BootGuard 注释)。
+        // 同步执行(几毫秒):异步会让首轮 jar 装载先跑起来,两道自检都白做。
+        FileUtils.repairBogusNativeLibs()
+        BootGuard.disableBootLoopingSource()
         ControlManager.get().startServer()
-        startInit()
+        startInit(forceFresh = false)
     }
 
-    /** 配置加载失败后重试 */
     fun retry() {
         dataInitOk = false
         jarInitOk = false
         _state.value = Boot.Loading
-        startInit()
+        startInit(forceFresh = true)
     }
 
-    /** 用户选择忽略错误,离线继续 */
     fun continueOffline() {
         dataInitOk = true
         jarInitOk = true
         _state.value = Boot.Loading
-        startInit()
+        startInit(forceFresh = false)
     }
 
-    /**
-     * 点播源地址已变更后的统一收尾(2026-09-13)。**必须在改写 KV `API_URL` 之后调用**。
-     *
-     * 四步缺一不可:
-     * ① `invalidateVodConfig()` 先作废内存里的旧配置 —— 新源拉取失败时不会残留旧源数据
-     *    (失败的 loadConfig 不会走 parseJson,旧的 sourceBeanList/mHomeSource 会原样留着);
-     * ② 丢弃搜索页的会话级"勾选搜索源"缓存 —— 那份缓存按**源 key** 记,而源 key 属于旧源集合,
-     *    留着会让换源后的搜索被悄悄窄化到"新旧源共有的那几个源"(2026-09-13 修的 bug:只搜得到玩偶4k);
-     * ③ 广播 `TYPE_API_URL_CHANGE` 让首页**立刻**按新状态刷新,而不是把旧源内容继续摆在屏幕上等结果;
-     * ④ `retry()` 重新拉配置。
-     */
     fun onApiUrlChanged() {
         ApiConfig.get().invalidateVodConfig()
         SearchViewModel.clearCheckedSources()
@@ -77,12 +72,38 @@ object AppBootstrap {
         retry()
     }
 
-    private fun startInit() {
+    /**
+     * 切到指定订阅:与配置管理页同一套语义(收藏跨订阅打开也走这里,避免两处分叉)。
+     * 跟随态直播不单独记地址;换源后旧的多仓列表只在地址确实变了时作废。
+     *
+     * @return 是否处于"直播跟随点播"模式(调用方 UI 用)
+     */
+    fun switchVodSubscription(url: String): Boolean {
+        val followLive = ApiConfig.isLiveFollowVod()
+        val oldApi = KV.get(HawkConfig.API_URL, "")
+        val oldFollowTarget = KV.get(HawkConfig.LIVE_API_URL, "").ifEmpty { oldApi }
+        HistoryHelper.setApiHistory(url)
+        KV.put(HawkConfig.API_URL, url)
+        if (followLive) {
+            KV.put(HawkConfig.LIVE_API_URL, "")
+            // 只在直播确实被改动时才清:否则"独立直播仓 + 点播换源"会误清用户的直播仓列表
+            if (url != oldFollowTarget) HistoryHelper.clearLiveApiLineList()
+        }
+        if (!HistoryHelper.isApiLineHistory(url)) HistoryHelper.clearApiLineList()
+        if (oldApi == url) {
+            ApiConfig.get().invalidateLiveConfig()
+            return followLive
+        }
+        onApiUrlChanged()
+        return followLive
+    }
+
+    /** forceFresh = 用户主动重载(换源/改地址/失败重试):必须走网络,否则"重选同一个源"会拿旧快照,看起来像没生效 */
+    private fun startInit(forceFresh: Boolean) {
         scope.launch {
             if (!dataInitOk) {
-                val err = awaitLoadConfig()
+                val err = awaitLoadConfig(forceFresh)
                 if (err != null) {
-                    // "-1" 为旧约定:取消等待,离线继续
                     if (err == "-1") {
                         dataInitOk = true
                         jarInitOk = true
@@ -107,8 +128,21 @@ object AppBootstrap {
         }
     }
 
-    private suspend fun awaitLoadConfig(): String? = suspendCancellableCoroutine { cont ->
-        ApiConfig.get().loadConfig(false, object : ApiConfig.LoadConfigCallback {
+    /** 快照有效期:过期即走网络刷新并把新快照写回,避免"一次缓存永久冻结源更新" */
+    private const val CONFIG_CACHE_TTL_MS = 12 * 60 * 60 * 1000L
+
+    /** 只有远程源吃快照:本地/局域网配置的改动必须立即生效,不能被快照挡住 */
+    private fun useCachedConfig(): Boolean {
+        val apiUrl = KV.get(HawkConfig.API_URL, "")
+        if (!apiUrl.startsWith("http://") && !apiUrl.startsWith("https://")) return false
+        val app = App.getInstance() ?: return false
+        val cache = File(app.filesDir, MD5.encode(apiUrl))
+        return cache.exists() &&
+            System.currentTimeMillis() - cache.lastModified() < CONFIG_CACHE_TTL_MS
+    }
+
+    private suspend fun awaitLoadConfig(forceFresh: Boolean): String? = suspendCancellableCoroutine { cont ->
+        ApiConfig.get().loadConfig(!forceFresh && useCachedConfig(), object : ApiConfig.LoadConfigCallback {
             override fun success() {
                 if (cont.isActive) cont.resume(null)
             }

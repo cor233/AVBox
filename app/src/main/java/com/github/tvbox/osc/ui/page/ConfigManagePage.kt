@@ -12,7 +12,6 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -27,22 +26,22 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -53,300 +52,126 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.github.tvbox.osc.R
 import com.github.tvbox.osc.api.ApiConfig
 import com.github.tvbox.osc.ui.activity.ConfigManageActivity
+import com.github.tvbox.osc.ui.components.AVBoxAlertDialog
+import com.github.tvbox.osc.ui.components.AVBoxBottomSheet
 import com.github.tvbox.osc.ui.components.CapsuleSegmentedButton
 import com.github.tvbox.osc.ui.components.LoadState
 import com.github.tvbox.osc.ui.components.AppTopBarScaffold
 import com.github.tvbox.osc.ui.components.LoadStateBox
+import com.github.tvbox.osc.ui.components.LocalSheetDismiss
+import com.github.tvbox.osc.ui.components.LocalSheetDismissThen
 import com.github.tvbox.osc.ui.components.SegmentOption
 import com.github.tvbox.osc.ui.components.SegmentStyle
 import com.github.tvbox.osc.ui.components.SettingsCard
 import com.github.tvbox.osc.ui.components.SettingsCardPosition
-import com.github.tvbox.osc.ui.components.SettingsIconBadge
+import com.github.tvbox.osc.ui.components.SettingsGroup
+import com.github.tvbox.osc.ui.components.RowLeadingIcon
+import com.github.tvbox.osc.ui.components.SettingsOptionRow
+import com.github.tvbox.osc.ui.components.SettingsSwitch
 import com.github.tvbox.osc.ui.components.SettingsSwitchRow
 import com.github.tvbox.osc.ui.components.TopBarActionBox
+import com.github.tvbox.osc.ui.components.glassSurface
 import com.github.tvbox.osc.ui.theme.cardContainer
-import com.github.tvbox.osc.util.HawkConfig
 import com.github.tvbox.osc.util.HistoryHelper
-import com.github.tvbox.osc.util.KV
 
-/** 订阅源分隔符(参照 HistoryHelper 的 api 线路约定,名字与链接用 \t 拼接存储) */
-private const val SubscribeSplit = "\t"
-
-/** 订阅源:名字 + 链接 */
-private data class SubscribeSource(val name: String, val url: String)
-
-/** 配置管理页分段:点播源 / 独立直播源(2026-09-12 点播/直播拆分) */
-private enum class ConfigMode { Vod, Live }
-
-/** 分段对应的订阅列表存储键:两个角色各自独立,同一链接不必重复录入(直播可保持"跟随") */
-private fun subscribeKeyOf(mode: ConfigMode): String = when (mode) {
-    ConfigMode.Vod -> HawkConfig.SUBSCRIBE_LIST
-    ConfigMode.Live -> HawkConfig.LIVE_SUBSCRIBE_LIST
-}
-
-/** 读取某角色的全部订阅源(KV: ArrayList<String>,每项 = "名字\t链接") */
-private fun loadSubscribes(mode: ConfigMode): List<String> =
-    KV.get(subscribeKeyOf(mode), ArrayList<String>()).toList()
-
-private fun parseSubscribe(value: String): SubscribeSource {
-    val index = value.indexOf(SubscribeSplit)
-    return if (index < 0) {
-        SubscribeSource(value.trim(), value.trim())
-    } else {
-        SubscribeSource(
-            value.substring(0, index).trim(),
-            value.substring(index + SubscribeSplit.length).trim(),
-        )
-    }
-}
-
-/** 保存订阅:同链接视为更新(保留新名字,位置不变),否则追加到列表末尾(2026-09-11:后加的在下方) */
-private fun saveSubscribe(mode: ConfigMode, name: String, url: String): List<String> {
-    val value = (name.ifEmpty { url }) + SubscribeSplit + url
-    val list = ArrayList(loadSubscribes(mode))
-    val existIndex = list.indexOfFirst { parseSubscribe(it).url == url }
-    if (existIndex >= 0) list[existIndex] = value else list.add(value)
-    KV.put(subscribeKeyOf(mode), list)
-    return list
-}
-
-/**
- * 编辑订阅(2026-09-12):按**原链接**定位并原地更新(名称与链接都可改,列表位置不变)。
- * 若把链接改成与另一项相同,则去掉被撞的那一项 —— 保留刚编辑的这项,避免出现重复项。
- */
-private fun updateSubscribe(mode: ConfigMode, original: SubscribeSource, name: String, url: String): List<String> {
-    val value = (name.ifEmpty { url }) + SubscribeSplit + url
-    val list = ArrayList(loadSubscribes(mode))
-    val index = list.indexOfFirst { parseSubscribe(it).url == original.url }
-    if (index < 0) return list
-    list[index] = value
-    val dupIndex = list.indexOfFirst { it != value && parseSubscribe(it).url == url }
-    if (dupIndex >= 0) list.removeAt(dupIndex)
-    KV.put(subscribeKeyOf(mode), list)
-    return list
-}
-
-/**
- * 分段徽标文本:优先订阅名;名字取不到(如线路切换后接口地址不在订阅列表里)时退回主机名,
- * 避免整条 url 把胶囊撑坏;都没有则显示「未配置」。
- */
-private fun badgeText(name: String, url: String): String = when {
+private fun badgeText(name: String, url: String, emptyText: String): String = when {
     name.isNotEmpty() -> name
-    url.isEmpty() -> "未配置"
+    url.isEmpty() -> emptyText
     else -> url.substringAfter("://").substringBefore('/').ifEmpty { url }
 }
 
-// ============================================================
-// 写入侧(2026-09-12 点播/直播拆分:两个角色互不覆盖)
-// ============================================================
-
-/**
- * 切换点播源:只写点播侧。直播若处于跟随态,归一化为「空 = 跟随」并继续跟随新的点播源;
- * 直播若为独立源则一个字都不改(修复旧 applySubscribe 双写把独立直播源冲掉的问题)。
- * @return 切换后直播是否处于跟随态
- */
-private fun applyVodSource(item: SubscribeSource): Boolean {
-    val followLive = ApiConfig.isLiveFollowVod() // 必须在改写 API_URL 之前判定
-    val oldApi = KV.get(HawkConfig.API_URL, "")
-    HistoryHelper.setApiHistory(item.url)
-    KV.put(HawkConfig.API_URL, item.url)
-    if (followLive) KV.put(HawkConfig.LIVE_API_URL, "")
-    if (!HistoryHelper.isApiLineHistory(item.url)) HistoryHelper.clearApiLineList()
-    if (oldApi == item.url) {
-        // 地址没变(重新启用同一个源):不必作废内存配置,也不必整页重载
-        ApiConfig.get().invalidateLiveConfig()
-        return followLive
-    }
-    // 地址变了:作废旧配置 + 通知首页立即刷新 + 重新拉取。
-    // 关键是第一步 —— 新源若拉取失败,首页会落到空态/引导态,而不是继续显示旧源内容
-    AppBootstrap.onApiUrlChanged()
-    return followLive
-}
-
-/** 切换独立直播源:只写直播侧,不触碰点播配置,也不触发点播整页重载 */
-private fun applyLiveSource(item: SubscribeSource) {
-    HistoryHelper.setLiveApiHistory(item.url)
-    KV.put(HawkConfig.LIVE_API_URL, item.url)
-    ApiConfig.get().invalidateLiveConfig()
-}
-
-/** 回到「跟随点播源」:清空独立直播源(LIVE_API_URL 空 = 跟随当前点播源) */
-private fun applyLiveFollowVod() {
-    KV.put(HawkConfig.LIVE_API_URL, "")
-    ApiConfig.get().invalidateLiveConfig()
-}
-
-/**
- * 配置管理页(2026-09-11,用户多轮迭代定稿;2026-09-12 点播/直播拆分):
- * 全 App 唯一的源添加/管理入口 —— 右上角「添加订阅」圆钮(40dp surfaceBright 圆底 +
- * `.tubiao/添加订阅.svg`)→ Material3 dialog(名字 / 链接两行输入 + 标题右上角「从本地选择」+ 右下角保存);
- * 已保存订阅源以 28dp 圆角卡片展示(距屏幕边缘 16dp),卡片右侧开关 = 切换当前接口(单选);
- * **已开启的源置顶**,其余按添加顺序排列(后加的在下);长按卡片进入管理模式(卡片转勾选),
- * 右上角出现删除控件;**正在使用的源不可删除**(勾选框禁用 + 长按/点选 Toast 提示)。
- *
- * 2026-09-12 起点播/直播分段:LIVE_API_URL 与 API_URL 分离,直播段首项固定为「跟随点播源」
- * (= 直播未单独配置时的默认来源,始终复用当前点播源),独立直播源优先级更高且点播不受影响。
- */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ConfigManageScreen(onNavigateBack: () -> Unit) {
     val context = LocalContext.current
+    val vm: ConfigManageViewModel = viewModel()
     var mode by rememberSaveable { mutableStateOf(ConfigMode.Vod) }
-    // 两个角色的列表都常驻:徽标要显示"另一个角色当前选的是哪个源",不能只持有当前段的数据
-    var vodItems by remember { mutableStateOf(loadSubscribes(ConfigMode.Vod)) }
-    var liveItems by remember { mutableStateOf(loadSubscribes(ConfigMode.Live)) }
-    var activeUrl by remember { mutableStateOf(KV.get(HawkConfig.API_URL, "")) }
-    var liveActiveUrl by remember { mutableStateOf(KV.get(HawkConfig.LIVE_API_URL, "")) }
-    var liveFollow by remember { mutableStateOf(ApiConfig.isLiveFollowVod()) }
     var addDialogOpen by remember { mutableStateOf(false) }
-    /** 编辑目标:非空即处于「编辑订阅」态(与 [addDialogOpen] 共用同一个 dialog) */
-    var editTarget by remember { mutableStateOf<SubscribeSource?>(null) }
-    var manageMode by remember { mutableStateOf(false) }
-    var selected by remember { mutableStateOf(emptySet<String>()) }
+    var repoSheetOpen by remember { mutableStateOf(false) }
+    val vodItems by vm.vodItems.collectAsState()
+    val liveItems by vm.liveItems.collectAsState()
+    val activeUrl by vm.activeUrl.collectAsState()
+    val liveActiveUrl by vm.liveActiveUrl.collectAsState()
+    val liveFollow by vm.liveFollow.collectAsState()
+    /** 被看门狗停用过的源地址(黑名单):只随页内增删变化 */
+    val disabledUrls by vm.disabledUrls.collectAsState()
+    /** 点到黑名单里的源时先挂起,由二次确认对话框决定是否放行 */
+    val pendingSwitch by vm.pendingSwitch.collectAsState()
+    val selected by vm.selected.collectAsState()
+    val manageMode by vm.manageMode.collectAsState()
+    val editTarget by vm.editTarget.collectAsState()
+    val toastEvent by vm.toastEvent.collectAsState()
 
     val isVod = mode == ConfigMode.Vod
-    // 命名避开 LazyListScope.items DSL 函数,防止后续在 LazyColumn 内容里误引用
     val currentItems = if (isVod) vodItems else liveItems
 
-    // 管理模式下取消全部选中即自动退出(删除控件随之隐藏);列表清空同理
-    LaunchedEffect(selected, currentItems) {
-        if (manageMode && selected.isEmpty()) manageMode = false
+    LaunchedEffect(toastEvent) {
+        toastEvent?.let {
+            Toast.makeText(context, it, Toast.LENGTH_SHORT).show()
+            vm.clearToast()
+        }
     }
 
-    // 切分段:退出管理模式并清空勾选(否则会把另一角色勾中的源当成当前角色的删除目标)。
-    // 列表回顶不再需要:分段切换动画的每份内容组合各持独立 LazyListState,天然从顶部开始
     LaunchedEffect(mode) {
-        manageMode = false
-        selected = emptySet()
-        editTarget = null
+        vm.onModeChanged()
+        // 换仓 sheet 也关掉:它列的是"当前模式"那份仓列表,切模式后台面下的列表已经换了,
+        // 留着会出现"点的是直播的子源、实际按点播语义切"的错配(分段按钮在遮罩之下点不到,
+        // 但系统返回键/手势能先关 sheet,防的是这一类时序)
+        repoSheetOpen = false
     }
 
-    /** 退出管理模式:取消勾选并关闭编辑弹窗(右上角控件随之回到「添加」) */
-    fun exitManageMode() {
-        manageMode = false
-        selected = emptySet()
-        editTarget = null
+    BackHandler(enabled = manageMode) { vm.exitManageMode() }
+
+    // ---------- 换仓(2026-09-21) ----------
+    // 多仓生效后启动地址被改写成仓里某个子源,订阅卡与"使用中"都不再指向用户填的仓地址,
+    // 故需要独立入口:右上角图标 → bottom sheet。列表取与「配置切换」同一份数据,不另建状态。
+
+    /** 当前源是否来自多仓 —— 不是仓源就没有可换的子源,入口整体隐藏 */
+    val canSwitchRepo = if (isVod) {
+        HistoryHelper.isApiLineUrl(activeUrl)
+    } else {
+        ApiConfig.get().isLiveApiLineMode() && HistoryHelper.isLiveApiLineUrl(liveActiveUrl)
     }
 
-    // 返回:管理模式下先退回普通态,不直接离开页面(2026-09-12);
-    // 非管理模式不拦截,交给 Activity 默认返回(= finish)
-    BackHandler(enabled = manageMode) { exitManageMode() }
+    /** 仓里的子源条目("名字\t链接") */
+    val repoEntries = if (isVod) HistoryHelper.getApiLines() else HistoryHelper.getLiveApiLines()
 
-    // 当前角色选中的源(直播跟随态下没有选中项,由「跟随点播源」卡承担)
-    fun isInUse(url: String): Boolean =
-        if (isVod) url == activeUrl else !liveFollow && url == liveActiveUrl
+    /** 当前生效的子源地址:换仓列表据此打选中标记 */
+    val repoActiveUrl = if (isVod) activeUrl else liveActiveUrl
 
-    fun switchToVod(item: SubscribeSource) {
-        if (activeUrl == item.url) return
-        val followLive = applyVodSource(item)
-        activeUrl = item.url
-        if (followLive) {
-            liveActiveUrl = ""
-            liveFollow = true
-        }
-        Toast.makeText(context, "已切换到:" + item.name, Toast.LENGTH_SHORT).show()
+    val noSourceText = stringResource(R.string.config_no_source)
+    val vodBadge = remember(vodItems, activeUrl, noSourceText) {
+        badgeText(
+            vodItems.firstOrNull { parseSubscribe(it).url == activeUrl }?.let { parseSubscribe(it).name }.orEmpty(),
+            activeUrl,
+            noSourceText,
+        )
     }
-
-    fun switchToLive(item: SubscribeSource) {
-        if (!liveFollow && liveActiveUrl == item.url) return
-        applyLiveSource(item)
-        liveActiveUrl = item.url
-        liveFollow = false
-        Toast.makeText(context, "已切换到:" + item.name, Toast.LENGTH_SHORT).show()
-    }
-
-    fun followLiveNow() {
-        applyLiveFollowVod()
-        liveActiveUrl = ""
-        liveFollow = true
-        Toast.makeText(context, "直播已跟随点播源", Toast.LENGTH_SHORT).show()
-    }
-
-    fun deleteSelected() {
-        // 正在使用的源不可删(长按/点选已拦截,这里再兜一层)
-        val target = selected.filterNot { isInUse(parseSubscribe(it).url) }
-        val remaining = currentItems.filterNot { it in target }
-        KV.put(subscribeKeyOf(mode), ArrayList(remaining))
-        if (isVod) {
-            vodItems = remaining
-            if (remaining.isEmpty()) {
-                // 点播列表被删空(激活源不在列表中的边界情形)→ 清空点播配置回引导态;
-                // 独立直播源不受影响(旧的 clearConfig 会连坐清掉,2026-09-12 起改走 clearVodConfig)
-                ApiConfig.get().clearVodConfig()
-                activeUrl = ""
-                AppBootstrap.retry()
-            }
-        } else {
-            liveItems = remaining
-            if (remaining.isEmpty()) {
-                // 直播源被删空:自动回落到「跟随点播源」,点播侧完全不受影响
-                applyLiveFollowVod()
-                liveActiveUrl = ""
-                liveFollow = true
-            }
-        }
-        selected = emptySet()
-    }
-
-    /** 新增订阅:列表首个订阅源添加后直接启用(新装/清空后省一步开关操作) */
-    fun commitAdd(name: String, url: String) {
-        val newItems = saveSubscribe(mode, name, url)
-        if (isVod) vodItems = newItems else liveItems = newItems
-        addDialogOpen = false
-        if (newItems.size == 1) {
-            val item = parseSubscribe(newItems.first())
-            if (isVod) switchToVod(item) else switchToLive(item)
-        }
-    }
-
-    /**
-     * 编辑选中订阅(2026-09-12):原地更新名称/链接。
-     * 改的若是**当前正在使用**的源且地址变了,按新地址重新生效(点播走整页重载、直播只换直播侧);
-     * 仅名称变化不需要重新生效,列表状态更新即可。
-     */
-    fun commitEdit(target: SubscribeSource, name: String, url: String) {
-        if (url.isEmpty()) return
-        val newValue = (name.ifEmpty { url }) + SubscribeSplit + url
-        val oldValue = selected.firstOrNull { parseSubscribe(it).url == target.url }
-        val updated = updateSubscribe(mode, target, name, url)
-        if (isVod) vodItems = updated else liveItems = updated
-        // 条目字符串随名称/链接变化,同步替换勾选值,保持该项仍处于勾选态
-        if (oldValue != null) selected = selected - oldValue + newValue
-        editTarget = null
-        val item = parseSubscribe(newValue)
-        if (isVod) {
-            if (target.url == activeUrl && url != activeUrl) switchToVod(item)
-        } else if (!liveFollow && target.url == liveActiveUrl && url != liveActiveUrl) {
-            switchToLive(item)
-        }
-    }
-
-    // 当前角色正在使用的源置顶、其余按添加顺序的排序已移入分段动画内容内按段计算
-    // (AnimatedContent 的离场/入场两份组合需各自按目标分段取数,不能共用按当前分段排序的结果)
-
-    // 分段徽标:让用户不切分段也能看到两个角色各自的当前选择
-    val vodBadge = remember(vodItems, activeUrl) {
-        badgeText(vodItems.firstOrNull { parseSubscribe(it).url == activeUrl }?.let { parseSubscribe(it).name }.orEmpty(), activeUrl)
-    }
-    val liveBadge = remember(liveItems, liveActiveUrl, liveFollow) {
+    val followText = stringResource(R.string.live_follow_vod_source)
+    val liveBadge = remember(liveItems, liveActiveUrl, liveFollow, noSourceText, followText) {
         if (liveFollow) {
-            ApiConfig.LIVE_FOLLOW_ITEM_NAME
+            followText
         } else {
-            badgeText(liveItems.firstOrNull { parseSubscribe(it).url == liveActiveUrl }?.let { parseSubscribe(it).name }.orEmpty(), liveActiveUrl)
+            badgeText(
+                liveItems.firstOrNull { parseSubscribe(it).url == liveActiveUrl }?.let { parseSubscribe(it).name }.orEmpty(),
+                liveActiveUrl,
+                noSourceText,
+            )
         }
     }
 
     AppTopBarScaffold(
-        // 分段行常驻内容区顶部(与首页/搜索页同款 pinned 顶栏):分段不被列表滚走,topPad 恒定
         collapseEnabled = false,
         titleContent = {
             Text(
-                text = "配置管理",
+                text = stringResource(R.string.settings_config_manage),
                 style = MaterialTheme.typography.headlineSmall,
                 color = MaterialTheme.colorScheme.onSurface,
             )
@@ -354,13 +179,11 @@ fun ConfigManageScreen(onNavigateBack: () -> Unit) {
         navigationIcon = {
             TopBarActionBox(
                 R.drawable.ic_arrow_left,
-                "返回",
-                // 管理模式下箭头与系统返回同为「先退出管理模式」,避免误触丢勾选
-                onClick = { if (manageMode) exitManageMode() else onNavigateBack() },
+                stringResource(R.string.common_back),
+                onClick = { if (manageMode) vm.exitManageMode() else onNavigateBack() },
             )
         },
         actions = {
-            // 管理模式 ↔ 添加按钮:缩放+淡入淡出过渡(2026-09-12 用户要求加动画)
             AnimatedContent(
                 targetState = manageMode && currentItems.isNotEmpty(),
                 transitionSpec = {
@@ -371,58 +194,68 @@ fun ConfigManageScreen(onNavigateBack: () -> Unit) {
                 label = "configTopAction",
             ) { managing ->
                 if (managing) {
-                    // 管理模式:右上角 =「编辑」+「删除」(删除控件左侧为编辑,2026-09-12 用户要求);
-                    // 编辑只对"选中的那一个源"生效,故多选时禁用
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         ManageActionIcon(
                             iconRes = R.drawable.ic_edit,
-                            contentDescription = "编辑",
+                            contentDescription = stringResource(R.string.common_edit),
                             enabled = selected.size == 1,
-                            onClick = { editTarget = selected.firstOrNull()?.let { parseSubscribe(it) } },
+                            onClick = { vm.editTarget.value = selected.firstOrNull()?.let { parseSubscribe(it) } },
                         )
                         ManageActionIcon(
                             iconRes = R.drawable.ic_delete,
-                            contentDescription = "删除",
+                            contentDescription = stringResource(R.string.common_delete),
                             enabled = selected.isNotEmpty(),
-                            onClick = { deleteSelected() },
+                            onClick = { vm.deleteSelected(isVod) },
                         )
                     }
                 } else {
-                    // 添加订阅:40dp 圆形控件(surfaceBright 圆底)+ .tubiao/添加订阅.svg
-                    TopBarActionBox(
-                        iconRes = R.drawable.ic_subscribe_add,
-                        contentDescription = if (isVod) "添加订阅" else "添加直播源",
-                        onClick = { addDialogOpen = true },
-                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        // 「换仓」入口(2026-09-21):仅在**当前源来自多仓**时出现 ——
+                        // 不是仓源时没有可换的子源,按钮出现只会让人白点一次。
+                        if (canSwitchRepo) {
+                            TopBarActionBox(
+                                iconRes = R.drawable.ic_switch_repo,
+                                contentDescription = stringResource(R.string.config_switch_repo),
+                                onClick = { repoSheetOpen = true },
+                            )
+                        }
+                        TopBarActionBox(
+                            iconRes = R.drawable.ic_subscribe_add,
+                            contentDescription = if (isVod) {
+                                stringResource(R.string.config_add_subscribe)
+                            } else {
+                                stringResource(R.string.config_add_live_source)
+                            },
+                            onClick = { addDialogOpen = true },
+                        )
+                    }
                 }
             }
         },
     ) { topPad, _ ->
         Column(modifier = Modifier.fillMaxSize()) {
-            // 点播 / 直播分段(2026-09-12):两行版(标题 + 当前源徽标),Track 外观 = 胶囊轨道包裹
             CapsuleSegmentedButton(
                 options = listOf(
-                    SegmentOption(label = "点播", value = ConfigMode.Vod, badge = vodBadge),
-                    SegmentOption(label = "直播", value = ConfigMode.Live, badge = liveBadge),
+                    SegmentOption(label = stringResource(R.string.common_vod), value = ConfigMode.Vod, badge = vodBadge),
+                    SegmentOption(label = stringResource(R.string.common_live), value = ConfigMode.Live, badge = liveBadge),
                 ),
                 selectedValue = mode,
                 onOptionSelected = { mode = it },
                 style = SegmentStyle.Track,
+                containerColor = MaterialTheme.colorScheme.surfaceContainer,
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(start = 16.dp, end = 16.dp, top = topPad + 8.dp),
             )
-            // 点播/直播分段切换动画(2026-09-13):整列卡片随分段方向横向滑动 + 淡入淡出。
-            // 内容 lambda 一律以 m(目标分段)取数:vodItems/liveItems/activeUrl/liveFollow
-            // 均为与 mode 无关的状态,离场/入场两份组合各自取数互不干扰;
-            // 卡片点击行为同样按 m 分发,过渡期间误点离场卡不会把点播源写进直播配置
             AnimatedContent(
                 targetState = mode,
                 transitionSpec = {
-                    // 直播段在右:切到直播从右滑入,切回点播从左滑入,离场反向
                     val toRight = targetState == ConfigMode.Live
                     (
                         slideInHorizontally(spring(stiffness = Spring.StiffnessMedium)) { full ->
@@ -439,16 +272,15 @@ fun ConfigManageScreen(onNavigateBack: () -> Unit) {
                 val mIsVod = m == ConfigMode.Vod
                 val mItems = if (mIsVod) vodItems else liveItems
                 if (mIsVod && mItems.isEmpty()) {
-                    // 点播段空态 = 全 App 未配置订阅接口的引导态
                     LoadStateBox(
                         state = LoadState.Empty,
-                        emptyText = "暂无订阅",
+                        emptyText = stringResource(R.string.config_empty_subscribe),
                         errorText = "",
                         retryText = "",
+                        emptyIconRes = R.drawable.ic_empty_record,
                         modifier = Modifier.fillMaxSize(),
                     )
                 } else {
-                    // 当前段正在使用的源置顶,其余保持添加顺序(2026-09-11 用户要求:后加的源在下方)
                     val mOrdered = remember(mItems, activeUrl, liveActiveUrl, liveFollow, mIsVod) {
                         mItems.sortedByDescending {
                             val url = parseSubscribe(it).url
@@ -458,69 +290,80 @@ fun ConfigManageScreen(onNavigateBack: () -> Unit) {
                     LazyColumn(
                         state = rememberLazyListState(),
                         modifier = Modifier.fillMaxSize(),
-                        // 顶栏留白已由上面的分段行承担,这里只留分段与首卡的 12dp 间距(与卡间距一致)
                         contentPadding = PaddingValues(
                             start = 16.dp,
                             end = 16.dp,
                             top = 12.dp,
                             bottom = 8.dp,
                         ),
-                        verticalArrangement = Arrangement.spacedBy(12.dp), // 卡片间距 12dp(与历史页一致)
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
                         if (!mIsVod) {
-                            // 直播段首项:合成的「跟随点播源」(非订阅项,不参与长按删除)
                             item(key = "Live#follow") {
                                 FollowVodCard(
                                     checked = liveFollow,
-                                    subtitle = if (activeUrl.isEmpty()) "未配置点播源" else "当前点播源:$vodBadge",
-                                    onFollow = { followLiveNow() },
+                                    subtitle = if (activeUrl.isEmpty()) {
+                                        stringResource(R.string.config_no_vod_source)
+                                    } else {
+                                        stringResource(R.string.config_current_vod_source, vodBadge)
+                                    },
+                                    onFollow = { vm.followLiveNow() },
                                     modifier = Modifier.animateItem(),
                                 )
                             }
                         }
                         items(mOrdered, key = { "${m.name}#$it" }) { value ->
                             val item = parseSubscribe(value)
-                            val inUse = if (mIsVod) item.url == activeUrl else !liveFollow && item.url == liveActiveUrl
+                            // 2026-09-21 多仓:与上面 isInUse 同一套判定 —— 之前只比地址本身,
+                            // 点了带"使用中"标记的仓卡会因为 activeUrl(仓地址)与 API_URL(仓里首条)
+                            // 不等而误判成"未使用",再点一次又白跑一遍完整换源流程
+                            val inUse = if (mIsVod) {
+                                item.url == activeUrl || HistoryHelper.isApiLineSourceOf(item.url, activeUrl)
+                            } else {
+                                !liveFollow && (
+                                    item.url == liveActiveUrl ||
+                                        HistoryHelper.isLiveApiLineSourceOf(item.url, liveActiveUrl)
+                                    )
+                            }
                             SubscribeCard(
-                                // 切源时激活卡片置顶重排:animateItem 让卡片平滑滑动到新位置(2026-09-12 用户要求)
                                 modifier = Modifier.animateItem(),
                                 item = item,
                                 active = inUse,
-                                deletable = !inUse,
+                                disabled = item.url in disabledUrls,
                                 manageMode = manageMode,
                                 selected = value in selected,
                                 onClick = {
                                     if (manageMode) {
-                                        // 正在使用的源不可删(勾选框禁用,点击给提示)
-                                        if (inUse) {
-                                            Toast.makeText(context, "正在使用的源不能删除", Toast.LENGTH_SHORT).show()
-                                        } else {
-                                            selected = if (value in selected) selected - value else selected + value
-                                        }
-                                    } else if (mIsVod) {
-                                        switchToVod(item)
+                                        vm.toggleSelected(value)
                                     } else {
-                                        switchToLive(item)
+                                        vm.requestSwitch(item, mIsVod)
                                     }
                                 },
                                 onLongClick = {
-                                    // 长按进入管理模式并选中该卡(右上角出现删除控件);正在使用的源不可删
-                                    if (inUse) {
-                                        Toast.makeText(context, "正在使用的源不能删除", Toast.LENGTH_SHORT).show()
-                                    } else {
-                                        manageMode = true
-                                        selected = setOf(value)
-                                    }
+                                    vm.longPressSelect(value)
                                 },
                                 onCheckedChange = { checked ->
-                                    // 点播:关闭不动作(必须有一个点播源);直播:关闭 = 回到「跟随点播源」
                                     if (checked) {
-                                        if (mIsVod) switchToVod(item) else switchToLive(item)
+                                        vm.requestSwitch(item, mIsVod)
                                     } else if (!mIsVod) {
-                                        followLiveNow()
+                                        vm.followLiveNow()
                                     }
                                 },
                             )
+                        }
+                        if (!mIsVod && mItems.isEmpty()) {
+                            item(key = "Live#empty") {
+                                LoadStateBox(
+                                    state = LoadState.Empty,
+                                    emptyText = stringResource(R.string.config_empty_live_source),
+                                    errorText = "",
+                                    retryText = "",
+                                    emptyIconRes = R.drawable.ic_empty_record,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(220.dp),
+                                )
+                            }
                         }
                     }
                 }
@@ -528,41 +371,145 @@ fun ConfigManageScreen(onNavigateBack: () -> Unit) {
         }
     }
 
-    // 新增 / 编辑共用一个 dialog(编辑态由 editTarget 非空决定,字段预填当前值)
     val editing = editTarget
     if (addDialogOpen || editing != null) {
         AddSubscribeDialog(
             title = if (editing != null) {
-                if (isVod) "编辑订阅" else "编辑直播源"
+                if (isVod) stringResource(R.string.config_edit_subscribe) else stringResource(R.string.config_edit_live_source)
             } else {
-                if (isVod) "添加订阅" else "添加直播源"
+                if (isVod) stringResource(R.string.config_add_subscribe) else stringResource(R.string.config_add_live_source)
             },
-            // 直播源的链接形态比点播宽:接口 JSON / 纯直播 JSON / m3u / txt 都能直接填
-            urlSupportingText = if (isVod) "" else "支持配置 JSON / m3u / txt 直播源",
+            urlSupportingText = if (isVod) "" else stringResource(R.string.config_live_source_hint),
             initialName = editing?.name.orEmpty(),
             initialUrl = editing?.url.orEmpty(),
             onDismiss = {
                 addDialogOpen = false
-                editTarget = null
+                vm.editTarget.value = null
             },
             onSave = { name, url ->
-                if (editing != null) commitEdit(editing, name, url) else commitAdd(name, url)
+                if (editing != null) vm.commitEdit(isVod, editing, name, url) else vm.commitAdd(isVod, name, url)
+                addDialogOpen = false
             },
             onPickFile = { onPicked ->
-                // 系统 SAF 文件选择器(2026-09-11 起替代自绘 LocalFileActivity,自带读取授权、无需存储权限)
                 (context as? ConfigManageActivity)?.launchLocalConfig { api -> onPicked(api) }
+            },
+        )
+    }
+
+    val pending = pendingSwitch
+    if (pending != null) {
+        AVBoxAlertDialog(
+            onDismissRequest = { vm.cancelPendingSwitch() },
+            title = { Text(stringResource(R.string.dialog_source_disabled_title)) },
+            text = {
+                Text(stringResource(R.string.dialog_source_disabled_message, pending.item.name))
+            },
+            confirmButton = {
+                val dismissThen = LocalSheetDismissThen.current
+                TextButton(onClick = { dismissThen { vm.enableAndSwitch() } }) {
+                    Text(stringResource(R.string.dialog_source_disabled_confirm))
+                }
+            },
+            dismissButton = {
+                val dismissAnimated = LocalSheetDismiss.current
+                TextButton(onClick = { dismissAnimated() }) { Text(stringResource(R.string.common_cancel)) }
+            },
+        )
+    }
+
+    if (repoSheetOpen) {
+        RepoSwitchSheet(
+            entries = repoEntries,
+            activeUrl = repoActiveUrl,
+            disabledUrls = disabledUrls,
+            onDismiss = { repoSheetOpen = false },
+            onSelect = { url ->
+                val name = HistoryHelper.getApiLineName(
+                    repoEntries.firstOrNull { HistoryHelper.getApiLineUrl(it) == url }.orEmpty(),
+                )
+                // 与在订阅列表里点同一条源等价 —— switchToVod 里已经处理了"是否落在仓里"的仓列表保留判定,
+                // 所以换完仓后入口仍在。统一走 requestSwitch:仓里藏着的坏子源同样要过二次确认
+                vm.requestSwitch(SubscribeSource(name, url), isVod)
+                // 命中"源已停用"时 requestSwitch 会立刻弹确认对话框,而覆盖层槽位只有一个(面板会被顶掉)。
+                // 这里同步收掉面板状态:否则面板的可见性标志还是 true,对话框关掉后它会被重新提交而"复活"。
+                if (vm.pendingSwitch.value != null) repoSheetOpen = false
             },
         )
     }
 }
 
 /**
- * 直播段的「跟随点播源」合成卡(2026-09-12):
- * 直播未单独配置时的默认来源 —— 直接复用当前点播源配置里的 lives,点播换源时自动跟随。
- * 开关不可关闭(直播至少要有一个来源),点击 = 从独立直播源切回跟随;不参与长按删除。
- * 副标题(当前点播源名)走 subtitle 而非 valueText:后者在 Row 里不受 weight 约束,
- * 源名过长会把右侧开关挤出卡片。
+ * 「换仓」bottom sheet:列出当前仓里的全部子源,点一条即切换。
+ *
+ * <p>样式同 `AVBoxOptionSheet`,但每条多带一行地址 —— 仓里常有同名子源,只给名字分不清。
+ * 被看门狗停用过的子源额外打「已禁用」标记(坏子源通常就藏在仓里,不标出来用户只会觉得"点了没反应")。
  */
+@Composable
+private fun RepoSwitchSheet(
+    entries: List<String>,
+    activeUrl: String,
+    disabledUrls: Set<String>,
+    onDismiss: () -> Unit,
+    onSelect: (String) -> Unit,
+) {
+    val dismissAnimated = LocalSheetDismiss.current
+    // 防连点(与 AVBoxOptionSheet 同款)
+    var accepted by remember { mutableStateOf(false) }
+    AVBoxBottomSheet(
+        onDismissRequest = onDismiss,
+        title = stringResource(R.string.config_switch_repo),
+        containerColor = MaterialTheme.colorScheme.surfaceContainer,
+    ) {
+        SettingsGroup(
+            title = null,
+            modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp),
+        ) {
+            entries.forEachIndexed { index, entry ->
+                val url = HistoryHelper.getApiLineUrl(entry)
+                SettingsCard(
+                    position = when {
+                        entries.size <= 1 -> SettingsCardPosition.SINGLE
+                        index == 0 -> SettingsCardPosition.FIRST
+                        index == entries.size - 1 -> SettingsCardPosition.LAST
+                        else -> SettingsCardPosition.MIDDLE
+                    },
+                    color = MaterialTheme.colorScheme.surfaceBright,
+                ) {
+                    SettingsOptionRow(
+                        title = HistoryHelper.getApiLineName(entry),
+                        selected = url == activeUrl,
+                        onClick = onClick@{
+                            // 先吃掉点击并关面板:点"当前已选中"那条时切换逻辑会直接返回,
+                            // 把关闭放进守卫里会让面板卡住关不掉。
+                            if (accepted) return@onClick
+                            accepted = true
+                            if (url.isNotEmpty() && url != activeUrl) onSelect(url)
+                            // 只走动画关闭(它播完才回调 onDismiss);这里再置 repoSheetOpen=false 会把面板先拆掉
+                            dismissAnimated()
+                        },
+                        trailing = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (url in disabledUrls) {
+                                    DisabledSourceTag()
+                                    Spacer(Modifier.width(8.dp))
+                                }
+                                Text(
+                                    text = url,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.widthIn(max = 180.dp),
+                                )
+                            }
+                        },
+                    )
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun FollowVodCard(
     checked: Boolean,
@@ -572,26 +519,20 @@ private fun FollowVodCard(
 ) {
     SettingsCard(position = SettingsCardPosition.SINGLE, modifier = modifier) {
         SettingsSwitchRow(
-            title = "跟随点播源",
+            title = stringResource(R.string.live_follow_vod_source),
+            leadingIconRes = R.drawable.ic_subscribe_source,
             subtitle = subtitle,
             checked = checked,
-            // 关闭不动作:直播至少要有跟随点播源这个兜底来源
             onCheckedChange = { next -> if (next) onFollow() },
         )
     }
 }
 
-/**
- * 订阅源卡片:28dp 圆角卡片容器(cardContainer),距屏幕边缘 16dp 由列表 contentPadding 保证;
- * 左侧 = 40dp 圆形源图标(`SettingsIconBadge` + `.tubiao/配置管理的订阅源卡片icon图标.svg`),
- * 右侧开关 = 是否当前接口(单选,开关切换);管理模式下开关转勾选框,整卡点击 = 切换选中;
- * 正在使用的源不可删除([deletable] = false 时勾选框禁用)。
- */
 @Composable
 private fun SubscribeCard(
     item: SubscribeSource,
     active: Boolean,
-    deletable: Boolean,
+    disabled: Boolean,
     manageMode: Boolean,
     selected: Boolean,
     modifier: Modifier = Modifier,
@@ -613,18 +554,22 @@ private fun SubscribeCard(
                 .padding(horizontal = 16.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            // 源图标:40dp 圆形 primaryContainer 容器 + 22dp 图标(来自 .tubiao 的订阅源图标);
-            // 放在 Column 外,使名称与链接同处一条基线、整体与图标垂直居中(卡高不变)
-            SettingsIconBadge(iconRes = R.drawable.ic_subscribe_source)
-            Spacer(Modifier.width(16.dp))
+            RowLeadingIcon(R.drawable.ic_subscribe_source, enabled = true)
             Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = item.name,
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = item.name,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    if (disabled) {
+                        Spacer(Modifier.width(8.dp))
+                        DisabledSourceTag()
+                    }
+                }
                 Spacer(Modifier.height(4.dp))
                 Text(
                     text = item.url,
@@ -635,7 +580,6 @@ private fun SubscribeCard(
                 )
             }
             Spacer(Modifier.width(12.dp))
-            // 管理模式勾选框 ↔ 开关:缩放+淡入过渡(2026-09-12 用户要求加动画)
             AnimatedContent(
                 targetState = manageMode,
                 transitionSpec = {
@@ -646,22 +590,31 @@ private fun SubscribeCard(
                 label = "configRowControl",
             ) { managing ->
                 if (managing) {
-                    // 正在使用的源不可删:勾选框禁用(长按/点选也会给提示)
-                    Checkbox(checked = selected, onCheckedChange = { onClick() }, enabled = deletable)
+                    Checkbox(checked = selected, onCheckedChange = { onClick() })
                 } else {
-                    Switch(checked = active, onCheckedChange = onCheckedChange)
+                    SettingsSwitch(checked = active, onCheckedChange = onCheckedChange)
                 }
             }
         }
     }
 }
 
-/**
- * 添加 / 编辑订阅对话框(Material3 AlertDialog):两行输入(名字 / 链接)+ 右下角保存;
- * 标题右上角「从本地选择」控件(40dp 圆形 surfaceBright 圆底 + `.tubiao/文件选择.svg`),
- * 打开系统 SAF 选择器,选中后把 clan:// 接口地址回填到链接输入框。
- * [initialName] / [initialUrl] 用于编辑态预填(新增态传空串)。
- */
+/** 被看门狗停用过的源标记:红底小圆角,贴在源名(或换仓条目的地址)旁边 */
+@Composable
+private fun DisabledSourceTag() {
+    Surface(
+        shape = RoundedCornerShape(6.dp),
+        color = MaterialTheme.colorScheme.errorContainer,
+    ) {
+        Text(
+            text = stringResource(R.string.config_source_disabled_tag),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onErrorContainer,
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+        )
+    }
+}
+
 @Composable
 private fun AddSubscribeDialog(
     title: String,
@@ -672,11 +625,8 @@ private fun AddSubscribeDialog(
     onSave: (String, String) -> Unit,
     onPickFile: (onPicked: (String) -> Unit) -> Unit,
 ) {
-    // 对话框按需组合:每次打开都是新实例,直接以入参为初值即可
     var name by remember { mutableStateOf(initialName) }
     var url by remember { mutableStateOf(initialUrl) }
-    // 链接框下方提示(M3 supportingText 槽):显式标注可组合函数类型,
-    // 避免 `?.let { { Text(it) } }` 推断成普通 ()->Unit 而与非可组合类型不匹配
     val urlHint: (@Composable () -> Unit)? = if (urlSupportingText.isEmpty()) {
         null
     } else {
@@ -688,7 +638,7 @@ private fun AddSubscribeDialog(
             )
         }
     }
-    AlertDialog(
+    AVBoxAlertDialog(
         onDismissRequest = onDismiss,
         title = {
             Row(
@@ -702,14 +652,13 @@ private fun AddSubscribeDialog(
                 Box(
                     modifier = Modifier
                         .size(40.dp)
-                        .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.surfaceBright)
+                        .glassSurface(CircleShape, MaterialTheme.colorScheme.surfaceBright)
                         .clickable { onPickFile { picked -> url = picked } },
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(
                         painter = painterResource(R.drawable.ic_file_choose),
-                        contentDescription = "从本地选择",
+                        contentDescription = stringResource(R.string.config_pick_local),
                         tint = MaterialTheme.colorScheme.onSurface,
                         modifier = Modifier.size(22.dp),
                     )
@@ -723,7 +672,7 @@ private fun AddSubscribeDialog(
                     onValueChange = { name = it },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
-                    label = { Text("名字") },
+                    label = { Text(stringResource(R.string.config_field_name)) },
                 )
                 Spacer(Modifier.height(12.dp))
                 OutlinedTextField(
@@ -731,16 +680,17 @@ private fun AddSubscribeDialog(
                     onValueChange = { url = it },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
-                    label = { Text("链接") },
+                    label = { Text(stringResource(R.string.config_field_url)) },
                     supportingText = urlHint,
                 )
             }
         },
         confirmButton = {
+            val dismissThen = LocalSheetDismissThen.current
             TextButton(
-                onClick = { onSave(name.trim(), url.trim()) },
+                onClick = { dismissThen { onSave(name.trim(), url.trim()) } },
                 enabled = url.isNotBlank(),
-            ) { Text("保存") }
+            ) { Text(stringResource(R.string.common_save)) }
         },
     )
 }

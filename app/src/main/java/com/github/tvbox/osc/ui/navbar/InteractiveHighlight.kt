@@ -19,10 +19,6 @@ import com.kyant.backdrop.isRuntimeShaderSupported
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
-/**
- * 交互高亮(2026-09-13 照搬 `示例文件/android` 的 InteractiveHighlight):
- * AGSL 运行时着色器渲染跟随手指的光斑(API 33+),低版本回退纯色叠加。
- */
 class InteractiveHighlight(
     val animationScope: CoroutineScope,
     val position: (size: Size, offset: Offset) -> Offset = { _, offset -> offset },
@@ -64,16 +60,17 @@ class InteractiveHighlight(
         Modifier.drawWithContent {
             val progress = pressProgressAnimation.value
             if (progress > 0f) {
-                if (shader != null) {
+                val activeShader = shader
+                if (activeShader != null) {
                     drawRect(
-                        Color.White.copy(0.08f * progress),
+                        Color.White.copy(0.06f * progress),
                         blendMode = BlendMode.Plus
                     )
-                    shader.apply {
+                    activeShader.apply {
                         val currentPosition = position(size, positionAnimation.value)
                         setFloatUniform("size", size.width, size.height)
-                        setColorUniform("color", Color.White.copy(0.15f * progress))
-                        setFloatUniform("radius", size.minDimension * 1.5f)
+                        setColorUniform("color", Color.White.copy(0.12f * progress))
+                        setFloatUniform("radius", size.minDimension * 1.2f)
                         setFloatUniform(
                             "position",
                             currentPosition.x.fastCoerceIn(0f, size.width),
@@ -81,7 +78,7 @@ class InteractiveHighlight(
                         )
                     }
                     drawRect(
-                        ShaderBrush(shader.asComposeShader()),
+                        ShaderBrush(activeShader.asComposeShader()),
                         blendMode = BlendMode.Plus
                     )
                 } else {
@@ -94,8 +91,9 @@ class InteractiveHighlight(
             drawContent()
         }
 
+    // 键必须是 this(实例身份):同 DampedDragAnimation.modifier,实例重建后手势必须跟着重启
     val gestureModifier: Modifier =
-        Modifier.pointerInput(animationScope) {
+        Modifier.pointerInput(this) {
             inspectDragGestures(
                 enabled = enabled,
                 onDragStart = { down ->

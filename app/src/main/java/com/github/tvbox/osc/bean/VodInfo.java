@@ -50,6 +50,8 @@ public class VodInfo implements Serializable {
     public String sourceKey;
     /** 源显示名快照(仅内存,2026-09-14 历史页解析用,不落 Room) */
     public String sourceName = "";
+    /** 该条目的站点不在当前订阅(仅内存,历史页"当前源不可用"标记用,不落 Room) */
+    public boolean sourceUnavailable = false;
     public String playerCfg = "";
     public boolean reverseSort = false;
 
@@ -121,6 +123,8 @@ public class VodInfo implements Serializable {
     }
 
     public void reverse() {
+        // 无线路时 setVideo 不会建 seriesMap:历史里存过"倒序"的片子再打开不能崩在这里
+        if (seriesMap == null) return;
         Set<String> flags = seriesMap.keySet();
         for (String flag : flags) {
             Collections.reverse(seriesMap.get(flag));

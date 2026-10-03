@@ -2,16 +2,19 @@ package com.github.tvbox.osc.base;
 
 import android.app.Activity;
 import android.app.Application;
+import android.content.Context;
 
 import com.github.tvbox.osc.bean.VodInfo;
 import com.github.tvbox.osc.data.AppDataManager;
 import com.github.tvbox.osc.server.ControlManager;
+import com.github.tvbox.osc.util.AppContextHolder;
 import com.github.tvbox.osc.util.AppManager;
 import com.github.tvbox.osc.util.EpgUtil;
 import com.github.tvbox.osc.util.FileUtils;
 import com.github.tvbox.osc.util.HawkConfig;
 import com.github.tvbox.osc.util.KV;
 import com.github.tvbox.osc.util.LOG;
+import com.github.tvbox.osc.util.LanguageManager;
 import com.github.tvbox.osc.util.OkGoHelper;
 import com.github.tvbox.osc.util.PlayerHelper;
 import com.p2p.P2PClass;
@@ -34,10 +37,25 @@ public class App extends Application {
     public static String burl;
     private static String dashData;
 
+    /**
+     * 语言资源包裹必须最早做(attachBaseContext 早于 onCreate),而语言选择存在 KV 里
+     * ⇒ 在这里提前 KV.init(幂等,onCreate 里那处保留不动)。
+     */
+    @Override
+    protected void attachBaseContext(Context base) {
+        KV.init(base);
+        super.attachBaseContext(LanguageManager.INSTANCE.wrap(base));
+    }
+
     @Override
     public void onCreate() {
         super.onCreate();
         instance = this;
+        // 下层(util/data/server/catvod)读 Context 一律走这里,不再反向依赖 App 类
+        AppContextHolder.install(this);
+        // 启动看门狗(2026-09-21):装崩溃记录器。必须最早装 —— 第三方爬虫可能在
+        // Application.onCreate 之后的任意时刻于自己的线程上闪退,晚了就记不到。
+        com.github.tvbox.osc.util.BootGuard.install();
         initParams();
         // OKGo
         OkGoHelper.init(); //台标获取
@@ -50,7 +68,6 @@ public class App extends Application {
                 .setSupportDP(false)
                 .setSupportSP(false)
                 .setSupportSubunits(Subunits.MM);
-        PlayerHelper.init();
         // 共享缓存容量(第二期扩展):设置项 → player 模块(须在首次 getSharedCache 前注入,改动重启 App 生效)
         ExoMediaSourceHelper.setSharedCacheSizeBytes(
                 Math.max(128, KV.get(HawkConfig.EXO_CACHE_SIZE_MB, HawkConfig.EXO_CACHE_SIZE_MB_DEFAULT)) * 1024L * 1024L);
@@ -70,8 +87,12 @@ public class App extends Application {
         KV.put(HawkConfig.PLAYER_IS_LIVE, false);
         if (!KV.contains(HawkConfig.PLAY_TYPE)) {
             KV.put(HawkConfig.PLAY_TYPE, 2);
-        } else if (KV.get(HawkConfig.PLAY_TYPE, 2) == 0) {
-            KV.put(HawkConfig.PLAY_TYPE, 2);
+        } else {
+            int playType = KV.get(HawkConfig.PLAY_TYPE, 2);
+            // 0 为非法值、1 为已移除的 IJK 内核 —— 一并归一到 EXO,避免设置页选不出内核
+            if (playType == 0 || playType == 1) {
+                KV.put(HawkConfig.PLAY_TYPE, 2);
+            }
         }
     }
 

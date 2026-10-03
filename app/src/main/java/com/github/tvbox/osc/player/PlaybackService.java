@@ -30,7 +30,10 @@ import coil3.request.ImageRequest;
 import coil3.target.Target;
 
 import com.github.tvbox.osc.R;
+import com.github.tvbox.osc.util.HawkConfig;
+import com.github.tvbox.osc.util.KV;
 import com.github.tvbox.osc.util.LOG;
+import com.github.tvbox.osc.util.LanguageManager;
 import com.github.tvbox.osc.util.ScreenUtils;
 
 import java.lang.ref.WeakReference;
@@ -77,6 +80,8 @@ public class PlaybackService extends Service {
     private static PlaybackService instance;
     private static PlaybackEngine engine;
     private static WeakReference<PlaybackHostApi> owner;
+    /** 内核预热任务(只捕获 application context,静态 Handler 不泄漏) */
+    private static final Handler prewarmHandler = new Handler(Looper.getMainLooper());
     /**
      * startForegroundService 已发出、服务尚未就绪(onCreate 未跑)。
      * ⚠️ 此窗口内绝不能 stopService:AOSP 竞态 —— create 已派发到进程,onStartCommand 可能
@@ -99,6 +104,16 @@ public class PlaybackService extends Service {
     private boolean playing;
     private PowerManager.WakeLock wakeLock;
     private WifiManager.WifiLock wifiLock;
+    /**
+     * 上一次 {@code startForeground} 被系统拒绝(2026-09-19)。
+     *
+     * <p>真机原文:{@code Service.startForeground() not allowed due to mAllowStartForeground false}
+     * —— Android 12+ 禁止**后台应用**把服务提为前台。一旦被拒,服务会以"在跑但没进前台"的状态
+     * 存活:唯一的前台通知已撤、前台身份丢失,进程随即可能被降级/冻结 —— 这就是"通知消失后再也
+     * 回不来 + 回页面点击无反应"的起点。置位后由下一次会话更新自动重试(见 {@link #handleSessionIntent})。
+     */
+    private boolean foregroundDenied;
+    private boolean foregroundRetryLogged;
 
     // ==================== 引擎入口(P2) ====================
 
@@ -120,6 +135,45 @@ public class PlaybackService extends Service {
     @Nullable
     public static PlaybackEngine peek() {
         return engine;
+    }
+
+    /**
+     * 内核预热入口(开关关闭时不动):延迟 delayMs 后确保引擎与内核就绪(重复调用只保留最后一次)。
+     * 不走 startHost —— 预热没有播放会话,宿主服务仍由真实播放按原路径拉起。
+     */
+    public static void prewarm(@NonNull Context context, long delayMs) {
+        if (!KV.get(HawkConfig.KERNEL_PREWARM, false)) return;
+        Context app = context.getApplicationContext();
+        prewarmHandler.removeCallbacksAndMessages(null);
+        prewarmHandler.postDelayed(() -> ensurePrewarmed(app), Math.max(0L, delayMs));
+    }
+
+    /** 内核预热开关变更:开启 = 立即预热;关闭 = 交给引擎恢复空闲释放上界(不打断在用实例) */
+    public static void onPrewarmPreferenceChanged(@NonNull Context context, boolean enabled) {
+        Context app = context.getApplicationContext();
+        prewarmHandler.removeCallbacksAndMessages(null);
+        if (!enabled) {
+            PlaybackEngine current = engine;
+            if (current != null) current.onPrewarmPreferenceChanged(false);
+            return;
+        }
+        ensurePrewarmed(app);
+    }
+
+    private static void ensurePrewarmed(Context app) {
+        if (!KV.get(HawkConfig.KERNEL_PREWARM, false)) return;
+        try {
+            PlaybackEngine current = engine;
+            if (current == null) {
+                current = new PlaybackEngine(app);
+                engine = current;
+            }
+            // 走引擎的开关变更入口:cancelIdleRelease 必须执行 —— 否则预热完会被在途的 60s 空闲释放收走
+            current.onPrewarmPreferenceChanged(true);
+        } catch (Throwable th) {
+            // 预热失败不得影响启动与正常起播(起播链路会自行建内核)
+            LOG.e(TAG + " prewarm failed: " + th.getMessage());
+        }
     }
 
     private static void startHost(@NonNull Context app, @Nullable Intent intent) {
@@ -165,6 +219,13 @@ public class PlaybackService extends Service {
             stopWhenStarted = false;
             instance.handleSessionIntent(intent);
         } else {
+            // ⚠️ 这条是**后台受限启动**的入口(2026-09-19):服务不在时新建会话会走 startHost 的
+            // startForegroundService 分支;若此刻 App 已在后台,系统会拒绝把服务提为前台
+            // (Service.startForeground() not allowed due to mAllowStartForeground false),
+            // 通知随之永远不出现。真机复现路径 = 本集自然播完撤会话后、在后台自动续播下一集。
+            // 留痕以区分"服务已在前台只是没通知"与"这次压根没提到前台"。
+            LOG.i(TAG + " session update with no live service → startForegroundService"
+                    + " (may be denied if app is in background)");
             pendingStart = true;
             stopWhenStarted = false;
             startHost(context.getApplicationContext(), intent);
@@ -189,6 +250,9 @@ public class PlaybackService extends Service {
     public static void stopSession(Context context, PlaybackHostApi host) {
         PlaybackHostApi current = owner == null ? null : owner.get();
         if (host != null && current != null && current != host) return;
+        // 归属守卫:owner 是弱引用,页面被回收后 current 为 null ⇒ 守卫会放行任何调用者,留痕以便定位
+        LOG.i(TAG + " stopSession: ownerMatch=" + (host != null && current == host)
+                + " ownerAlive=" + (current != null) + " host=" + host);
         owner = null;
         if (instance != null) {
             pendingStart = false;
@@ -200,6 +264,19 @@ public class PlaybackService extends Service {
     }
 
     // ==================== 生命周期 ====================
+
+    /** 通知文案走 Service 自身 Context,不包裹会是系统语言 */
+    @Override
+    protected void attachBaseContext(Context newBase) {
+        super.attachBaseContext(LanguageManager.INSTANCE.wrap(newBase));
+    }
+
+    /** Service 的 base 在创建时固化(切语言不会重挂)→ 文案改取 App 级(已按语言包裹过)的 Context */
+    @NonNull
+    private String text(int resId) {
+        Context app = getApplicationContext();
+        return (app == null ? this : LanguageManager.INSTANCE.localized(app)).getString(resId);
+    }
 
     @Override
     public void onCreate() {
@@ -346,9 +423,41 @@ public class PlaybackService extends Service {
         if (mediaSession == null) return;
         try {
             startForeground(NOTIFICATION_ID, buildNotification());
+            if (foregroundDenied) {
+                // 之前被拒过、这次成了:前台身份已恢复(通知重新可见)
+                foregroundDenied = false;
+                foregroundRetryLogged = false;
+                LOG.i(TAG + " startForeground recovered after denial");
+            }
         } catch (Throwable th) {
-            LOG.i(TAG + " startForeground failed: " + th.getMessage());
+            // ⚠️ 不能只打日志了事(2026-09-19):startForeground 被拒 ⇒ 服务**没进前台**,
+            // 唯一的前台通知已被前一次 stopForeground 撤掉、且不会有新的 notification_enqueue,
+            // 系统也不再给 FGS 的进程优先级。历史上这里静默吞掉,于是一路走到
+            // 「回页面点击无反应」(引擎随进程被降级/回收而失效)都没有任何痕迹。
+            // 现在置位并明确留痕,由后续会话更新自动重试。
+            foregroundDenied = true;
+            if (!foregroundRetryLogged) {
+                foregroundRetryLogged = true;
+                LOG.i(TAG + " startForeground DENIED (service stays non-foreground, will retry on"
+                        + " next session update): " + th.getMessage());
+            }
         }
+    }
+
+    /**
+     * 通知栏 / 媒体键动作触发的"补一次前台"。
+     *
+     * <p>为什么单列一个入口(2026-09-19 审查补):修复的目标场景里**根本没有状态变化可供重试** ——
+     * 已确认纯音频的会话退后台**不会被暂停**(`MusicPlayerActivity.hostPause` 对纯音频让路),
+     * 所以回到前台时 `hostResume()` 也不产生任何播放状态事件 ⇒ 拿不到 ACTION_UPDATE ⇒
+     * "回到前台即自动救回"是不成立的。真正的可达恢复点是**用户与通知/媒体键交互**这一刻:
+     * 系统此刻一定允许提升前台(应用正在响应用户动作),且这一下正好是用户最可能做的操作。
+     * 另有 ACTION_UPDATE 那条机会性重试(见其分支),二者互补。
+     */
+    private void promoteIfForegroundDenied() {
+        if (!foregroundDenied) return;
+        LOG.i(TAG + " media action while foreground denied → retry startForeground");
+        startForegroundSafely();
     }
 
     private void handleSessionIntent(Intent intent) {
@@ -362,11 +471,13 @@ public class PlaybackService extends Service {
         if (ACTION_PLAY.equals(action)) {
             PlaybackHostApi host = getOwner();
             if (host != null) host.resumeFromMediaSession();
+            promoteIfForegroundDenied();
             return;
         }
         if (ACTION_PAUSE.equals(action)) {
             PlaybackHostApi host = getOwner();
             if (host != null) host.pauseFromMediaSession();
+            promoteIfForegroundDenied();
             return;
         }
         if (ACTION_PREVIOUS.equals(action)) {
@@ -375,6 +486,7 @@ public class PlaybackService extends Service {
                 pauseForSwitch();
                 host.playPrevious();
             }
+            promoteIfForegroundDenied();
             return;
         }
         if (ACTION_NEXT.equals(action)) {
@@ -383,6 +495,7 @@ public class PlaybackService extends Service {
                 pauseForSwitch();
                 host.playNext(false);
             }
+            promoteIfForegroundDenied();
             return;
         }
         if (ACTION_SEEK.equals(action)) {
@@ -406,6 +519,11 @@ public class PlaybackService extends Service {
             playing = intent.getBooleanExtra(EXTRA_PLAYING, false);
             updateArtwork(newArtworkUrl);
             updateSessionState();
+            // 每次会话更新都顺手补一次前台:若上一次 startForeground 被系统拒(见 startForegroundSafely
+            // 注释),服务此刻在跑但没有前台身份、也没有通知 —— 这次调用就是机会性重试,成功时
+            // startForegroundSafely 内部会清标记并打 recovered 日志。**不在此打"正在重试"的日志**:
+            // 被持续拒绝时那会每次更新刷一行,而本次修复的用意正是"别再静默、也别刷屏"。
+            // 另一个更可靠的恢复点见 promoteIfForegroundDenied(用户动通知/媒体键那一刻)。
             startForegroundSafely();
         }
     }
@@ -487,10 +605,11 @@ public class PlaybackService extends Service {
                         .setShowActionsInCompactView(1, 2, 3));
         if (artwork != null) builder.setLargeIcon(artwork);
         builder.addAction(new NotificationCompat.Action(R.drawable.media_action_placeholder, "", actionIntent(ACTION_PLACEHOLDER)));
-        builder.addAction(new NotificationCompat.Action(R.drawable.exo_icon_previous, "上一个", actionIntent(ACTION_PREVIOUS)));
+        builder.addAction(new NotificationCompat.Action(R.drawable.exo_icon_previous, text(R.string.player_notification_previous), actionIntent(ACTION_PREVIOUS)));
         builder.addAction(new NotificationCompat.Action(playing ? R.drawable.exo_icon_pause : R.drawable.exo_icon_play,
-                playing ? "暂停" : "播放", actionIntent(playing ? ACTION_PAUSE : ACTION_PLAY)));
-        builder.addAction(new NotificationCompat.Action(R.drawable.exo_icon_next, "下一个", actionIntent(ACTION_NEXT)));
+                text(playing ? R.string.common_pause : R.string.common_play),
+                actionIntent(playing ? ACTION_PAUSE : ACTION_PLAY)));
+        builder.addAction(new NotificationCompat.Action(R.drawable.exo_icon_next, text(R.string.player_notification_next), actionIntent(ACTION_NEXT)));
         return builder.build();
     }
 
@@ -503,8 +622,9 @@ public class PlaybackService extends Service {
 
     private void createNotificationChannel() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
-        NotificationChannel channel = new NotificationChannel(CHANNEL_ID, "播放控制", NotificationManager.IMPORTANCE_LOW);
-        channel.setDescription("后台播放控制");
+        NotificationChannel channel = new NotificationChannel(CHANNEL_ID,
+                text(R.string.player_notification_channel_name), NotificationManager.IMPORTANCE_LOW);
+        channel.setDescription(text(R.string.player_notification_channel_desc));
         NotificationManager manager = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
         if (manager != null) manager.createNotificationChannel(channel);
     }
@@ -574,7 +694,14 @@ public class PlaybackService extends Service {
      * **不 stopSelf、不释放引擎** —— 播放器要继续跨页面复用(P2),任务移除/服务销毁时才释放(见 onTaskRemoved)。
      */
     private void stopPlaybackSession() {
+        // 撤通知的唯一收尾点:留痕以便定位"通知自己消失"的路径
+        LOG.i(TAG + " stopPlaybackSession (notification 1001 removed, playing=" + playing + ")");
         playing = false;
+        // 会话结束 ⇒ "本会话曾进不了前台"这件事随之失效,两个标记一起复位
+        // (只复位一个会让 foregroundRetryLogged 永远留在 true:整个服务生命周期只打一次
+        //  DENIED 日志 —— 而"留痕"正是这两个标记存在的理由,再被拒就看不见了)
+        foregroundDenied = false;
+        foregroundRetryLogged = false;
         releasePlaybackLocks();
         if (mediaSession != null) {
             mediaSession.setActive(false);

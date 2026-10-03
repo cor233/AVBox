@@ -1,4 +1,5 @@
 package com.github.tvbox.osc.util;
+import com.github.tvbox.osc.util.LOG;
 import com.github.catvod.crawler.SpiderDebug;
 import com.github.tvbox.osc.server.ControlManager;
 import com.github.tvbox.osc.util.parser.SuperParse;
@@ -14,6 +15,7 @@ import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import okhttp3.HttpUrl;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.Response;
@@ -39,8 +41,8 @@ public class Proxy {
                 return SuperParse.loadHtml(params.get("flag"), params.get("url"));
             }
 
-        } catch (Throwable ignored) {
-
+        } catch (Throwable th) {
+            LOG.e("Proxy", "proxy request failed", th);
         }
         return null;
     }
@@ -156,7 +158,7 @@ public class Proxy {
         try {
             return client.newCall(request).execute();
         } catch (IOException e) {
-            System.err.println("网络请求异常：" + e.getMessage());
+            System.err.println("网络请求异常：" + e.getMessage()); // i18n: keep(异常消息,只进日志)
             throw e; // 重新抛出异常，让外层处理
         }
     }
@@ -212,7 +214,7 @@ public class Proxy {
         return lower.endsWith(".m3u8") || lower.endsWith(".m3u");
     }
 
-    private static String joinUrl(String base, String url, String type, Map<String, String> params) {
+    static String joinUrl(String base, String url, String type, Map<String, String> params) {
         if (base == null) base = "";
         if (url == null) url = "";
         try {
@@ -232,8 +234,20 @@ public class Proxy {
                 return proxyUrl + URLEncoder.encode(resolvedUri.toString(),"UTF-8");
             }
         } catch (Exception e) {
-            e.printStackTrace();
-            return null;
+            LOG.e("Proxy", e);
+            // 野站分片常带未编码非法字符(空格/CJK)导致 URI 解析失败:绝不能返回 null —— 字面量 null 会写进播放列表
+            return fallbackUrl(url, type, params);
+        }
+    }
+
+    /** URI 解析失败时的兜底:绝对地址按原样编码仍走代理(保留防盗链头),其余原样返回 */
+    private static String fallbackUrl(String url, String type, Map<String, String> params) {
+        if (!url.startsWith("http://") && !url.startsWith("https://")) return url;
+        try {
+            return ControlManager.get().getAddress(true) + "proxy?go=live&type=" + type + headerQuery(params) + "&url=" + URLEncoder.encode(url, "UTF-8");
+        } catch (Exception e) {
+            SpiderDebug.log(e);
+            return url;
         }
     }
 
@@ -314,10 +328,23 @@ public class Proxy {
                 .build();
 
         try (Response response = client.newCall(request).execute()) {
-            if (response.isRedirect()) { // 判断是否为重定向
-                return response.header("Location"); // 获取重定向后的地址
+            if (response.isRedirect()) {
+                String resolved = resolveRedirectLocation(response.request().url(), response.header("Location"));
+                if (resolved != null) return resolved;
             }
-            return url; // 如果没有重定向，返回原 URL
+            return url;
+        }
+    }
+
+    /** Location 允许相对地址(RFC 7231),必须按请求 URL 解析;缺失或非法时返回 null,由调用方回落原 URL */
+    static String resolveRedirectLocation(HttpUrl requestUrl, String location) {
+        if (requestUrl == null || location == null || location.length() == 0) return null;
+        try {
+            HttpUrl resolved = requestUrl.resolve(location);
+            return resolved != null ? resolved.toString() : null;
+        } catch (Exception e) {
+            SpiderDebug.log(e);
+            return null;
         }
     }
 
@@ -331,7 +358,7 @@ public class Proxy {
             if (response.isSuccessful()) {
                 return response.body().string(); // 获取 m3u8 文件内容
             } else {
-                throw new IOException("请求失败，HTTP 状态码: " + response.code());
+                throw new IOException("请求失败，HTTP 状态码: " + response.code()); // i18n: keep(异常消息,只进日志)
             }
         }
     }

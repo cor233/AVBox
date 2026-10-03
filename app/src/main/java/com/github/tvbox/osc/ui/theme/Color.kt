@@ -1,12 +1,32 @@
 package com.github.tvbox.osc.ui.theme
 
 import androidx.compose.material3.ColorScheme
+import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.SelectableChipColors
+import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 
-/**
- * 卡片容器色(avbox-mobile-ui-spec §3):
- * 2026-09-09 用户定稿:不论深浅一律 surfaceBright。
- * (原逻辑为浅色 surfaceContainerHigh/深色 surfaceBright,已废弃)
- */
 val ColorScheme.cardContainer: Color
     get() = surfaceBright
+
+fun ColorScheme.toPureBlack(): ColorScheme = copy(
+    background = Color.Black,
+    surface = Color.Black,
+    surfaceDim = Color.Black,
+    surfaceContainerLowest = Color.Black,
+    surfaceContainer = Color.Black,
+    surfaceContainerLow = Color(0xFF060606),
+    surfaceContainerHigh = Color(0xFF0B0B0B),
+    surfaceContainerHighest = Color(0xFF121212),
+    surfaceBright = Color(0xFF141414),
+    surfaceVariant = Color(0xFF1A1A1A),
+    surfaceTint = Color.Black,
+)
+
+@Composable
+fun ColorScheme.filterChipColors(containerColor: Color = Color.Transparent): SelectableChipColors =
+    FilterChipDefaults.filterChipColors(
+        containerColor = containerColor,
+        selectedContainerColor = primaryContainer,
+        selectedLabelColor = onPrimaryContainer,
+    )

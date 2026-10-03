@@ -15,17 +15,21 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialShapes
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.toShape
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -36,7 +40,10 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import com.github.tvbox.osc.ui.theme.cardContainer
 
-/** 卡位:决定当前卡片的圆角(avbox-mobile-ui-spec §4.3) */
+private val RowLeadingIconSize = 24.dp
+
+private val RowLeadingIconGap = 16.dp
+
 enum class SettingsCardPosition {
     SINGLE,
     FIRST,
@@ -45,37 +52,29 @@ enum class SettingsCardPosition {
 }
 
 private fun shapeFor(position: SettingsCardPosition): Shape = when (position) {
-    SettingsCardPosition.SINGLE -> RoundedCornerShape(28.dp)
-    SettingsCardPosition.FIRST -> RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp, bottomEnd = 4.dp, bottomStart = 4.dp)
+    SettingsCardPosition.SINGLE -> RoundedCornerShape(32.dp)
+    SettingsCardPosition.FIRST -> RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp, bottomEnd = 4.dp, bottomStart = 4.dp)
     SettingsCardPosition.MIDDLE -> RoundedCornerShape(4.dp)
-    SettingsCardPosition.LAST -> RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp, bottomEnd = 28.dp, bottomStart = 28.dp)
+    SettingsCardPosition.LAST -> RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp, bottomEnd = 32.dp, bottomStart = 32.dp)
 }
 
-/**
- * 设置分组卡片:按卡位自动圆角,Surface 裁剪保证 ripple 按卡圆角裁剪(avbox-mobile-ui-spec §4.3)。
- * 一个可视分组拆多张卡时,各卡间距由 [SettingsGroup] 统一为 2dp。
- */
 @Composable
 fun SettingsCard(
     position: SettingsCardPosition,
     modifier: Modifier = Modifier,
-    // 为 null 时使用全局 cardContainer 色;页面可传 surfaceBright 等覆盖
     color: Color? = null,
+    shape: Shape? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     Surface(
         modifier = modifier.fillMaxWidth(),
-        shape = shapeFor(position),
+        shape = shape ?: shapeFor(position),
         color = color ?: MaterialTheme.colorScheme.cardContainer,
     ) {
         Column(content = content)
     }
 }
 
-/**
- * 设置分组:组标题(13sp onSurfaceVariant)+ 若干张卡,卡间距 2dp;组间距由页面侧统一控制。
- * 分组拆多张卡时仅首卡传 title,各卡 position 依次 FIRST/MIDDLE/LAST。
- */
 @Composable
 fun SettingsGroup(
     title: String?,
@@ -84,7 +83,7 @@ fun SettingsGroup(
 ) {
     Column(
         modifier = modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(2.dp), // 2026-09-09:卡间距 4→2dp(用户定稿)
+        verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
         title?.let {
             Text(
@@ -98,10 +97,6 @@ fun SettingsGroup(
     }
 }
 
-/**
- * 右侧当前值 + chevron 的设置行;无 [onClick] 时不显示 chevron;
- * 可带左侧圆形角标图标(iconRes)与标题下方小标题(subtitle,2026-09-12)。
- */
 @Composable
 fun SettingsRow(
     title: String,
@@ -110,6 +105,7 @@ fun SettingsRow(
     valueText: String? = null,
     enabled: Boolean = true,
     iconRes: Int? = null,
+    leadingIconRes: Int? = null,
     onClick: (() -> Unit)? = null,
 ) {
     Row(
@@ -126,6 +122,7 @@ fun SettingsRow(
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        leadingIconRes?.let { RowLeadingIcon(it, enabled) }
         if (iconRes != null) {
             SettingsIconBadge(iconRes, title)
             Spacer(Modifier.width(16.dp))
@@ -149,16 +146,13 @@ fun SettingsRow(
     }
 }
 
-/**
- * 设置行左侧圆形角标图标(2026-09-12 用户定稿):40dp 圆形容器 primaryContainer 底(动态取色),
- * 图标 22dp onPrimaryContainer;规格与搜索页卡片角标(SearchActivity.SectionIconBadge)一致。
- */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun SettingsIconBadge(@DrawableRes iconRes: Int, contentDescription: String? = null) {
     Box(
         modifier = Modifier
             .size(40.dp)
-            .clip(CircleShape)
+            .clip(MaterialShapes.Cookie7Sided.toShape())
             .background(MaterialTheme.colorScheme.primaryContainer),
         contentAlignment = Alignment.Center,
     ) {
@@ -171,10 +165,6 @@ fun SettingsIconBadge(@DrawableRes iconRes: Int, contentDescription: String? = n
     }
 }
 
-/**
- * 滑块设置行:标题 + 右侧当前值 + M3 Slider(动态取色,自动读 colorScheme.primary/surfaceVariant)。
- * 拖动中仅回调 [onValueChange](调用方更新本地 state),松手才回调 [onValueChangeFinished] 落盘。
- */
 @Composable
 fun SettingsSliderRow(
     title: String,
@@ -185,6 +175,7 @@ fun SettingsSliderRow(
     valueRange: ClosedFloatingPointRange<Float> = 0f..1f,
     steps: Int = 0,
     valueText: String? = null,
+    leadingIconRes: Int? = null,
 ) {
     Column(
         modifier = modifier
@@ -197,9 +188,21 @@ fun SettingsSliderRow(
                 .padding(horizontal = 16.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            leadingIconRes?.let { RowLeadingIcon(it, enabled = true) }
             RowTitle(title = title, enabled = true, modifier = Modifier.weight(1f))
             if (valueText != null) {
-                RowValue(text = valueText, enabled = true)
+                Spacer(Modifier.width(16.dp))
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                ) {
+                    Text(
+                        text = valueText,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                    )
+                }
             }
         }
         Slider(
@@ -215,10 +218,30 @@ fun SettingsSliderRow(
     }
 }
 
-/**
- * 开关设置行:Switch 不直接接收点击,由整行 clickable 接管,避免双响应。
- * 可带标题下方小标题(subtitle,2026-09-12),样式与 [SettingsRow] 一致。
- */
+@Composable
+fun SettingsSwitch(
+    checked: Boolean,
+    onCheckedChange: ((Boolean) -> Unit)?,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+) {
+    Switch(
+        checked = checked,
+        onCheckedChange = onCheckedChange,
+        modifier = modifier,
+        enabled = enabled,
+        thumbContent = if (checked) {
+            {
+                Icon(
+                    imageVector = Icons.Filled.Check,
+                    contentDescription = null,
+                    modifier = Modifier.size(SwitchDefaults.IconSize),
+                )
+            }
+        } else null,
+    )
+}
+
 @Composable
 fun SettingsSwitchRow(
     title: String,
@@ -228,6 +251,7 @@ fun SettingsSwitchRow(
     subtitle: String? = null,
     valueText: String? = null,
     enabled: Boolean = true,
+    leadingIconRes: Int? = null,
 ) {
     Row(
         modifier = modifier
@@ -243,6 +267,7 @@ fun SettingsSwitchRow(
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        leadingIconRes?.let { RowLeadingIcon(it, enabled) }
         Column(modifier = Modifier.weight(1f)) {
             RowTitle(title = title, enabled = enabled)
             if (subtitle != null) {
@@ -252,15 +277,10 @@ fun SettingsSwitchRow(
         if (valueText != null) {
             RowValue(text = valueText, enabled = enabled, modifier = Modifier.padding(end = 8.dp))
         }
-        Switch(checked = checked, onCheckedChange = null, enabled = enabled)
+        SettingsSwitch(checked = checked, onCheckedChange = null, enabled = enabled)
     }
 }
 
-/**
- * bottom sheet 单选项(avbox-mobile-ui-spec §4.3:选项列表与设置行统一视觉)。
- * [trailing]:标题与单选圈之间的可选插槽(如订阅源 sheet 的「搜索/详情」策略标记)。
- * [onLongClick]:可选长按动作(如直播设置「配置切换」历史的长按删除,2026-09-12 方案 2)。
- */
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun SettingsOptionRow(
@@ -294,6 +314,17 @@ fun SettingsOptionRow(
 }
 
 @Composable
+internal fun RowLeadingIcon(@DrawableRes iconRes: Int, enabled: Boolean) {
+    Icon(
+        painter = painterResource(iconRes),
+        contentDescription = null,
+        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (enabled) 1f else 0.38f),
+        modifier = Modifier.size(RowLeadingIconSize),
+    )
+    Spacer(Modifier.width(RowLeadingIconGap))
+}
+
+@Composable
 private fun RowTitle(title: String, enabled: Boolean, modifier: Modifier = Modifier) {
     Text(
         text = title,
@@ -307,7 +338,6 @@ private fun RowTitle(title: String, enabled: Boolean, modifier: Modifier = Modif
     )
 }
 
-/** 标题下方小标题(副标题):bodySmall + onSurfaceVariant,不可用行同透明度规则 */
 @Composable
 private fun RowSubtitle(text: String, enabled: Boolean, modifier: Modifier = Modifier) {
     Text(

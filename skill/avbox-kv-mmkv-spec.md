@@ -20,8 +20,8 @@
 |---|---|
 | Hawk 调用点 | **34 个文件、约 250+ 处**(`Hawk.get/put/contains/delete`) |
 | 高密度文件 | `ApiConfig` 48 / `LivePlayActivity` 35 / `SettingsPage` 28 / `HistoryHelper` 14 / `DanmuHelper` 12 |
-| 键总量 | `HawkConfig` 定义 75 个(另有 `DEFAULT_LOAD_LIVE` 等少量直接字符串键) |
-| 其他存储 | 2 处独立 SharedPreferences(`thunder` 雷电标识、`AudioTrackMemory`),与 Hawk 无关,不在本次范围 |
+| 键总量 | `HawkConfig` 定义 78 个 `public static final String`(可用 `Select-String "public static final String"` 复核;另有 `DEFAULT_LOAD_LIVE` 等少量直接字符串键;2026-09-17 新增 `nav_animation_disabled`) |
+| 其他存储 | ~~2 处独立 SharedPreferences(`thunder` 雷电标识、`AudioTrackMemory`),与 Hawk 无关,不在本次范围~~ → **2026-09-15 已补迁入 KV**(`thunder_imei`/`thunder_mac`;轨道记忆 —— 2026-09-25 起键族为 `track_mem_<sourceKey>@<vodId>_audio|video|text`,旧 `audio_track_<progressKey>_*` 已废弃),**全仓不再有 SharedPreferences**,见 `history/features.md` 同日"SP 残留清零"条目 |
 
 ### 1.2 键类型分布(决定编码规则的关键)
 
@@ -30,12 +30,20 @@
 
 | 键 | 类型 | 备注 |
 |---|---|---|
-| `search_history` / `api_history` / `live_api_history` / `api_line_list` | `ArrayList<String>` | 历史与线路列表 |
+| `search_history` / `api_history` / `live_api_history` / `api_line_list` / `live_api_line_list` | `ArrayList<String>` | 历史与线路列表(2026-09-21 新增 `live_api_line_list`:直播侧多仓,同样是 `名字\t链接`,与点播的 `api_line_list` 分开存) |
 | `subscribe_list` / `live_subscribe_list` | `ArrayList<String>` | 每项 `名字\t链接`(配置管理页) |
+| `local_source_trees` | `ArrayList<String>` | 本地源目录授权(SAF tree uri 字符串),本地服务靠它直读原目录 |
 | `live_group_list` | **`JsonArray`(Gson 节点树)** | 直播分组,注意它不是 List |
 | `source_card_policy` | `HashMap<String, String>` | 源级卡片点击策略 |
 | `sources_for_search` | **`HashMap<String, HashMap<String, String>>`** | 嵌套泛型,读侧需要显式 TypeToken |
 | `doh_json` | String(JSON 文本) | 不是集合 |
+
+**启动看门狗键(2026-09-21 新增,均登记在 `KVKeySpec`)**:`boot_loading_jar`(String,当前正在装载的
+jar 地址)、`boot_loading_count`(Long,同源累计装载次数)、`boot_last_attempt_at`(Long,上次装载时刻,
+用于"距上次太久就重新计数")、`boot_load_start_elapsed`(Long,本次进程开始装载 jar 的开机计时,
+与崩溃标记同源比较)、`boot_vod_source` / `boot_live_source`(String,崩溃时正在使用的启动源)、
+`boot_safe_disabled`(String,被自动停用的源地址,UI 读后即清)。⚠️ 崩溃时刻**不在 KV 里** ——
+它必须同步落盘,走 `files/boot_crash.marker`(原因见 §4.1 的异步写说明)。
 
 ### 1.3 为什么迁(Hawk 2.0.1 的硬伤)
 
@@ -67,7 +75,7 @@
 | P2 切换 | 33 文件 `Hawk.` → `KV.` 批量替换 | 全量回归 | ✅ 业务侧 `Hawk.` 残留 0 处 |
 | P3 清理 | 删除 Hawk/Conceal 依赖、迁移代码与旧数据 | 立即执行(用户决策,不设观察期) | ✅ 依赖树已无 hawk/conceal |
 
-> **P1 为何取消**:迁移代码的唯一价值是"让存量用户不丢数据"。用户 2026-09-13 明确"应用尚未发布、没有存量用户",
+> **P1 为何取消**:迁移代码的唯一价值是"让存量用户不丢数据",而应用尚未发布、没有存量用户,
 > 于是"Hawk → MMKV 数据搬运 + 纠偏 + 完成标记"整套失去存在理由,直接删除比长期维护它更正确 ——
 > 首装即原生 MMKV,不存在"旧库"这个前提。
 
@@ -78,6 +86,12 @@
 - `gradle/libs.versions.toml` 新增 `mmkv = "2.4.2"`。
 - `App.onCreate` → `initParams()` 中 `KV.init(this)`(必须在任何 KV 读写之前)。
 - MMKV 实例:单实例 `MMKV.mmkvWithID("avbox_kv", MMKV.SINGLE_PROCESS_MODE)`(**不加密**,见 §4.4)。
+- ⚠️ **写入是异步的,别拿它做崩溃/断电级持久化(2026-09-21 实测教训)**:MMKV 把 `encode` 排进
+  Scheduler、约 1 秒后落盘,而 **2.4.2 没有同步写 flag**(模式位只有 `SINGLE_PROCESS_MODE` /
+  `MULTI_PROCESS_MODE` / `READ_ONLY_MODE` 等),`sync()` 也只是等"当前 pending 批"。
+  实测进程级 `UncaughtExceptionHandler` 里写的崩溃时刻**根本没落盘**(设备上一直停在几分钟前),
+  导致启动看门狗的判据从未成立。**结论:写完进程就可能死的场景必须用同步文件 IO**
+  (先例 = `BootGuard` 的 `files/boot_crash.marker`),不要指望 KV。
 - **无 Hawk、无迁移代码**:`Hawk.init/put/get` 与 `com.orhanobut:hawk`(及传递依赖 conceal)已全部移除,`proguard` 的 hawk keep 规则同步删除。
 
 ### 4.2 KV 门面 API
@@ -90,9 +104,11 @@ public final class KV {
     public static <T> T get(String key, T defaultValue);     // 不存在/失败 → defaultValue
     public static boolean contains(String key);
     public static void delete(String key);
+    public static List<String> keys(String prefix);          // 按前缀列键(孤儿清理冷路径,勿在热路径用)
 }
 ```
 
+- `keys(prefix)`(2026-09-26 新增):按前缀枚举键(MMKV `allKeys()` 过滤),只服务"孤儿清理"类冷路径(进度索引遍历、轨道记忆批量删除)—— **不要在热路径调用**,它每次都把整张键表取一遍。
 - 调用点替换规则:`Hawk.get(key, def)` → `KV.get(key, def)`;`put` / `contains` / `delete` 同理。
 - ⚠️ **`get(key, def)` ≠ 判存在性**:它分不清"键不存在"与"存的就是这个值"(旧 Hawk 同款语义)。要判存在性用 `contains(key)` —— 这条差异曾在迁移代码里造成过一次必崩(见 §9)。
 
@@ -115,7 +131,7 @@ public final class KV {
 
 ### 4.4 加密
 
-- **不加密(用户决策,2026-09-13)**:采用 MMKV 默认行为,明文 mmap 存于应用私有目录。相对 Hawk/Conceal 属安全级别下调(root / adb 备份场景可读明文),用户已确认接受。
+- **不加密(用户决策,2026-09-13)**:采用 MMKV 默认行为,明文 mmap 存于应用私有目录。相对 Hawk/Conceal 属安全级别下调(root / adb 备份场景可读明文),已确认接受。
 - 回补路径:MMKV 支持 `reKey(newKey)` 原地加密,未来若需加密可在任一发版补上,不丢数据。
 
 ### 4.5 数据迁移
@@ -131,6 +147,13 @@ public final class KV {
 - 集合读取:区分「键不存在」(返回默认值,正常)与「解不出类型」(返回默认值 + `LOG.e` + 键名)。
 - 关键事件打点前缀 `echo-kv*`,经 `util/LOG` 落盘(`FILE_LOG_PREFIXES` 已含 `echo-kv`),真机取日志:
   `adb shell run-as <applicationId> cat files/preload_debug.log`(该 ROM 吞 logcat,此为既有约定)。
+- ⚠️ **单测里不能用 `android.text.TextUtils.isEmpty` 判空(2026-09-21,第三次踩)**:
+  工程开了 `testOptions.unitTests.returnDefaultValues = true`,Android 桩方法**静默返回默认值** ——
+  `TextUtils.isEmpty("")` 返 `false`、`TextUtils.isEmpty(null)` 也返 `false`。于是同一处判空
+  "真机生效、单测失效",而**单测正是用来钉这类边界的**。踩过三次的落点:`ConfigParser`(最初)、
+  `bean/Depot`(空地址过滤在单测里不生效)、`util/BootGuard`(`shouldDisable` 的"空 jar 不停用"守卫
+  被新写的单测当场抓到)。**约定:纯逻辑类里判空一律写本地 `text == null || text.length() == 0`
+  的小工具方法**,并在注释里指明原因(三处现有实现互相引用,便于后来者一次看懂)。
 
 ## 5. 实施步骤(实际执行)
 
@@ -164,7 +187,7 @@ public final class KV {
 - **无回滚退路**(用户决策):Hawk 与其旧库已从代码与依赖中彻底移除,MMKV 侧数据出问题只能清库重建(设置页重置 / 清除应用数据)。
 - 因此 §6.2 全量回归必须在发版前完成。
 
-## 7. 决策记录(2026-09-13 用户确认,取代原"未决问题")
+## 7. 决策记录(2026-09-13 已确认,取代原"未决问题")
 
 | # | 问题 | 决策 | 对方案的影响 |
 |---|---|---|---|
@@ -172,7 +195,7 @@ public final class KV {
 | Q2 | 旧 Hawk 依赖保留几个版本周期? | **不保留** | §3 阶段表 P3 = 立即移除;§6.3 起无回滚退路 |
 | Q3 | 嵌套泛型处理机制? | **KV 内建"键 → Type"登记表** | §4.3 按登记表实现(复杂键集中登记);全部调用点保持 `KV.get(key, def)` 可机械替换 |
 | Q4 | 是否借迁移统一键命名 / 清理废弃键? | **不做** | 保持最小变更,不做键名重构与废弃键清理 |
-| Q5(追加) | 应用是否已发布 / 有无存量用户? | **未发布,无存量用户**(2026-09-13 用户确认) | **取消数据迁移**(§4.5):P1 整套(Hawk 搬运 + 纠偏 + 完成标记)删除,首装即原生 MMKV;Hawk/Conceal 依赖与 `proguard` keep 规则同步移除 |
+| Q5(追加) | 应用是否已发布 / 有无存量用户? | **未发布,无存量用户**(2026-09-13 已确认) | **取消数据迁移**(§4.5):P1 整套(Hawk 搬运 + 纠偏 + 完成标记)删除,首装即原生 MMKV;Hawk/Conceal 依赖与 `proguard` keep 规则同步移除 |
 
 ## 8. 实施修订记录(2026-09-13 实施时追加)
 
@@ -186,8 +209,9 @@ public final class KV {
 | R6 | ——(原方案未提及) | 新增 `util/kvcodec` 纯 JVM 包(`KVDecoder`/`KVLog`)与 `app/src/test` 单测 19 例 | §5-P0 要求"集合与嵌套泛型单测"。把编解码核心与 Android(MMKV/LOG)解耦后,单测可纯 JVM 跑,不需要 Robolectric |
 | R7 | §4.6 `echo-kv*` 打点 | 仅保留**事件级**日志(类型登记表装载/类型解不出/解码失败);正常读写不打点 | 热路径(如播放器每帧读设置)打点会淹没有效信息;日志前缀已加入 `util/LOG.FILE_LOG_PREFIXES` |
 | R8 | ——(原方案未提及) | 迁移(已删除)期间暴露的两个真实缺陷被固化修复:`KVMigrate` 必须先判键存在性;`KVCodec` 用 `containsKey` 而非 `getValueSize` 判存在性 | 见 §9。前者随迁移一起删除,后者是**现行代码**的修复,必须保留 |
-| R9 | §7-Q2 隐含"gson 保持 ≤2.12 直到迁移完成" | **gson 2.10.1 → 2.14.0**(用户要求,2026-09-13) | 原约束只服务于 Hawk 的集合读取;Hawk 已彻底移除,约束消失。KV 侧只用稳定 API(`TypeToken.get` / 显式 Type),不碰 gson 内部实现 ⇒ 升级零改动,编译 + 19 例单测通过。**这也是本次迁移的验收点之一(G3 解除 gson 版本枷锁)** |
+| R9 | §7-Q2 隐含"gson 保持 ≤2.12 直到迁移完成" | **gson 2.10.1 → 2.14.0**(2026-09-13) | 原约束只服务于 Hawk 的集合读取;Hawk 已彻底移除,约束消失。KV 侧只用稳定 API(`TypeToken.get` / 显式 Type),不碰 gson 内部实现 ⇒ 升级零改动,编译 + 19 例单测通过。**这也是本次迁移的验收点之一(G3 解除 gson 版本枷锁)** |
 | R10 | ——(迁移完成后审查发现) | **修复登记类型与写入类型不一致**:`LIVE_WEB_HEADER` 由 `register(key, "")`(String)改为 `new TypeToken<HashMap<String,String>>(){}`;并新增单测 `KVKeySpecTest.liveWebHeader_roundTripDecodesAsStringMap` 锁死"写入类型 == 登记类型" | `ApiConfig.loadLives` 写入的是 `HashMap<String,String>`(header/ua),登记成 String 会让读取侧 Gson 用 String 解析对象原文抛错,又被 `KV.get(key)`(quiet 副本)静默吞成 null ⇒ **直播源配置的 UA/Referer/header 全部失效**(2026-09-13 全量缺陷审查发现)。教训:新增/修改复杂键必须按"写入值的实际类型"登记 |
+| R11 | §4.2 门面 API 封闭(6 个方法) | 新增 `keys(prefix)` 前缀遍历;新增动态键族 `progress_index_<源>|<片id>`,值刻意用 **String 载荷**(JSON 文本) | 删除观看历史需要级联清理该片进度键,而进度键是"源+片+线路+集+集名"无分隔符拼接后取 MD5,反推不出归属 ⇒ 必须另存片级索引(2026-09-26)。索引值不走复杂类型通道,是因为动态键无法逐键登记 `KVKeySpec`(同 R10 的风险面:登记类型与写入类型不一致会静默读不出) |
 
 ## 9. 2026-09-13 崩溃复盘(教训保留,相关代码已删除)
 
@@ -223,4 +247,4 @@ public final class KV {
 ② 一次性逻辑的完成标记必须可升版本,否则修复无法到达已执行过的机器;
 ③ **批量搬运/写入后核对数量守恒**(旧库键数 ≈ 新库键数),数量对不上就是数据写坏的第一个信号;
 ④ 不要用 size 类 API 的返回值猜存在性(注意 `size_t` 的"0 表示不存在"语义);
-⑤ **没发布的代码不要背迁移包袱** —— 本次多写了一个完整的迁移 + 纠偏 + 标记体系,最后因"无存量用户"全部删除;先确认"有没有存量数据"再决定要不要迁移,能省掉整条链路。
+⑤ **没发布的代码不要背迁移包袱** —— 本次多写了一个完整的迁移 + 纠偏 + 标记体系,最后因"无存量有没有存量数据"再决定要不要迁移,能省掉整条链路。

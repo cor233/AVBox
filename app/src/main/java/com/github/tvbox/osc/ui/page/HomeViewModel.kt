@@ -1,9 +1,10 @@
 package com.github.tvbox.osc.ui.page
 
-import androidx.lifecycle.Observer
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.github.tvbox.osc.R
 import com.github.tvbox.osc.api.ApiConfig
+import com.github.tvbox.osc.base.App
 import com.github.tvbox.osc.bean.AbsSortXml
 import com.github.tvbox.osc.bean.AbsXml
 import com.github.tvbox.osc.bean.Movie
@@ -11,8 +12,17 @@ import com.github.tvbox.osc.bean.MovieSort
 import com.github.tvbox.osc.bean.SourceBean
 import com.github.tvbox.osc.event.RefreshEvent
 import com.github.tvbox.osc.util.DefaultConfig
-import com.github.tvbox.osc.viewmodel.SourceViewModel
+import com.github.tvbox.osc.util.HomeSettings
+import com.github.tvbox.osc.util.LanguageManager
+import com.github.tvbox.osc.util.LOG
+import com.github.tvbox.osc.sourcedata.SourceRuntimeState
+import com.github.tvbox.osc.sourcedata.SourceViewModel
+import com.github.tvbox.osc.sourcedata.observeAsFlow
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -29,11 +39,17 @@ import org.json.JSONObject
 import kotlin.coroutines.resume
 
 class HomeViewModel : ViewModel() {
+    /** 资源文案:ViewModel 无 Context,走 LanguageManager(Application 的 base 切语言不会重挂) */
+    private fun str(resId: Int, vararg args: Any): String {
+        val app = App.getInstance() ?: return ""
+        return LanguageManager.localized(app).getString(resId, *args)
+    }
+
     sealed interface PartitionState {
+        data object Idle : PartitionState
         data object Loading : PartitionState
         data object Empty : PartitionState
         data object Ready : PartitionState
-        /** 2026-09-11:加载看门狗超时态——spider 线程被卡死时 sortResult 永不回调,用 Error 打破永久骨架屏 */
         data object Error : PartitionState
     }
 
@@ -45,7 +61,6 @@ class HomeViewModel : ViewModel() {
         val maxPage: Int,
     ) {
         companion object {
-            /** 首屏页码与旧 GridFragment 一致从 1 开始(爬虫 categoryContent 不接受 0) */
             const val FIRST_PAGE = 1
         }
 
@@ -61,98 +76,69 @@ class HomeViewModel : ViewModel() {
     val rec = MutableStateFlow(Rec(PartitionState.Loading, emptyList()))
     val partitions = MutableStateFlow<List<Partition>>(emptyList())
 
-    /** 2026-09-12 用户定稿:整页加载中(进 App 首次/切源/下拉刷新共用 loadHome 触发)。
-     * true 时首页内容区不渲染,改为页面中心圆形加载指示器;全部就绪或看门狗超时转 false。
-     * 初始即 true:主界面提前进入组合(已删全屏 BootLoading),页心转圈统一覆盖
-     * "配置/jar 后台加载 + 首页数据"两段,直到数据就绪 */
     val pageLoading = MutableStateFlow(true)
-    /** 分类列表是否已返回:getSort 回调前 partitions 恒为空列表,不引入此标记
-     * "完成"判定会在分类未到时误成立(rec 已非 Loading + 空列表 none{Loading}) */
     private val sortsLoaded = MutableStateFlow(false)
-    /** 配置是否就绪(2026-09-13 切源竞态修复):切源时 onApiUrlChanged 先 invalidateVodConfig
-     * (sources 被清空)再异步拉新配置,窗口内 getSort(null) 会瞬时返回 Empty——
-     * 若不阻断,完成判定提前成立 → pageLoading=false 且 sources 为空 → 首页闪「尚未配置订阅接口」。
-     * 就绪前整页完成判定恒不成立,窗口内保持页心转圈 */
     private val bootReady = MutableStateFlow(false)
-    /** 整页/分区加载失败事件(看门狗超时,携带提示文案),页面层收集后弹 Toast */
     val pageErrorEvents = MutableSharedFlow<String>(extraBufferCapacity = 1)
+
+    /** 分类取数失败(含一次自动重试仍失败):首页整页错误态,与真空区分 */
+    val sortLoadFailed = MutableStateFlow(false)
+    private var sortRetried = false
+    private val listRetried = HashSet<String>()
 
     private val scope = viewModelScope
     private val sortViewModel = SourceViewModel()
-    // 注意:actionViewModel 必须在 init 块之前声明(Kotlin 按声明顺序初始化,
-    // init 块里要注册它的观察者)
     private val actionViewModel = SourceViewModel()
+    private val recViewModel = SourceViewModel()
     private val loaders = HashMap<String, PartitionLoader>()
-    /** 分区第一页并发限流(§4.1:限流 2~3) */
     private val loadSemaphore = Semaphore(2)
-    /**
-     * 首页加载代次(2026-09-13 修复许可泄漏):每次 loadHome() 自增。
-     * requestPartition 在拿到信号量许可后校验代次,旧一轮排队协程直接放弃 ——
-     * 否则 loadHome() 已 release 的 loader 会被旧协程再次请求,回调永不到来,许可永久泄漏。
-     */
     private var loadGeneration = 0
     private var loadingSourceKey: String? = null
-    /** 2026-09-11:首页加载看门狗。spider 线程池被卡死时 sortResult/listResult 永不回调,
-     * 之前会永久停留在骨架屏;超时后把 Loading 态改写为 Error,UI 显示错误+重试 */
     private var watchdogJob: Job? = null
 
-    /** BugReview #13:进程内一次性标记。MainContent 因 Boot 回 Loading 重进组合时,
-     * remember 状态会丢失而 ViewModel 仍在,用此标记防 LaunchedEffect 重放拉起直播页 */
+    var activeSortId: String? = null
+        private set
+
     var defaultLiveLaunched = false
-    /** 双击退出计时:跨组合重建保留,防 Boot 重进后计时被重置 */
     var lastBackTime = 0L
 
-    private val sortObserver = Observer<AbsSortXml> { absXml: AbsSortXml? -> onSortResult(absXml) }
-
-    /** BugReview #14:action 卡片结果事件流。旧 GridFragment 观察 actionResult → Toast + forceRefresh,
-     * Compose 版补回该链路,避免点击后静默死交互 */
     val actionMessages = MutableSharedFlow<String>(
         extraBufferCapacity = 8,
         onBufferOverflow = BufferOverflow.DROP_OLDEST,
     )
 
-    // actionResult 失败时会 postValue(null)(SourceViewModel),泛型必须声明可空,
-    // 否则 Kotlin 对 lambda 参数插入非空检查直接 NPE(本项目既有约定)
-    private val actionObserver = Observer<JSONObject?> { json ->
-        val msg = json?.optString("msg").orEmpty()
-        if (msg.isNotEmpty()) actionMessages.tryEmit(msg)
-    }
-
     init {
         EventBus.getDefault().register(this)
-        sortViewModel.sortResult.observeForever(sortObserver)
-        actionViewModel.actionResult.observeForever(actionObserver)
+        scope.launch { sortViewModel.sortResult.observeAsFlow().collect { onSortResult(it) } }
+        scope.launch { recViewModel.sortResult.observeAsFlow().collect { onRecResult(it) } }
+        scope.launch {
+            actionViewModel.actionResult.observeAsFlow().collect { json ->
+                val msg = json?.optString("msg").orEmpty()
+                if (msg.isNotEmpty()) actionMessages.tryEmit(msg)
+            }
+        }
         sources.value = ApiConfig.get().getSwitchSourceBeanList()
         currentSource.value = ApiConfig.get().getHomeSourceBean()
-        // 配置(重)加载完成即刷新首页;首次 Ready 与后续接口变更后的 Ready 都走这里
         scope.launch {
             AppBootstrap.state.collect {
                 bootReady.value = it is AppBootstrap.Boot.Ready
                 if (it is AppBootstrap.Boot.Ready) loadHome()
             }
         }
-        // 整页加载完成判定:bootReady + 分类已返回 + 推荐区非 Loading + 全部分区非 Loading。
-        // 只负责置 false(结束);置 true 只发生在 loadHome(),避免 refreshPartitions/
-        // applyFilter 等局部重载误触发整页 Loading
         scope.launch {
-            combine(bootReady, rec, partitions, sortsLoaded) { ready, r, ps, loaded ->
-                ready && loaded && r.state != PartitionState.Loading &&
-                    ps.none { it.state == PartitionState.Loading }
+            combine(bootReady, rec, sortsLoaded) { ready, r, loaded ->
+                ready && loaded && r.state != PartitionState.Loading
             }.collect { ready ->
                 if (ready && pageLoading.value) {
                     pageLoading.value = false
-                    // 加载已完成:取消看门狗,防止 20s 定时器到点误发"加载失败"(2026-09-12 用户反馈)
-                    watchdogJob?.cancel()
                 }
             }
         }
     }
 
     override fun onCleared() {
+        // 三个通道的收集器不用手工摘:onCleared 返回后框架才取消 viewModelScope,桥接器的 awaitClose 随之摘观察者
         EventBus.getDefault().unregister(this)
-        sortViewModel.sortResult.removeObserver(sortObserver)
-        actionViewModel.actionResult.removeObserver(actionObserver)
-        // 与 loadHome() 同款:先快照再 clear、最后 release(防 release 唤醒的协程改 map 撞迭代器)
         val staleLoaders = ArrayList(loaders.values)
         loaders.clear()
         staleLoaders.forEach { it.release() }
@@ -166,50 +152,39 @@ class HomeViewModel : ViewModel() {
     }
 
     fun reload() {
-        SourceViewModel.clearRuntimeCache()
+        LOG.i("echo--sort-reload")
+        SourceRuntimeState.clearRuntimeCache()
         loadHome()
     }
 
     fun switchSource(bean: SourceBean) {
+        LOG.i("echo--sort-switch: key=${bean.key}")
         ApiConfig.get().setSourceBean(bean)
         currentSource.value = bean
         loadHome()
     }
 
     fun loadHome() {
-        // 配置(重)加载后源列表可能变化,每次一并刷新
         sources.value = ApiConfig.get().getSwitchSourceBeanList()
         val home = ApiConfig.get().getHomeSourceBean()
         loadingSourceKey = if (home.key.isNullOrEmpty()) null else home.key
+        LOG.i("echo--sort-loadHome: key=${loadingSourceKey} name=${home.name} srcCount=${sources.value.size}")
         currentSource.value = home
         pageLoading.value = true
         sortsLoaded.value = false
+        sortLoadFailed.value = false
+        sortRetried = false
+        listRetried.clear()
         rec.value = Rec(PartitionState.Loading, emptyList())
         partitions.value = emptyList()
-        // 2026-09-13 崩溃修复:必须"先快照 → clear → 再 release" ——
-        // release() 会同步 resume 挂起的协程(释放的信号量会继续唤醒排队者),若在遍历 loaders
-        // 期间发生 HashMap 修改(如被唤醒的协程 getOrPut 建新 loader),迭代器立刻抛
-        // ConcurrentModificationException(实测:首页加载中切源必崩)。快照后遍历的是副本,
-        // 与 map 解耦;clear 先行则保证 release 引发的任何 map 操作都不再撞迭代器。
         val staleLoaders = ArrayList(loaders.values)
         loaders.clear()
         staleLoaders.forEach { it.release() }
-        // 代次自增:令仍在排队等许可的上一轮协程在拿到许可后放弃(见 requestPartition 的许可泄漏修复)
         loadGeneration++
-        // 重启看门狗:20s 内未完成整页加载则 Loading 转 Error 态
-        // (2026-09-12 用户定稿 45s→20s;兜底 spider 线程池卡死永不回调,防永久加载)
-        watchdogJob?.cancel()
-        watchdogJob = scope.launch {
-            delay(20_000)
-            onHomeLoadTimeout()
-        }
-        sortViewModel.getSort(loadingSourceKey)
+        armWatchdog()
+        sortViewModel.getSort(loadingSourceKey, HomeSettings.current() == HomeSettings.HomeLayout.Horizontal)
     }
 
-    /** 看门狗超时:仍在 Loading 的推荐区/分区改写为 Error,打破永久加载(2026-09-11)。
-     * 若数据在超时后才陆续到达,loadRec/applyPartitionResult 会自然以 Ready 覆盖 Error。
-     * 2026-09-12:超时仅在真有 Loading 未完成时生效并按范围发提示——推荐区还没出=整页失败,
-     * 仅个别分区卡住=部分失败;否则(早已全部就绪)直接返回,不再误弹"加载失败" */
     private fun onHomeLoadTimeout() {
         val recLoading = rec.value.state == PartitionState.Loading
         val partitionLoading = partitions.value.any { it.state == PartitionState.Loading }
@@ -223,25 +198,67 @@ class HomeViewModel : ViewModel() {
             }
         }
         pageErrorEvents.tryEmit(
-            if (recLoading) "首页加载失败，请检查网络后重试"
-            else "部分内容加载超时，可下拉刷新重试"
+            if (recLoading) str(R.string.home_load_failed)
+            else str(R.string.home_load_partial_timeout)
         )
         pageLoading.value = false
     }
 
-    /** 分区错误重试:仅重置该分区并重拉第一页(2026-09-11) */
     fun retryPartition(partition: Partition) {
         if (partition.state != PartitionState.Error) return
+        listRetried.remove(partition.sort.id)
         partitions.value = partitions.value.map {
             if (it.sort.id == partition.sort.id) it.copy(state = PartitionState.Loading) else it
         }
         requestPartition(partition, Partition.FIRST_PAGE)
     }
 
+    /** 整页错误态(分类取数失败)手动重试 */
+    fun retrySort() {
+        val key = loadingSourceKey ?: return
+        LOG.i("echo--sort-manual-retry: key=$key")
+        sortLoadFailed.value = false
+        sortRetried = true
+        rec.value = Rec(PartitionState.Loading, emptyList())
+        sortsLoaded.value = false
+        pageLoading.value = true
+        armWatchdog()
+        sortViewModel.getSort(key, HomeSettings.current() == HomeSettings.HomeLayout.Horizontal)
+    }
+
+    fun ensureLoaded(sortId: String) {
+        activeSortId = sortId
+        val current = partitions.value.firstOrNull { it.sort.id == sortId } ?: return
+        if (current.state != PartitionState.Idle) return
+        partitions.value = partitions.value.map {
+            if (it.sort.id == sortId) it.copy(state = PartitionState.Loading) else it
+        }
+        requestPartition(current, Partition.FIRST_PAGE)
+    }
+
+    fun onLayoutChanged() {
+        if (HomeSettings.current() != HomeSettings.HomeLayout.Horizontal) return
+        val idle = partitions.value.filter { it.state == PartitionState.Idle }
+        if (idle.isNotEmpty()) {
+            partitions.value = partitions.value.map {
+                if (it.state == PartitionState.Idle) it.copy(state = PartitionState.Loading) else it
+            }
+            idle.forEach { p -> requestPartition(p, Partition.FIRST_PAGE) }
+        }
+        val key = loadingSourceKey
+        val hasRecSort = allSorts.value.any { it.id == "my0" }
+        if (key != null && hasRecSort && rec.value.videos.isEmpty() &&
+            rec.value.state != PartitionState.Loading
+        ) {
+            rec.value = Rec(PartitionState.Loading, emptyList())
+            recViewModel.getSort(key, true)
+        }
+    }
+
     private fun onSortResult(absXml: AbsSortXml?) {
         val key = loadingSourceKey
         if (key == null) {
-            // 未配置接口:置空态,避免推荐区永远转圈
+            LOG.i("echo--sort-null-key: srcName=${currentSource.value?.name} srcCount=${sources.value.size} absXml=${absXml != null}")
             rec.value = Rec(PartitionState.Empty, emptyList())
             partitions.value = emptyList()
             sorts.value = emptyList()
@@ -249,8 +266,29 @@ class HomeViewModel : ViewModel() {
             sortsLoaded.value = true
             return
         }
-        if (absXml?.sourceKey != null && absXml.sourceKey != key) return
+        if (absXml?.sourceKey != null && absXml.sourceKey != key) {
+            LOG.i("echo--sort-stale-drop: key=$key absKey=${absXml.sourceKey}")
+            return
+        }
 
+        if (absXml != null && absXml.loadFailed) {
+            if (!sortRetried) {
+                sortRetried = true
+                LOG.i("echo--sort-retry: src=$key")
+                sortViewModel.getSort(key, HomeSettings.current() == HomeSettings.HomeLayout.Horizontal)
+                return
+            }
+            LOG.i("echo--sort-failed: src=$key")
+            sortLoadFailed.value = true
+            rec.value = Rec(PartitionState.Empty, emptyList())
+            partitions.value = emptyList()
+            sorts.value = emptyList()
+            allSorts.value = emptyList()
+            sortsLoaded.value = true
+            return
+        }
+
+        LOG.i("echo--sort-result: src=$key hasClasses=${absXml?.classes?.sortList != null} sortSize=${absXml?.classes?.sortList?.size}")
         val adjusted = if (absXml?.classes?.sortList != null) {
             DefaultConfig.adjustSort(key, absXml.classes.sortList, true)
         } else {
@@ -258,7 +296,6 @@ class HomeViewModel : ViewModel() {
         }
         allSorts.value = adjusted
 
-        // 推荐分区(第一个 my0)
         val recSort = adjusted.firstOrNull { it.id == "my0" }
         if (recSort != null) {
             loadRec(absXml)
@@ -267,49 +304,78 @@ class HomeViewModel : ViewModel() {
         }
 
         val visible = adjusted.filter { it.id != "my0" }
+        if (visible.isEmpty() && absXml != null && absXml.videoList.isNullOrEmpty()) {
+            if (!sortRetried) {
+                sortRetried = true
+                LOG.i("echo--sort-empty-retry: src=$key sortSize=${absXml.classes?.sortList?.size}")
+                val gen = loadGeneration
+                scope.launch {
+                    delay(2000)
+                    if (loadingSourceKey == key && loadGeneration == gen) {
+                        sortViewModel.getSort(key, HomeSettings.current() == HomeSettings.HomeLayout.Horizontal)
+                    }
+                }
+                return
+            }
+            LOG.i("echo--sort-empty-final: src=$key sortSize=${absXml.classes?.sortList?.size}")
+            sortLoadFailed.value = true
+            rec.value = Rec(PartitionState.Empty, emptyList())
+            partitions.value = emptyList()
+            sorts.value = emptyList()
+            allSorts.value = emptyList()
+            sortsLoaded.value = true
+            return
+        }
         sorts.value = visible
-        val newPartitions = visible.map { Partition(it, PartitionState.Loading, emptyList(), Partition.FIRST_PAGE, 0) }
+        val vertical = HomeSettings.current() == HomeSettings.HomeLayout.Vertical
+        val active = activeSortId?.takeIf { id -> visible.any { it.id == id } } ?: visible.firstOrNull()?.id
+        activeSortId = active
+        val newPartitions = visible.map { sort ->
+            if (vertical && sort.id != active) {
+                Partition(sort, PartitionState.Idle, emptyList(), Partition.FIRST_PAGE, 0)
+            } else {
+                Partition(sort, PartitionState.Loading, emptyList(), Partition.FIRST_PAGE, 0)
+            }
+        }
         partitions.value = newPartitions
-        // 分类与分区列表就绪标记:放在 partitions 赋值后,完成判定才不会提前成立
+        LOG.i("echo--sort-partitions: n=${newPartitions.size}")
         sortsLoaded.value = true
-        newPartitions.forEach { p -> requestPartition(p, Partition.FIRST_PAGE) }
+        newPartitions
+            .filter { it.state == PartitionState.Loading }
+            .forEach { p -> requestPartition(p, Partition.FIRST_PAGE) }
     }
-
-    // ---- 推荐分区 ----
 
     private fun loadRec(absXml: AbsSortXml?) {
         val videos = absXml?.videoList ?: emptyList()
         rec.value = if (videos.isEmpty()) Rec(PartitionState.Empty, videos) else Rec(PartitionState.Ready, videos)
     }
 
-    // ---- 分类分区 ----
+    private fun onRecResult(absXml: AbsSortXml?) {
+        val key = loadingSourceKey ?: return
+        if (absXml?.sourceKey != null && absXml.sourceKey != key) return
+        loadRec(absXml)
+    }
 
-    /** PartitionLoader 请求结果；stale=true 表示该请求已被新请求覆盖或 loader 已释放，不应写回状态 */
     private class LoaderResult(val stale: Boolean, val absXml: AbsXml?)
 
+    private fun armWatchdog() {
+        watchdogJob?.cancel()
+        watchdogJob = scope.launch {
+            delay(20_000)
+            onHomeLoadTimeout()
+        }
+    }
+
     private fun requestPartition(current: Partition, page: Int) {
-        // 2026-09-13 修复许可泄漏:排队协程可能在 loadHome() release 全部 loader 之后才拿到许可,
-        // 若照旧向「observer 已被移除」的旧 loader 发请求,回调永不到来 →
-        // suspendCancellableCoroutine 续体永不 resume → withPermit 许可永久泄漏
-        // (两次即耗尽 Semaphore(2):分区永久 Loading,看门狗转 Error 后重试仍卡死,只能杀进程)。
-        // 代次校验:loadHome() 自增 loadGeneration,上一轮的排队协程据此直接放弃
-        // (不请求、不写状态,许可正常归还)。
-        // ⚠️ loader 必须在协程外**同步**获取(2026-09-13 崩溃回归教训):一旦移进 withPermit 内,
-        // release() 唤醒排队协程时会执行 loaders.getOrPut → 修改 HashMap,而 loadHome() 正
-        // 在遍历 loaders → ConcurrentModificationException(实测:首页加载中切源必崩)。
-        // 两处配合缺一不可:同步获取防"遍历期间改 map",代次校验防"请求已 release 的 loader 致许可泄漏"。
         val generation = loadGeneration
         val loader = loaders.getOrPut(current.sort.id) { PartitionLoader(current.sort) }
         scope.launch {
             loadSemaphore.withPermit {
-                // 代次不符 = 上一轮加载的排队协程;loader 已 release = 本协程在 loadHome() 遍历
-                // release 期间被唤醒(代次尚未自增)但目标 loader 已释放 —— 两种情况都不得再请求
-                // (observer 已移除,回调永不到来),直接放弃并归还许可。
                 if (generation != loadGeneration || loader.released) return@withPermit
+                armWatchdog()
                 val result = suspendCancellableCoroutine<LoaderResult> { cont ->
                     loader.request(page) { r -> if (cont.isActive) cont.resume(r) }
                 }
-                // 被覆盖/释放的旧请求只归还信号量许可，不写分区状态（防续体悬挂致许可泄漏）
                 if (!result.stale) {
                     applyPartitionResult(current.sort.id, page, result.absXml)
                 }
@@ -318,7 +384,21 @@ class HomeViewModel : ViewModel() {
     }
 
     private fun applyPartitionResult(sortId: String, page: Int, absXml: AbsXml?) {
+        if (absXml == null && page == Partition.FIRST_PAGE) {
+            if (listRetried.add(sortId)) {
+                LOG.i("echo--list-retry: sort=$sortId pg=$page")
+                val current = partitions.value.firstOrNull { it.sort.id == sortId } ?: return
+                requestPartition(current, Partition.FIRST_PAGE)
+            } else {
+                LOG.i("echo--list-failed: sort=$sortId pg=$page")
+                partitions.value = partitions.value.map { p ->
+                    if (p.sort.id == sortId) p.copy(state = PartitionState.Error) else p
+                }
+            }
+            return
+        }
         val videos = absXml?.movie?.videoList ?: emptyList()
+        LOG.i("echo--list-result: src=${loadingSourceKey} sort=$sortId pg=$page n=${videos.size}")
         val maxPage = absXml?.movie?.pagecount ?: 0
         partitions.value = partitions.value.map { p ->
             if (p.sort.id != sortId) {
@@ -335,7 +415,6 @@ class HomeViewModel : ViewModel() {
     fun loadMorePartition(partition: Partition) {
         if (partition.state != PartitionState.Ready || !partition.hasMore) return
         val loader = loaders[partition.sort.id] ?: return
-        // 在途防抖:LazyList 条目滚出/滚回视口会重复触发 onLoadMore,在途时直接忽略
         if (loader.busy) return
         requestPartition(partition, partition.nextPage)
     }
@@ -352,46 +431,63 @@ class HomeViewModel : ViewModel() {
         requestPartition(partition.copy(sort = partition.sort), Partition.FIRST_PAGE)
     }
 
-    /** action 卡片(旧 GridFragment 同款行为) */
     fun handleAction(video: Movie.Video) {
         actionViewModel.action(video.sourceKey, video.action)
     }
 
-    /** BugReview #14:action 结果刷新(旧 forceRefresh 语义:重置全部分区并重请求第一页) */
     fun refreshPartitions() {
-        partitions.value = partitions.value.map {
-            Partition(it.sort, PartitionState.Loading, emptyList(), Partition.FIRST_PAGE, 0)
+        val vertical = HomeSettings.current() == HomeSettings.HomeLayout.Vertical
+        val active = activeSortId
+        val targets = if (vertical) {
+            partitions.value.filter { it.sort.id == active }
+        } else {
+            partitions.value
         }
-        partitions.value.forEach { p -> requestPartition(p, Partition.FIRST_PAGE) }
+        partitions.value = partitions.value.map { p ->
+            if (targets.any { it.sort.id == p.sort.id }) {
+                Partition(p.sort, PartitionState.Loading, emptyList(), Partition.FIRST_PAGE, 0)
+            } else {
+                p
+            }
+        }
+        targets.forEach { p -> requestPartition(p, Partition.FIRST_PAGE) }
     }
 
     private inner class PartitionLoader(val sort: MovieSort.SortData) {
         private val svm = SourceViewModel()
-        // listResult 无法区分页码，同一 loader 同时只允许一个在途请求；
-        // 新请求覆盖旧 pending 时，旧续体以 stale 结果立即完成：归还信号量许可且不写状态，
-        // 修复「pending 被覆盖 → 续体永不 resume → 许可泄漏 → 首页永久 Loading」
         @Volatile
         private var pending: ((LoaderResult) -> Unit)? = null
 
-        /** 是否有在途请求 */
         @Volatile
         var busy: Boolean = false
             private set
 
-        /** 已随 loadHome()/onCleared() 释放(observer 已移除):不得再发起请求,否则回调永不到来 */
         @Volatile
         var released: Boolean = false
             private set
 
-        private val observer = Observer<AbsXml> { abs: AbsXml? ->
-            val current = pending
-            pending = null
-            busy = false
-            current?.invoke(LoaderResult(stale = false, absXml = abs))
-        }
+        /**
+         * 收集作用域随本 loader 生命周期:release() 取消它即摘掉观察者(等价旧 removeObserver)。
+         *
+         * ⚠️ 两个坑都在这一行:①`CoroutineScope(viewModelScope.coroutineContext)` 会**复用** VM 的
+         * SupervisorJob,`cancel()` 就会把整个 viewModelScope 一起杀掉(而 `loadHome()` 每次换源都
+         * release 旧 loader ⇒ 首页永久 loading);②context 里若没有 Dispatcher,`launch` 兜底用
+         * `Dispatchers.Default`,而 `observeForever` 有主线程断言 ⇒ 直接抛。故显式 `SupervisorJob(parent)`
+         * 造子 Job + `Dispatchers.Main.immediate`。
+         */
+        private val observeScope = CoroutineScope(
+            SupervisorJob(viewModelScope.coroutineContext[Job]) + Dispatchers.Main.immediate
+        )
 
         init {
-            svm.listResult.observeForever(observer)
+            observeScope.launch {
+                svm.listResult.observeAsFlow().collect { abs ->
+                    val current = pending
+                    pending = null
+                    busy = false
+                    current?.invoke(LoaderResult(stale = false, absXml = abs))
+                }
+            }
         }
 
         fun request(page: Int, onDone: (LoaderResult) -> Unit) {
@@ -406,7 +502,10 @@ class HomeViewModel : ViewModel() {
             pending?.invoke(LoaderResult(stale = true, absXml = null))
             pending = null
             busy = false
-            svm.listResult.removeObserver(observer)
+            // 释放即弃用:observeScope 是一次性的(取消后不能再 launch),所以调用方必须**先把它从
+            // `loaders` 表里摘掉/清表再 release** —— 否则后续 requestPartition 会 getOrPut 取回它,
+            // pending 永远等不到回包、该分区永停 Loading。当前两个调用点(loadHome/onCleared)都是先 clear 再 release。
+            observeScope.cancel()
         }
     }
 }

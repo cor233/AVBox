@@ -12,6 +12,7 @@ import com.github.catvod.crawler.Spider;
 import com.github.catvod.crawler.SpiderNull;
 
 import com.github.catvod.net.OkHttp;
+import com.github.tvbox.osc.util.LOG;
 import com.github.tvbox.osc.util.OkGoHelper;
 
 
@@ -89,7 +90,7 @@ public class PythonLoader {
                 siteMap.put(key, jo);
             }
         } catch (JSONException e) {
-            e.printStackTrace();
+            LOG.e("PythonLoader", e);
         }
     }
 
@@ -173,7 +174,7 @@ public class PythonLoader {
                 try {
                     spiderRef.init(app, url, ext);
                 } catch (Exception e) {
-                    e.printStackTrace();
+                    LOG.e("PythonLoader", e);
                 }
             });
 
@@ -196,7 +197,8 @@ public class PythonLoader {
                     if (pending.isLoadSuccess()) {
                         spiders.putIfAbsent(key, pending);
                     }
-                } catch (Throwable ignored) {
+                } catch (Throwable th) {
+                    LOG.e("PyLoader", "python spider init failed", th);
                 }
             });
             return new SpiderNull();
@@ -225,7 +227,7 @@ public class PythonLoader {
                 map.put(key, value);
             }
         } catch (JSONException e) {
-            e.printStackTrace();
+            LOG.e("PythonLoader", e);
         }
         return map;
     }

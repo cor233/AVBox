@@ -20,38 +20,41 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.Shape
 import com.github.tvbox.osc.ui.theme.cardContainer
+import kotlin.math.hypot
 
-/**
- * 骨架屏 shimmer(avbox-mobile-ui-spec §6,统一替代 LoadSir 加载态):
- * 灰卡底色上扫过一道高光;[base]/[highlight] 默认取卡片容器色,可覆盖。
- */
 fun Modifier.shimmer(
     base: Color? = null,
-    highlight: Color = Color.White.copy(alpha = 0.15f),
+    highlight: Color? = null,
 ): Modifier = composed {
     val baseColor = base ?: MaterialTheme.colorScheme.cardContainer
+    val shineColor = highlight ?: MaterialTheme.colorScheme.onSurface.copy(alpha = 0.18f)
     val transition = rememberInfiniteTransition(label = "shimmer")
     val progress by transition.animateFloat(
         initialValue = 0f,
         targetValue = 1f,
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1200, easing = LinearEasing),
+            animation = tween(durationMillis = 1000, easing = LinearEasing),
         ),
         label = "shimmerProgress",
     )
     drawWithCache {
-        val bandWidth = size.width
-        val startX = -bandWidth + 2f * bandWidth * progress
+        val startX = shimmerStartX(size.width, size.height, progress)
         val brush = Brush.linearGradient(
-            colors = listOf(baseColor, highlight, baseColor),
+            colors = listOf(baseColor, shineColor, baseColor),
             start = Offset(startX, 0f),
-            end = Offset(startX + bandWidth, size.height),
+            end = Offset(startX + size.width, size.height),
         )
         onDrawBehind { drawRect(brush) }
     }
 }
 
-/** 骨架占位块,配合 [shimmer] 使用 */
+internal fun shimmerStartX(width: Float, height: Float, progress: Float): Float {
+    val diagonal = hypot(width, height)
+    if (width <= 0f || diagonal <= 0f) return 0f
+    val travel = diagonal * diagonal / width
+    return -travel + 2f * travel * progress
+}
+
 @Composable
 fun SkeletonBox(
     modifier: Modifier = Modifier,

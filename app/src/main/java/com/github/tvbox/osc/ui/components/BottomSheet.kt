@@ -12,11 +12,14 @@ import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
@@ -34,6 +37,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -44,39 +48,52 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
-/**
- * BottomSheet 统一封装(avbox-mobile-ui-spec §4.3):固定顶部 28dp 圆角、默认完全展开。
- *
- * 2026-09-11 用户定稿(方案 B):**不再用 M3 ModalBottomSheet 的独立 dialog window**,
- * 改为应用窗口内的覆盖层(scrim + 滑入面板 + 拖拽/返回关闭)。原因:sheet 弹在独立窗口时
- * 状态栏图标外观会随"外观归属窗口"切换被系统重设,弹出/关闭时图标闪烁两次(所有 sheet 稳定复现);
- * 覆盖层与页面同窗口,状态栏外观不再变化,也顺带修掉"主页开 sheet 时图标被写成白色"的隐患。
- *
- * 宿主要求:调用方所在子树须覆盖全屏(页面根部)。页面若位于被裁剪/带底栏的容器内
- * (如 MainScreen 的 pager tab),由上层窗口根部提供 [SheetHost] 槽位即可,调用方零改动。
- *
- * 2026-09-11 补丁(装机反馈:筛选 sheet 的「确定」够不到):手写覆盖层丢掉了 M3 ModalBottomSheet
- * 自带的"面板限高 + 内容滚动",长内容(如电影/电视筛选 20+ 个分组)会被裁在屏幕外且滚不动,
- * 排在内容末尾的操作行(清除/确定)永远不可见。现由封装统一兜底:
- * ①面板限高为窗口的 [SheetMaxHeightFraction];②把手与标题固定,内容区在超高时自动可滚;
- * ③下滑关闭手势只挂在把手/标题区,避免抢走内容区的纵向滚动(原先挂在整个面板上)。
- * 调用方自带滚动容器(LazyColumn/LazyVerticalGrid)时传 [isScrollable] = false,避免与其抢手势。
- */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AVBoxBottomSheet(
     onDismissRequest: () -> Unit,
     modifier: Modifier = Modifier,
     title: String? = null,
-    // 为 null 时使用 M3 默认容器色;页面可传 surfaceContainer 等覆盖
     containerColor: Color? = null,
-    // 内容区是否由本封装提供纵向滚动:内容自带滚动容器(LazyColumn/LazyVerticalGrid 等)时传 false
     isScrollable: Boolean = true,
+    headerContent: (@Composable () -> Unit)? = null,
+    /** 从右侧滑出（面板贴右、全高、左两角圆角），横屏全屏下的选集面板用；false = 原贴底形态 */
+    slideFromEnd: Boolean = false,
+    content: @Composable ColumnScope.() -> Unit,
+) = OverlayRequest(
+    onDismissRequest = onDismissRequest,
+    modifier = modifier,
+    title = title,
+    containerColor = containerColor,
+    isScrollable = isScrollable,
+    headerContent = headerContent,
+    variant = if (slideFromEnd) SheetVariant.END else SheetVariant.BOTTOM,
+    content = content,
+)
+
+/**
+ * 弹层的宿主路由:窗口根有 [SheetHost] 槽位就投递上去(页面在被裁剪容器里时也能盖住底栏与系统栏),
+ * 否则就地渲染。[AVBoxBottomSheet] 与 [AVBoxDialog] 共用这一条路径,只有 [variant] 不同。
+ */
+@Composable
+internal fun OverlayRequest(
+    onDismissRequest: () -> Unit,
+    modifier: Modifier = Modifier,
+    title: String? = null,
+    containerColor: Color? = null,
+    isScrollable: Boolean = true,
+    headerContent: (@Composable () -> Unit)? = null,
+    variant: SheetVariant = SheetVariant.BOTTOM,
+    dismissible: Boolean = true,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val host = LocalSheetHost.current
@@ -87,14 +104,19 @@ fun AVBoxBottomSheet(
             title = title,
             containerColor = containerColor,
             isScrollable = isScrollable,
+            headerContent = headerContent,
+            variant = variant,
+            dismissible = dismissible,
             content = content,
         )
     } else {
-        // 提交到窗口根部槽位渲染:页面被 pager/底栏裁剪时也能覆盖全屏
         val id = remember { Any() }
         SideEffect {
             host.submit(
-                SheetRequest(id, onDismissRequest, modifier, title, containerColor, isScrollable, content),
+                SheetRequest(
+                    id, onDismissRequest, modifier, title, containerColor, isScrollable, headerContent, variant,
+                    dismissible, content,
+                ),
             )
         }
         DisposableEffect(id) {
@@ -103,11 +125,6 @@ fun AVBoxBottomSheet(
     }
 }
 
-/**
- * bottom sheet 单选列表(avbox-mobile-ui-spec §4.3:点开单选)。
- * 2026-09-12 用户定稿:视觉对齐首页「订阅源」弹窗 —— 面板底色 `surfaceContainer`,
- * 选项收成一组分组卡片(左右距屏 16dp、卡色 `surfaceBright`、卡间距 2dp 由 [SettingsGroup] 统一)。
- */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AVBoxOptionSheet(
@@ -124,8 +141,6 @@ fun AVBoxOptionSheet(
         containerColor = MaterialTheme.colorScheme.surfaceContainer,
         modifier = modifier,
     ) {
-        // 本内容 lambda 在 SheetOverlay 的 provider 内组合,此处读到的是真实的「带动画关闭」;
-        // 防抖:滑出动画的 280ms 窗口内忽略重复点击,避免 onSelect 双触发(原瞬时移除无此窗口)
         val dismissAnimated = LocalSheetDismiss.current
         var accepted by remember { mutableStateOf(false) }
         SettingsGroup(
@@ -143,7 +158,6 @@ fun AVBoxOptionSheet(
                         onClick = {
                             if (!accepted) {
                                 accepted = true
-                                // 先回传选中结果(状态即时生效),面板再滑出,最后才真正移除
                                 onSelect(option)
                                 dismissAnimated()
                             }
@@ -155,7 +169,6 @@ fun AVBoxOptionSheet(
     }
 }
 
-/** 选项卡位:与首页订阅源弹窗同规则,按首/中/末卡拼圆角 */
 private fun optionCardPosition(index: Int, size: Int): SettingsCardPosition = when {
     size <= 1 -> SettingsCardPosition.SINGLE
     index == 0 -> SettingsCardPosition.FIRST
@@ -163,20 +176,33 @@ private fun optionCardPosition(index: Int, size: Int): SettingsCardPosition = wh
     else -> SettingsCardPosition.MIDDLE
 }
 
-/** sheet 面板最大宽度(M3 ModalBottomSheet sheetMaxWidth 默认值) */
 private val SheetMaxWidth = 640.dp
 
-/** 面板最大高度占窗口高度的比例(对齐 M3 ModalBottomSheet 默认:留出顶部余量,不顶到状态栏) */
 private const val SheetMaxHeightFraction = 0.9f
 
-/** 面板滑入/滑出时长(对齐 M3 bottom sheet 动画时长) */
+/** 右侧滑出面板的宽度上限 = 窗口宽度占比（横屏全屏窗口宽度跨度大，固定 dp 在宽窗口上会过窄） */
+private const val SHEET_END_WIDTH_FRACTION = 0.45f
+
 private const val SHEET_SLIDE_DURATION_MS = 280
 
-/** 收起比例超过该值即视为拖拽关闭(对齐 M3 手势判定) */
-private const val SHEET_DRAG_DISMISS_FRACTION = 0.25f/** 收起比例很小但快速下滑也视为关闭(px/s) */
+/** 居中对话框:进出场更短(缩放+淡入),面板是四角圆角、限宽 280~560dp */
+private const val DIALOG_FADE_DURATION_MS = 220
+private const val DIALOG_ENTER_SCALE = 0.90f
+private const val DIALOG_SCRIM_ALPHA = 0.6f
+private val DialogMinWidth = 280.dp
+private val DialogMaxWidth = 560.dp
+private val DialogShape = RoundedCornerShape(28.dp)
+private val DIALOG_HORIZONTAL_MARGIN = 24.dp
+
+private const val SHEET_DRAG_DISMISS_FRACTION = 0.25f
 private const val SHEET_DRAG_DISMISS_VELOCITY = 1400f
 
-/** sheet 请求:页面内 AVBoxBottomSheet 提交,由窗口根部的 [SheetHost] 渲染 */
+/**
+ * [SheetVariant.BOTTOM] = 贴底弹层(上滑入场、可拖拽关闭);[SheetVariant.CENTER] = 居中对话框(缩放淡入);
+ * [SheetVariant.END] = 右侧滑出面板(右滑入场/退场,拖拽方向为水平)。
+ */
+internal enum class SheetVariant { BOTTOM, CENTER, END }
+
 internal class SheetRequest(
     val id: Any,
     val onDismissRequest: () -> Unit,
@@ -184,10 +210,12 @@ internal class SheetRequest(
     val title: String?,
     val containerColor: Color?,
     val isScrollable: Boolean,
+    val headerContent: (@Composable () -> Unit)?,
+    val variant: SheetVariant,
+    val dismissible: Boolean,
     val content: @Composable ColumnScope.() -> Unit,
 )
 
-/** 窗口根部 sheet 槽位状态(见 [LocalSheetHost]) */
 @Stable
 class SheetHostState {
     internal var request by mutableStateOf<SheetRequest?>(null)
@@ -202,27 +230,55 @@ class SheetHostState {
     }
 }
 
-/** 页面被 pager/底栏等裁剪时,由上层在窗口根部提供槽位,sheet 改在该处渲染(覆盖全屏) */
 val LocalSheetHost = staticCompositionLocalOf<SheetHostState?> { null }
 
-/** sheet 内容可调用的「带滑出动画关闭」(2026-09-13):与 scrim/返回/拖拽同款滑出动画。
- * 行内点击(选项/行卡片)经此关闭,替代调用方直接置 false 导致面板瞬间消失;
- * 必须在 sheet 内容组合作用域内读取(内容在 [SheetOverlay] 的 provider 内组合),
- * 默认空实现仅为兜底,正常调用不会命中 */
 val LocalSheetDismiss = staticCompositionLocalOf<() -> Unit> { {} }
 
-/** 窗口根部槽位宿主(通常放在 MainScreen 内容最外层,需能覆盖底栏与系统栏) */
+/**
+ * "先播退场动画,再执行 [action]"的关闭入口(供确认类按钮用):
+ * 动画跑完才执行 action,由 action 自己清掉宿主可见性状态(它通常会顺带把弹层从组合里摘掉)。
+ * 注意:与 [LocalSheetDismiss] 不同,这条路径**不会**调用 `onDismissRequest` —— 确认动作与"取消/点遮罩"
+ * 的收尾逻辑往往不是一回事(例如语言切换对话框:确认要重启、取消要回滚)。
+ */
+val LocalSheetDismissThen = staticCompositionLocalOf<(action: () -> Unit) -> Unit> { { it() } }
+
 @Composable
 fun SheetHost(state: SheetHostState) {
     state.request?.let { req ->
-        SheetOverlay(
-            onDismissRequest = req.onDismissRequest,
-            modifier = req.modifier,
-            title = req.title,
-            containerColor = req.containerColor,
-            isScrollable = req.isScrollable,
-            content = req.content,
-        )
+        // 槽位只有一个:请求被另一个调用点顶替时(例如面板里点出确认对话框)必须重建覆盖层,
+        // 否则会复用上一个请求的 Animatable/dismissing 状态 —— 退场动画会把它一起带走。
+        key(req.id) {
+            SheetOverlay(
+                onDismissRequest = req.onDismissRequest,
+                modifier = req.modifier,
+                title = req.title,
+                containerColor = req.containerColor,
+                isScrollable = req.isScrollable,
+                headerContent = req.headerContent,
+                variant = req.variant,
+                dismissible = req.dismissible,
+                content = req.content,
+            )
+        }
+    }
+}
+
+/**
+ * 页面级弹层宿主:内容 + 窗口根槽位同层(照 `MainScreen.MainContent` 的写法封装)。
+ *
+ * **独立 Activity 的页面必须套这一层** —— 弹层的契约是"有槽位就投到窗口根,否则就地渲染":
+ * 就地渲染时 `Box(fillMaxSize)` 会被调用点的容器吃掉,弹层会被塞进列表项里(实测事故:
+ * `PreferenceSettingsActivity` 的"切换语言"对话框被渲染在设置列表内部的卡片里、还没有遮罩)。
+ * 挂在 `MainScreen` pager 里的页面不需要它(`MainContent` 已经提供了槽位)。
+ */
+@Composable
+fun SheetHostScaffold(content: @Composable () -> Unit) {
+    val host = remember { SheetHostState() }
+    CompositionLocalProvider(LocalSheetHost provides host) {
+        Box(modifier = Modifier.fillMaxSize()) {
+            content()
+            SheetHost(host)
+        }
     }
 }
 
@@ -234,111 +290,267 @@ private fun SheetOverlay(
     title: String? = null,
     containerColor: Color? = null,
     isScrollable: Boolean = true,
+    headerContent: (@Composable () -> Unit)? = null,
+    variant: SheetVariant = SheetVariant.BOTTOM,
+    dismissible: Boolean = true,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val scope = rememberCoroutineScope()
-    // 面板收起比例:1 = 完全移出屏幕下方,0 = 完全展开。
-    // 用"比例"而非"像素":面板高度由 graphicsLayer 的 size 在绘制期提供,不依赖
-    // onGloballyPositioned 的测量时序(此前测量回调若缺失,面板会永远停在屏外)
     val collapse = remember { Animatable(1f) }
-    var panelHeightPx by remember { mutableIntStateOf(0) }
     var entered by remember { mutableStateOf(false) }
     var dismissing by remember { mutableStateOf(false) }
+    // 走"点遮罩/返回键"这条路径时:退场动画跑完才会调 onDismissRequest。记一个标志,好在组合中途被销毁时补调用。
+    var plainDismissPending by remember { mutableStateOf(false) }
+    val centered = variant == SheetVariant.CENTER
+    val durationMs = if (centered) DIALOG_FADE_DURATION_MS else SHEET_SLIDE_DURATION_MS
+
+    val keyboard = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
 
     LaunchedEffect(Unit) {
-        collapse.animateTo(0f, tween(SHEET_SLIDE_DURATION_MS))
+        collapse.animateTo(0f, tween(durationMs))
         entered = true
     }
 
-    /** 用户主动关闭(scrim/返回/拖拽):先滑出再通知宿主,避免瞬间消失 */
-    fun dismissWithAnimation() {
+    /**
+     * [after] 为 null = 播完退场后走 `onDismissRequest`(点遮罩/返回键/取消按钮);
+     * [after] 非 null = 播完退场后执行它、**不**再调 `onDismissRequest`,由它自己把弹层从组合里摘掉
+     * (确认类动作与取消的收尾逻辑不同,见 [LocalSheetDismissThen])。
+     */
+    fun dismissWithAnimation(after: (() -> Unit)? = null) {
         if (dismissing) return
-        dismissing = true
-        scope.launch {
-            collapse.animateTo(1f, tween(SHEET_SLIDE_DURATION_MS))
+        // 阻断式弹窗(如"启动失败"必须重试/离线二选一):只拦"点遮罩/返回键"这类无动作关闭 ——
+        // 播了退场却没人清状态的话,面板会隐身留场(dismissing=true 还会吞掉后续关闭入口),
+        // 覆盖层继续吃掉整屏触摸 = 用户卡死。带动作的关闭(重试/离线按钮)必须照常走,否则按钮变死键。
+        if (!dismissible && after == null) {
             onDismissRequest()
+            return
+        }
+        dismissing = true
+        plainDismissPending = after == null
+        // 覆盖层在应用窗口内,收弹窗时没人顺手替我们收键盘 —— 平台 dialog 是"窗口没了键盘跟着没",
+        // 这里必须显式收:先清焦点(否则输入框一离场焦点又跳回来),再 hide。
+        focusManager.clearFocus(force = true)
+        keyboard?.hide()
+        scope.launch {
+            collapse.animateTo(1f, tween(durationMs))
+            if (after == null) {
+                plainDismissPending = false
+                onDismissRequest()
+            } else {
+                after()
+            }
         }
     }
 
-    // 入场动画期间不响应返回,避免与"滑出"动画叠在一起
+    // 兜底:退场动画期间组合若被销毁(页面/Activity 重建、被移出组合),协程被取消 ⇒ onDismissRequest()
+    // 永远不执行,而弹层可见性状态还挂在外层 —— 重建后弹层会自己弹回来。
+    // ⚠️ 只补"点遮罩/返回键"这条路径(它本来就要调 onDismissRequest);
+    // 带动作的关闭(after != null)绝不能补:它的收尾不是 onDismissRequest(例如语言切换对话框"取消=回滚"),
+    // 补调会把用户刚确认的动作反过来。
+    DisposableEffect(Unit) {
+        onDispose { if (plainDismissPending) onDismissRequest() }
+    }
+
     BackHandler(enabled = entered) { dismissWithAnimation() }
 
-    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
-        // 遮罩:随收起比例淡出
+    val scrimColor = if (centered) {
+        // 对话框沿用平台 dialog 的遮罩浓度(Theme.Material 的 backgroundDimAmount = 0.6),
+        // 免得"弹窗变亮了";弹层维持 BottomSheetDefaults.ScrimColor(0.32)不变。
+        BottomSheetDefaults.ScrimColor.copy(alpha = DIALOG_SCRIM_ALPHA)
+    } else {
+        BottomSheetDefaults.ScrimColor
+    }
+
+    SheetSurface(
+        collapse = collapse,
+        scrimColor = scrimColor,
+        entered = entered,
+        variant = variant,
+        durationMs = durationMs,
+        scope = scope,
+        dismiss = { dismissWithAnimation() },
+        dismissThen = { action -> dismissWithAnimation(action) },
+        modifier = modifier,
+        title = title,
+        containerColor = containerColor,
+        isScrollable = isScrollable,
+        headerContent = headerContent,
+        content = content,
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SheetSurface(
+    collapse: Animatable<Float, AnimationVector1D>,
+    scrimColor: Color,
+    entered: Boolean,
+    variant: SheetVariant,
+    durationMs: Int,
+    scope: CoroutineScope,
+    dismiss: () -> Unit,
+    dismissThen: (action: () -> Unit) -> Unit,
+    modifier: Modifier = Modifier,
+    title: String? = null,
+    containerColor: Color? = null,
+    isScrollable: Boolean = true,
+    headerContent: (@Composable () -> Unit)? = null,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    val centered = variant == SheetVariant.CENTER
+    val fromEnd = variant == SheetVariant.END
+    var panelHeightPx by remember { mutableIntStateOf(0) }
+    var panelWidthPx by remember { mutableIntStateOf(0) }
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val panelMaxHeight = maxHeight * SheetMaxHeightFraction
+        val panelMaxWidth = minOf(SheetMaxWidth, maxWidth * SHEET_END_WIDTH_FRACTION)
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .graphicsLayer { alpha = 1f - collapse.value }
-                .background(BottomSheetDefaults.ScrimColor)
+                .background(scrimColor)
+                // 遮罩要吃掉"拖拽"：clickable 只消费点击，进场动画期间它还是禁用的，
+                // 落在播放器覆盖层里时拖动会穿透到 dkplayer 的进度/音量手势
+                .pointerInput(Unit) {
+                    awaitPointerEventScope {
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            // 只吃"拖动"(有位移的 change),点击留给下面的 clickable
+                            if (event.changes.any { it.positionChanged() }) {
+                                event.changes.forEach { it.consume() }
+                            }
+                        }
+                    }
+                }
                 .clickable(
-                    // 入场完成前不拦截触摸:即使面板因异常停在屏外,页面也不会被"隐形遮罩"锁死
+                    // 不可关闭时仍要吃掉触摸(保持模态),只是什么都不做
                     enabled = entered,
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null,
-                    onClick = { dismissWithAnimation() },
+                    onClick = { dismiss() },
                 ),
         )
-        // 面板限高(2026-09-11):此前仅受父级 fillMaxSize 约束,超长内容会被裁在屏幕外且无法滚动
-        val panelMaxHeight = (LocalConfiguration.current.screenHeightDp * SheetMaxHeightFraction).dp
-        Surface(
+        // 遮罩恒满屏;键盘让位改挂在面板内容上(见下方 Column)⇒ 面板底边恒贴屏底,收起时不会露出下方页面
+        Box(
             modifier = Modifier
-                .then(modifier)
-                .widthIn(max = SheetMaxWidth)
-                .fillMaxWidth()
-                .heightIn(max = panelMaxHeight)
-                .graphicsLayer { translationY = collapse.value * size.height }
-                .onGloballyPositioned { panelHeightPx = it.size.height },
-            shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
-            color = containerColor ?: BottomSheetDefaults.ContainerColor,
+                .fillMaxSize()
+                .then(if (centered) Modifier.imePadding() else Modifier),
+            contentAlignment = when {
+                centered -> Alignment.Center
+                fromEnd -> Alignment.CenterEnd
+                else -> Alignment.BottomCenter
+            },
         ) {
-            // 向内容暴露「带动画关闭」(2026-09-13):行内点击(选项/行卡片)经 LocalSheetDismiss
-            // 触发与 scrim/返回/拖拽同款的滑出动画,替代调用方直接置 false 的瞬间消失
-            CompositionLocalProvider(LocalSheetDismiss provides { dismissWithAnimation() }) {
-                // 内容区不加导航栏 inset(2026-09-11 用户定稿):列表可滑到手势条下面,手势条浮在内容上(沉浸);
-                // 面板底色本来就铺到屏幕最底,各 sheet 内容自带 16dp 底部 padding 保证收尾间距
-                Column {
-                    // 把手 + 标题固定不滚动,并独占下滑关闭手势(2026-09-11):
-                    // 手势原先挂在整个面板上,会与内容区的纵向滚动抢夺触摸,内层列表滚不动
-                    Column(
-                        modifier = Modifier.draggable(
-                            state = sheetDragState(collapse, entered, panelHeightPx),
-                            orientation = Orientation.Vertical,
-                            onDragStopped = { velocity ->
-                                val dismiss = collapse.value > SHEET_DRAG_DISMISS_FRACTION ||
-                                        velocity > SHEET_DRAG_DISMISS_VELOCITY
-                                if (dismiss) {
-                                    dismissWithAnimation()
-                                } else {
-                                    scope.launch { collapse.animateTo(0f, tween(SHEET_SLIDE_DURATION_MS)) }
-                                }
-                            },
-                        ),
-                    ) {
-                        // 把手居中:M3 的 DragHandle 自身仅 32dp 宽(内部靠 align(Center) 定位),
-                        // 需外层拉满宽度再居中,否则会贴到面板左边
-                        Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                            BottomSheetDefaults.DragHandle()
-                        }
-                        title?.let {
-                            Text(
-                                text = it,
-                                style = MaterialTheme.typography.titleMedium,
-                                color = MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                            )
+            Surface(
+                modifier = Modifier
+                    .then(modifier)
+                    .then(
+                        when {
+                            centered -> Modifier
+                                .padding(horizontal = DIALOG_HORIZONTAL_MARGIN)
+                                .widthIn(min = DialogMinWidth, max = DialogMaxWidth)
+                                .fillMaxWidth()
+                                .heightIn(max = panelMaxHeight)
+
+                            fromEnd -> Modifier
+                                .widthIn(max = panelMaxWidth)
+                                .fillMaxWidth()
+                                .fillMaxHeight()
+
+                            else -> Modifier
+                                .widthIn(max = SheetMaxWidth)
+                                .fillMaxWidth()
+                                .heightIn(max = panelMaxHeight)
+                        },
+                    )
+                    .graphicsLayer {
+                        if (centered) {
+                            val progress = 1f - collapse.value
+                            val scale = DIALOG_ENTER_SCALE + (1f - DIALOG_ENTER_SCALE) * progress
+                            scaleX = scale
+                            scaleY = scale
+                            alpha = progress
+                        } else if (fromEnd) {
+                            translationX = collapse.value * size.width
+                        } else {
+                            translationY = collapse.value * size.height
                         }
                     }
-                    if (isScrollable) {
-                        // 内容区高度交给 weight,超高时把面板顶到限高并在区内滚动;
-                        // 内容自带滚动容器时传 isScrollable = false,让内层自己滚
-                        Column(
-                            modifier = Modifier
-                                .weight(1f, fill = false)
-                                .verticalScroll(rememberScrollState()),
-                            content = content,
-                        )
-                    } else {
-                        Column(content = content)
+                    .onGloballyPositioned {
+                        panelHeightPx = it.size.height
+                        panelWidthPx = it.size.width
+                    },
+                shape = when {
+                    centered -> DialogShape
+                    fromEnd -> RoundedCornerShape(topStart = 28.dp, bottomStart = 28.dp)
+                    else -> RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
+                },
+                color = containerColor ?: BottomSheetDefaults.ContainerColor,
+            ) {
+                CompositionLocalProvider(
+                    LocalSheetDismiss provides { dismiss() },
+                    LocalSheetDismissThen provides { action -> dismissThen(action) },
+                ) {
+                    // 贴底弹层:键盘高度留在面板内部,面板底边不动 ⇒ 收起键盘时不会在底部漏出下方页面
+                    // (侧滑面板高度贴满屏幕且无输入场景,不吃键盘 inset)
+                    Column(
+                        modifier = if (centered || fromEnd) Modifier else Modifier.imePadding(),
+                    ) {
+                        // 居中对话框没有把手、也不吃下滑关闭手势(内容要能正常滚/选文字),
+                        // 标题由调用方画在内容里(见 AVBoxAlertDialog)。
+                        if (!centered) {
+                            Column(
+                                modifier = Modifier.draggable(
+                                    state = sheetDragState(
+                                        collapse,
+                                        entered,
+                                        if (fromEnd) panelWidthPx else panelHeightPx,
+                                    ),
+                                    orientation = if (fromEnd) Orientation.Horizontal else Orientation.Vertical,
+                                    onDragStopped = { velocity ->
+                                        val dismiss = collapse.value > SHEET_DRAG_DISMISS_FRACTION ||
+                                                velocity > SHEET_DRAG_DISMISS_VELOCITY
+                                        if (dismiss) {
+                                            dismiss()
+                                        } else {
+                                            scope.launch { collapse.animateTo(0f, tween(durationMs)) }
+                                        }
+                                    },
+                                ),
+                            ) {
+                                // 侧滑面板的拖拽主轴是水平,横条把手会误导方向,不放
+                                if (!fromEnd) {
+                                    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                                        BottomSheetDefaults.DragHandle()
+                                    }
+                                }
+                                headerContent?.invoke()
+                                title?.let {
+                                    Text(
+                                        text = it,
+                                        style = MaterialTheme.typography.titleMedium,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                        modifier = if (fromEnd) {
+                                            // 无把手时节标题顶到面板上缘,保留 M3 面板惯例的 16dp
+                                            Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 8.dp)
+                                        } else {
+                                            Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                                        },
+                                    )
+                                }
+                            }
+                        }
+                        if (isScrollable) {
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f, fill = false)
+                                    .verticalScroll(rememberScrollState()),
+                                content = content,
+                            )
+                        } else {
+                            Column(modifier = Modifier.weight(1f, fill = false), content = content)
+                        }
                     }
                 }
             }
@@ -346,25 +558,21 @@ private fun SheetOverlay(
     }
 }
 
-/**
- * 面板下滑的拖拽状态(把手/标题区专用):把纵向位移按面板高度换算成收起比例。
- * 面板高度为 0(尚未测量)或入场动画未结束时不响应,避免出现"拖不动"或与入场动画打架。
- */
+
 @Composable
 private fun sheetDragState(
     collapse: Animatable<Float, AnimationVector1D>,
     entered: Boolean,
-    panelHeightPx: Int,
+    panelSpanPx: Int,
 ): DraggableState {
     val scope = rememberCoroutineScope()
     return rememberDraggableState { delta ->
-        if (entered && panelHeightPx > 0) {
+        if (entered && panelSpanPx > 0) {
             scope.launch {
                 collapse.snapTo(
-                    (collapse.value + delta / panelHeightPx).coerceIn(0f, 1f),
+                    (collapse.value + delta / panelSpanPx).coerceIn(0f, 1f),
                 )
             }
         }
     }
 }
-

@@ -16,10 +16,6 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 
-/**
- * 阻尼拖拽动画(2026-09-13 照搬 `示例文件/android` 的 DampedDragAnimation):
- * 滑动指示器的拖拽跟随 + 松手回弹 + 按压缩放 + 速度感知形变,全由 spring 驱动。
- */
 class DampedDragAnimation(
     private val animationScope: CoroutineScope,
     val initialValue: Float,
@@ -27,6 +23,7 @@ class DampedDragAnimation(
     val visibilityThreshold: Float,
     val initialScale: Float,
     val pressedScale: Float,
+    val canDrag: (Offset) -> Boolean = { true },
     val onDragStarted: DampedDragAnimation.(position: Offset) -> Unit,
     val onDragStopped: DampedDragAnimation.() -> Unit,
     val onDrag: DampedDragAnimation.(size: IntSize, dragAmount: Offset) -> Unit,
@@ -55,7 +52,9 @@ class DampedDragAnimation(
     val scaleY: Float get() = scaleYAnimation.value
     val velocity: Float get() = velocityAnimation.value
 
-    val modifier: Modifier = Modifier.pointerInput(Unit) {
+    // 键必须是 this(实例身份):实例会在槽位数/步长变化时重建;用 Unit 时指针节点不重启,
+    // 手势会一直驱动旧实例(拖动指示器无反应,重启才好)
+    val modifier: Modifier = Modifier.pointerInput(this) {
         inspectDragGestures(
             enabled = enabled,
             onDragStart = { down ->
@@ -71,7 +70,11 @@ class DampedDragAnimation(
                 release()
             }
         ) { change, dragAmount ->
-            onDrag(size, dragAmount)
+            val isInside = canDrag(change.position)
+            val wasInside = canDrag(change.previousPosition)
+            if (isInside && wasInside) {
+                onDrag(size, dragAmount)
+            }
         }
     }
 
@@ -102,8 +105,11 @@ class DampedDragAnimation(
     fun updateValue(value: Float) {
         val coercedTargetValue = value.coerceIn(valueRange)
         animationScope.launch {
-            valueAnimation.snapTo(coercedTargetValue)
-            updateVelocity()
+            launch {
+                valueAnimation.animateTo(coercedTargetValue, valueAnimationSpec) {
+                    updateVelocity()
+                }
+            }
         }
     }
 

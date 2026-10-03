@@ -3,14 +3,6 @@
 # 对于一些基本指令的添加
 #
 #############################################
--optimizationpasses 5
--dontusemixedcaseclassnames
--dontskipnonpubliclibraryclasses
--dontskipnonpubliclibraryclassmembers
--dontpreverify
--verbose
--printmapping proguardMapping.txt
--optimizations !code/simplification/cast,!field/*,!class/merging/*
 -keepattributes *Annotation*,InnerClasses
 -keepattributes EnclosingMethod, InnerClasses
 -keepattributes *Annotation*
@@ -26,17 +18,15 @@
 #
 #############################################
 
-# 保留我们使用的四大组件，自定义的Application等等这些类不被混淆
+# 保留我们使用的四大组件等这些类不被混淆
 # 因为这些子类都有可能被外部调用
 -keep public class * extends android.app.Activity
--keep public class * extends android.app.Application.**
 -keep public class * extends android.app.Service
 -keep public class * extends android.content.BroadcastReceiver
 -keep public class * extends android.content.ContentProvider
 -keep public class * extends android.app.backup.BackupAgentHelper
 -keep public class * extends android.preference.Preference
 -keep public class * extends android.view.View
--keep public class com.android.vending.licensing.ILicensingService.**
 
 -dontwarn androidx.**
 -keep class androidx.** { *; }
@@ -154,11 +144,7 @@
 # 迅雷下载模块
 -keep class com.xunlei.downloadlib.** {*;}
 # quickjs引擎
-#-keep class com.github.tvbox.quickjs.** {*;}
 -keep class com.whl.quickjs.** {*;}
-# IjkPlayer(player 模块内含 ijk 源码)
--keep class tv.danmaku.ijk.** { *; }
--dontwarn tv.danmaku.ijk.**
 
 # media3(含 jellyfin ffmpeg 软解,类都在 androidx.media3 包下)
 -keep class androidx.media3.** { *; }
@@ -177,10 +163,14 @@
 #    宿主提供绑定反而会让它抛 IncompatibleClassChangeError,详见 spec §6.3)
 # Guava:由 media3-common 传递带入,宿主代码未静态引用 → R8 默认改名/裁剪,jar 引用即崩
 -keep class com.google.common.** { *; }
--keepclassmembers enum * {
-    public static **[] values();
-    public static ** valueOf(java.lang.String);
-}
+# Sardine(WebDAV):订阅源 jar 的 com.github.catvod.spider.WebDAV 会 new OkHttpSardine()
+# 做 WebDAV 备份/还原,宿主零静态引用 → 不 keep 就整包被 R8 裁掉
+-keep class com.thegrizzlylabs.sardineandroid.** { *; }
+# Kotlin 标准库:jar 直接调用 kotlin.*(如 merge/e0/a 调 kotlin.io.TextStreamsKt),
+# 而宿主 Compose 只用到 stdlib 的一部分 → 其余被 R8 裁掉(debug 有、release 无),
+# 与 Guava 属同一类问题。对齐上游 fongmi 的同名规则。
+-keeppackagenames kotlin.**
+-keep class kotlin.** { *; }
 # MaterialKolor PaletteStyle(主题设置页):枚举名被持久化到 KV,
 # 上面的通用枚举规则只保留 valueOf/values 方法签名、不保留常量字段名,
 # 重命名后 PaletteStyle.valueOf(持久化名) 会抛 IllegalArgumentException(主题风格回落默认值)
@@ -334,7 +324,13 @@
 # release 剥离全部日志(2026-09-14)
 # release 已 isMinifyEnabled=true(R8),这里声明日志方法无副作用:
 # R8 会把调用点整条删除(连带参数里的字符串拼接一起消失,不只是不输出),
-# 因此 release 包内不再残留任何日志字符串常量。
+# 因此 release 包里**调用点与日志字符串全部消失**(2026-09-19 用 dexdump 逐 dex 复验:
+# `echo-*` 埋点串 0 命中、`LOG;->i(` 与 `android/util/Log;->i(` 调用点均 0 处;
+# 连"仅为日志而取"的实参调用如 `view.currentPosition()` 也一并消失)。
+# ⚠️ 但"残留"并非为零:`com.github.tvbox.osc.util.LOG` 类本体(含 `fileLog` 方法体与
+# `FILE_LOG_PREFIXES` 的 15 个前缀字面量)仍留在 dex 里 —— 其静态初始化器把这些字符串
+# load 出来再 sput,R8 未判定为纯死代码。属**不可达的死数据,无执行影响**;
+# 若要清干净,应在 `LOG.java` 里让 FILE_LOG=false 时把前缀数组一并折叠,而不是改本文件。
 # 覆盖三条通道:
 #   1) android.util.Log —— 全工程 337 处直接调用
 #   2) com.github.catvod.crawler.SpiderDebug —— 外挂 jar 的诊断通道,内部就是 Log.d
@@ -355,6 +351,7 @@
 }
 
 -assumenosideeffects class com.github.tvbox.osc.util.LOG {
+    public static *** d(...);
     public static *** i(...);
     public static *** e(...);
     public static *** longI(...);

@@ -1,9 +1,9 @@
 package com.github.tvbox.osc.util;
 
+import com.github.tvbox.osc.util.LOG;
 import androidx.annotation.NonNull;
 
 import com.github.tvbox.osc.api.ApiConfig;
-import com.github.tvbox.osc.base.App;
 import com.github.tvbox.osc.bean.ProxyRule;
 import com.github.tvbox.osc.player.danmu.Parser;
 import com.github.tvbox.osc.util.net.OkProxySelector;
@@ -55,8 +55,8 @@ public class OkGoHelper {
     // 内置doh json
     /** App 内置 DoH(2026-09-12 起不再只是"兜底":始终置于 [getDohConfigArray] 列表**最前**,接口项去重后追加在后) */
     private static final String dnsConfigJson = "["
-            + "{\"name\": \"腾讯\", \"url\": \"https://doh.pub/dns-query\"},"
-            + "{\"name\": \"阿里\", \"url\": \"https://dns.alidns.com/dns-query\"},"
+            + "{\"name\": \"腾讯\", \"url\": \"https://doh.pub/dns-query\"}," // i18n: keep(DNS 配置数据)
+            + "{\"name\": \"阿里\", \"url\": \"https://dns.alidns.com/dns-query\"}," // i18n: keep(DNS 配置数据)
             + "{\"name\": \"360\", \"url\": \"https://doh.360.cn/dns-query\"}"
             + "]";
     static OkHttpClient ItvClient = null;
@@ -98,22 +98,25 @@ public class OkGoHelper {
         try {
             setOkHttpSsl(builder);
         } catch (Throwable th) {
-            th.printStackTrace();
+            LOG.e("OkGoHelper", th);
         }
 
 //        builder.dns(dnsOverHttps);
         builder.dns(new CustomDns());
         ItvClient=builder.build();
 
-        ExoMediaSourceHelper.getInstance(App.getInstance()).setOkClient(ItvClient);
+        ExoMediaSourceHelper.getInstance(AppContextHolder.context()).setOkClient(ItvClient);
     }
 
-    public static DnsOverHttps dnsOverHttps = null;
+    // DNS 解析在 OkHttp 线程读,init/reloadDns 在主线程写
+    public static volatile DnsOverHttps dnsOverHttps = null;
 
-    public static ArrayList<String> dnsHttpsList = new ArrayList<>();
+    // ⚠️ 配置解析在 IO 协程写、设置页在主线程 mapIndexed 遍历:必须整体替换引用,不能原地 clear/add
+    public static volatile List<String> dnsHttpsList = Collections.emptyList();
 
     public static boolean is_doh = false;
-    public static Map<String, String> myHosts = null;
+    // 配置解析可能在 IO 线程写、DNS 解析在 OkHttp 线程读,需 volatile 保证可见性
+    public static volatile Map<String, String> myHosts = null;
 
     /**
      * 合并后的 DoH 配置数组(**唯一数据源**,2026-09-12 用户定稿):
@@ -130,7 +133,7 @@ public class OkGoHelper {
         try {
             appendDohItems(merged, keys, JsonParser.parseString(dnsConfigJson).getAsJsonArray());
         } catch (Exception e) {
-            e.printStackTrace();
+            LOG.e("OkGoHelper", e);
         }
         appendDohItems(merged, keys, parseDohArray(KV.get(HawkConfig.DOH_JSON, "")));
         return merged;
@@ -142,7 +145,7 @@ public class OkGoHelper {
         try {
             return JsonParser.parseString(json).getAsJsonArray();
         } catch (Exception e) {
-            e.printStackTrace();
+            LOG.e("OkGoHelper", e);
             return null;
         }
     }
@@ -170,16 +173,44 @@ public class OkGoHelper {
         return "";
     }
 
-    public static void setDnsList() {
-        dnsHttpsList.clear();
-        JsonArray jsonArray = getDohConfigArray();
-        dnsHttpsList.add("关闭");
-        for (int i = 0; i < jsonArray.size(); i++) {
-            JsonObject dnsConfig = jsonArray.get(i).getAsJsonObject();
+    public static void applyDohConfig(String dohJson) {
+        String pinned = getDohUrl(KV.get(HawkConfig.DOH_URL, 0));
+        KV.put(HawkConfig.DOH_JSON, dohJson);
+        JsonArray merged = getDohConfigArray();
+
+        List<String> list = new ArrayList<>();
+        list.add("关闭"); // i18n: keep(DNS 选项索引锚点,显示由设置页映射资源)
+        for (int i = 0; i < merged.size(); i++) {
+            JsonObject dnsConfig = merged.get(i).getAsJsonObject();
             String name = dnsConfig.has("name") ? dnsConfig.get("name").getAsString() : "Unknown Name";
-            dnsHttpsList.add(name);
+            list.add(name);
         }
-        if(KV.get(HawkConfig.DOH_URL, 0)+1>dnsHttpsList.size())KV.put(HawkConfig.DOH_URL, 0);
+        dnsHttpsList = list;
+
+        int index = indexOfDohUrl(merged, pinned);
+        if (index >= 0) {
+            KV.put(HawkConfig.DOH_URL, index + 1);
+        } else if (KV.get(HawkConfig.DOH_URL, 0) > merged.size()) {
+            KV.put(HawkConfig.DOH_URL, 0);
+        }
+        refreshHosts();
+    }
+
+    static int indexOfDohUrl(JsonArray merged, String url) {
+        if (merged == null || url == null || url.isEmpty()) return -1;
+        for (int i = 0; i < merged.size(); i++) {
+            JsonElement element = merged.get(i);
+            if (element == null || !element.isJsonObject()) continue;
+            JsonObject item = element.getAsJsonObject();
+            String key = item.has("url") ? item.get("url").getAsString()
+                    : (item.has("name") ? item.get("name").getAsString() : null);
+            if (url.equals(key)) return i;
+        }
+        return -1;
+    }
+
+    /** 刷新 hosts 快照:CustomDns.lookup 只在 myHosts 为 null(首次刷新前)时才回落读 ApiConfig,写完必须显式刷新 */
+    public static void refreshHosts() {
         myHosts = ApiConfig.get().getMyHost();
     }
 
@@ -191,7 +222,7 @@ public class OkGoHelper {
                     InetAddress inetAddress = InetAddress.getByName(ips.get(j).getAsString());
                     inetAddresses.add(inetAddress);  // 添加到 List 中
                 } catch (Exception e) {
-                    e.printStackTrace();  // 处理无效的 IP 字符串
+                    LOG.e("OkGoHelper", e);  // 处理无效的 IP 字符串
                 }
             }
         }
@@ -202,8 +233,8 @@ public class OkGoHelper {
         Integer dohSelector=KV.get(HawkConfig.DOH_URL, 0);
         JsonArray ips=null;
         try {
-            dnsHttpsList.clear();
-            dnsHttpsList.add("关闭");
+            List<String> list = new ArrayList<>();
+            list.add("关闭"); // i18n: keep(DNS 选项索引锚点,显示由设置页映射资源)
             JsonArray jsonArray = getDohConfigArray();
             if(dohSelector>jsonArray.size()) {
                 KV.put(HawkConfig.DOH_URL, 0);
@@ -212,11 +243,12 @@ public class OkGoHelper {
             for (int i = 0; i < jsonArray.size(); i++) {
                 JsonObject dnsConfig = jsonArray.get(i).getAsJsonObject();
                 String name = dnsConfig.has("name") ? dnsConfig.get("name").getAsString() : "Unknown Name";
-                dnsHttpsList.add(name);
+                list.add(name);
                 if(dohSelector==(i+1))ips = dnsConfig.has("ips") ? dnsConfig.getAsJsonArray("ips") : null;
             }
+            dnsHttpsList = list;
         } catch (Exception e) {
-            e.printStackTrace();
+            LOG.e("OkGoHelper", e);
         }
 
         OkHttpClient.Builder builder = new OkHttpClient.Builder();
@@ -229,9 +261,9 @@ public class OkGoHelper {
         try {
             setOkHttpSsl(builder);
         } catch (Throwable th) {
-            th.printStackTrace();
+            LOG.e("OkGoHelper", th);
         }
-        builder.cache(new Cache(new File(App.getInstance().getCacheDir().getAbsolutePath(), "dohcache"), 100 * 1024 * 1024));
+        builder.cache(new Cache(new File(AppContextHolder.context().getCacheDir().getAbsolutePath(), "dohcache"), 100 * 1024 * 1024));
         OkHttpClient dohClient = builder.build();
         String dohUrl = getDohUrl(KV.get(HawkConfig.DOH_URL, 0));
 //        if (!dohUrl.isEmpty()) is_doh = true;
@@ -324,8 +356,9 @@ public class OkGoHelper {
         }
     }
 
-    static OkHttpClient defaultClient = null;
-    static OkHttpClient noRedirectClient = null;
+    // 爬虫/JS 请求在后台线程读,init/reloadDns 在主线程写
+    static volatile OkHttpClient defaultClient = null;
+    static volatile OkHttpClient noRedirectClient = null;
 
     public static OkHttpClient getDefaultClient() {
         return defaultClient;
@@ -362,7 +395,7 @@ public class OkGoHelper {
         try {
             setOkHttpSsl(builder);
         } catch (Throwable th) {
-            th.printStackTrace();
+            LOG.e("OkGoHelper", th);
         }
 
         HttpHeaders.setUserAgent("okhttp/" + OkHttp.VERSION);
@@ -402,12 +435,14 @@ public class OkGoHelper {
         try {
             setOkHttpSsl(builder);
         } catch (Throwable th) {
-            th.printStackTrace();
+            LOG.e("OkGoHelper", th);
         }
 
         HttpHeaders.setUserAgent("okhttp/" + OkHttp.VERSION);
 
         OkHttpClient okHttpClient = builder.build();
+        // 与 init 同步:漏掉这行会让每主机并发上限退回默认 5
+        okHttpClient.dispatcher().setMaxRequestsPerHost(10);
         OkGo.getInstance().setOkHttpClient(okHttpClient);
 
         defaultClient = okHttpClient;

@@ -3,7 +3,6 @@ package com.github.tvbox.osc.player;
 import android.content.Context;
 import android.webkit.WebView;
 
-import com.github.tvbox.osc.ui.player.PreloadCoordinator;
 
 import org.json.JSONObject;
 
@@ -70,6 +69,9 @@ public interface PlaybackViewBridge {
     /** 当前内核实例(轨道信息读取用;无播放器时 null) */
     AbstractPlayer mediaPlayer();
 
+    /** 内核是否停在错误态(无内核为 false):错误内核不能复用,必须强制重建 */
+    boolean isKernelErrored();
+
     // ---------- 起播/释放 ----------
 
     /** 释放当前播放器实例(内核切换前 / 换线重播前 / 换内核时) */
@@ -99,13 +101,13 @@ public interface PlaybackViewBridge {
     /** 盖一层黑帧(复用播放器换集时避免上一集画面残留) */
     void clearVideoFrame();
 
-    /** 外挂字幕视图显隐(内核 pl==1 时可见) */
+    /** 外挂字幕视图显隐(起播前复位为隐藏,需要时由字幕决策链路再显示) */
     void setSubtitleViewVisible(boolean visible);
 
     /** 让页面复位"新一次播放开始"的侧写标记(exitingPreview) */
     void onNewPlayStarted();
 
-    /** 把播放器配置下发到 dkplayer(kernel&gt;0 时强制该内核;既有 PlayerHelper.updateCfg) */
+    /** 把播放器配置下发到 dkplayer(内核只剩 EXO,forceKernel 不再改变结果;既有 PlayerHelper.updateCfg) */
     void applyPlayerConfigToView(int forceKernel);
 
     /** 纯音频 URL 起播时改用 TextureView 渲染 */
@@ -123,6 +125,13 @@ public interface PlaybackViewBridge {
 
     /** M3U8 去广告代理链路(既有 mController.playM3u8) */
     void playM3u8(String url, HashMap<String, String> headers);
+
+    /**
+     * 同 {@link #playM3u8(String, HashMap)},但携带发起方的解析代际:净化在后台跑,完成后再回头起播,
+     * 期间切集的话旧集地址会把新播放顶掉。实现方须在起播前用
+     * {@link PlaybackController#isParseResultCurrent(int)} 校验,不一致则丢弃。
+     */
+    void playM3u8(String url, HashMap<String, String> headers, int gen);
 
     /**
      * 真正把地址交给播放器并起播(既有 goPlayUrl 的尾部连招):
@@ -171,7 +180,7 @@ public interface PlaybackViewBridge {
     /** 由页面组装的"下一集预载"目标快照(需要页面上下文与真实播放器实例判内核) */
     PreloadCoordinator.Snapshot buildPreloadSnapshot();
 
-    /** 显示「下一集已就绪」Toast(页面持有 Toast 实例,约 5s 自动撤下) */
+    /** 显示「下一集已就绪」Toast(页面持有 Toast 实例,约 3s 自动撤下) */
     void showPreloadReadyTip();
 
     /** 立即撤下「下一集已就绪」Toast */

@@ -1,25 +1,24 @@
 package com.github.tvbox.osc.ui.page
 
-import androidx.lifecycle.Observer
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.github.tvbox.osc.bean.AbsXml
 import com.github.tvbox.osc.bean.Movie
 import com.github.tvbox.osc.bean.MovieSort
-import com.github.tvbox.osc.viewmodel.SourceViewModel
+import com.github.tvbox.osc.sourcedata.SourceViewModel
+import com.github.tvbox.osc.sourcedata.observeAsFlow
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
-import org.json.JSONObject
 import kotlin.coroutines.resume
 
-/**
- * 栏目资源二级页(2026-09-09:首页分区/搜索结果分区右侧「全部 >」进入)。
- * partition 模式:按 SortData(含 filterSelect)经 SourceViewModel.getList 分页拉全量;
- * search 模式:结果列表由 Intent 直接传入,不走本 VM 的加载链。
- */
 class PartitionListVM : ViewModel() {
     sealed interface State {
         data object Loading : State
@@ -37,20 +36,17 @@ class PartitionListVM : ViewModel() {
     }
 
     companion object {
-        /** 首屏页码与首页分区一致从 1 开始(爬虫 categoryContent 不接受 0) */
         const val FIRST_PAGE = 1
     }
 
     val ui = MutableStateFlow(UiState())
 
-    /** 当前栏目分类(含筛选选择);partition 模式经 initIfNeed 赋值 */
     var sort: MovieSort.SortData? = null
         private set
 
     private val scope = viewModelScope
     private var initialized = false
 
-    /** action 卡结果提示流(与 HomeViewModel 同策略:只有非空 msg 才提示) */
     val actionMessages = MutableSharedFlow<String>(
         extraBufferCapacity = 4,
         onBufferOverflow = BufferOverflow.DROP_OLDEST,
@@ -58,20 +54,26 @@ class PartitionListVM : ViewModel() {
 
     private val actionViewModel = SourceViewModel()
 
-    // actionResult 失败时会 postValue(null)(SourceViewModel),泛型必须声明可空,
-    // 否则 Kotlin 对 lambda 参数插入非空检查直接 NPE(本项目既有约定)
-    private val actionObserver = Observer<JSONObject?> { json ->
-        val msg = json?.optString("msg").orEmpty()
-        if (msg.isNotEmpty()) actionMessages.tryEmit(msg)
-        refresh()
-    }
-
     init {
-        actionViewModel.actionResult.observeForever(actionObserver)
+        scope.launch {
+            actionViewModel.actionResult.observeAsFlow().collect { json ->
+                val msg = json?.optString("msg").orEmpty()
+                if (msg.isNotEmpty()) actionMessages.tryEmit(msg)
+                refresh()
+            }
+        }
     }
 
-    /** 请求结果;stale=true 表示已被新请求覆盖或已释放,不应写回状态(与 HomeViewModel.PartitionLoader 同策略) */
     private class LoaderResult(val stale: Boolean, val absXml: AbsXml?)
+
+    /**
+     * 收集作用域随 loader 生命周期:release() 取消它即摘掉观察者(等价旧 removeObserver)。
+     * ⚠️ 必须在下面 `loader` 之前初始化(匿名对象的 init 用它);`SupervisorJob(parent)` 是为了
+     * `cancel()` 只杀这个子 Job 而不带上 viewModelScope,`Main.immediate` 是因为 `observeForever` 有主线程断言。
+     */
+    private val loaderScope = CoroutineScope(
+        SupervisorJob(scope.coroutineContext[Job]) + Dispatchers.Main.immediate
+    )
 
     private val loader = object {
         private val svm = SourceViewModel()
@@ -83,24 +85,22 @@ class PartitionListVM : ViewModel() {
         var busy: Boolean = false
             private set
 
-        // 必须显式 AbsXml?:listResult 失败时会 post null,Kotlin lambda 默认推断非空参数
-        // 会触发 intrinsic NPE(与 HomeViewModel.PartitionLoader 写法对齐)
-        private val observer = Observer<AbsXml> { abs: AbsXml? ->
-            val current = pending
-            pending = null
-            busy = false
-            current?.invoke(LoaderResult(false, abs))
-        }
-
         init {
-            svm.listResult.observeForever(observer)
+            loaderScope.launch {
+                svm.listResult.observeAsFlow().collect { abs ->
+                    val current = pending
+                    pending = null
+                    busy = false
+                    current?.invoke(LoaderResult(false, abs))
+                }
+            }
         }
 
         fun release() {
             pending?.invoke(LoaderResult(true, null))
             pending = null
             busy = false
-            svm.listResult.removeObserver(observer)
+            loaderScope.cancel()
         }
 
         fun request(page: Int, data: MovieSort.SortData, onDone: (LoaderResult) -> Unit) {
@@ -112,23 +112,20 @@ class PartitionListVM : ViewModel() {
     }
 
     override fun onCleared() {
+        // 两个收集器都不用手工摘:loaderScope 在这里取消,actionViewModel 的随 viewModelScope 取消(onCleared 返回后)
         loader.release()
-        actionViewModel.actionResult.removeObserver(actionObserver)
     }
 
-    /** action 卡(如网盘配置卡「登入 / 清除缓存」):执行后由 actionObserver 提示 + 刷新当前列表 */
     fun runAction(video: Movie.Video) {
         actionViewModel.action(video.sourceKey, video.action)
     }
 
-    /** 回到第一页重拉(action 后刷新 / 目录内容刷新) */
     fun refresh() {
         if (!initialized) return
         ui.value = UiState(State.Loading)
         request(FIRST_PAGE)
     }
 
-    /** 幂等初始化(Activity 重建后 VM 仍在则跳过重放) */
     fun initIfNeed(sort: MovieSort.SortData) {
         if (initialized) return
         initialized = true

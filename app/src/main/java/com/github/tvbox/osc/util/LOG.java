@@ -3,7 +3,6 @@ package com.github.tvbox.osc.util;
 import android.util.Log;
 
 import com.github.tvbox.osc.BuildConfig;
-import com.github.tvbox.osc.base.App;
 
 import java.io.File;
 import java.io.FileWriter;
@@ -22,18 +21,8 @@ public class LOG {
     private static String TAG = "TVBox-runtime";
     private static final int MAX_LOG_LENGTH = 3000;
 
-    /**
-     * 临时排查通道(2026-09-12):本机 ROM(vivo/BBK)会吞掉第三方应用的 android.util.Log 输出 ——
-     * 应用刚启动时 logcat 里 TAG=TVBox-runtime 为 0 行(而 System.err 正常),导致 echo-* 埋点抓不到。
-     * 开启后把匹配前缀的日志异步追加到 files/preload_debug.log,用
-     * `adb shell run-as <pkg> cat files/preload_debug.log` 取出。排查完把 FILE_LOG 置 false 即可。
-     * 只落盘少数事件级前缀,不在热路径上,异步写不阻塞调用线程。
-     * 2026-09-14:改为跟随 BuildConfig.DEBUG —— release 包完全不落盘(release 另经
-     * proguard -assumenosideeffects 把 LOG/Log/SpiderDebug 调用整条剥离);
-     * debug 包保留排查通道。
-     */
     private static final boolean FILE_LOG = BuildConfig.DEBUG;
-    private static final String[] FILE_LOG_PREFIXES = {"echo-preload", "echo-setDataSource", "echo-play-cache", "echo-kv", "echo-exo-cache", "echo-music", "clearCache", "echo--jar"};
+    private static final String[] FILE_LOG_PREFIXES = {"echo-preload", "echo-setDataSource", "echo-play-cache", "echo-kv", "echo-progress", "echo-exo", "echo-music", "echo-lyric", "echo-sub", "echo-danmu", "echo-p2", "echo-p3", "echo-p4", "echo-p5", "clearCache", "echo--jar", "echo-local-src", "echo-setTrack", "echo-autoRetry", "echo-player", "echo-switch", "echo-goPlayUrl", "echo-history", "echo-render", "echo-picture", "echo-anime4k", "echo--list", "echo--getList", "echo--parse", "echo--getSort", "echo--sort", "echo-proxy"};
     private static final String FILE_LOG_NAME = "preload_debug.log";
     private static ExecutorService fileLogExecutor;
 
@@ -54,12 +43,14 @@ public class LOG {
         try {
             fileLogExecutor.execute(() -> {
                 // 每行独立开关文件:保证进程被杀时已写入的内容不丢(排查场景量小,开销可接受)
-                try (FileWriter writer = new FileWriter(new File(App.getInstance().getFilesDir(), FILE_LOG_NAME), true)) {
+                try (FileWriter writer = new FileWriter(new File(AppContextHolder.context().getFilesDir(), FILE_LOG_NAME), true)) {
                     writer.write(line + "\n");
                 } catch (Throwable ignored) {
+                    // 落盘失败即放弃:fileLog 自身兜底,不能再走 LOG 以免递归
                 }
             });
         } catch (Throwable ignored) {
+            // 同上:提交落盘任务失败即放弃,防递归
         }
     }
 
@@ -71,6 +62,26 @@ public class LOG {
     public static void i(String msg) {
         Log.i(TAG, "" + msg);
         fileLog("I", String.valueOf(msg));
+    }
+
+    /** 带模块标签的 debug 日志:"有意忽略"的 catch 用它记录忽略原因 */
+    public static void d(String tag, String msg) {
+        Log.d(TAG, tag + ": " + msg);
+        fileLog("D", String.valueOf(msg));
+    }
+
+    /**
+     * 带模块标签的错误日志(含异常栈):异常无法恢复但不应静默时使用。
+     * tr 同步落 System.err —— 本机 vivo ROM 吞 Logcat 时仍可见(见 MEMORY 排查记录)。
+     */
+    public static void e(String tag, String msg, Throwable tr) {
+        Log.e(TAG, tag + ": " + msg, tr);
+        fileLog("E", String.valueOf(msg));
+        if (tr != null) tr.printStackTrace();
+    }
+
+    public static void e(String tag, Throwable tr) {
+        e(tag, tr == null ? "null" : tr.toString(), tr);
     }
 
     public static void longI(String prefix, String msg) {

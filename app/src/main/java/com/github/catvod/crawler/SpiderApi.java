@@ -9,7 +9,7 @@ import android.view.Surface;
 import android.view.WindowManager;
 
 import com.github.tvbox.osc.server.ControlManager;
-import com.github.tvbox.osc.base.App;
+import com.github.tvbox.osc.util.LOG;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -28,6 +28,7 @@ import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.RequestBody;
 import okhttp3.Response;
+import com.github.tvbox.osc.util.AppContextHolder;
 
 public class SpiderApi {
 
@@ -53,13 +54,14 @@ public class SpiderApi {
         try {
             SpiderDebug.log(msg);
         } catch (Throwable ignored) {
+            // 日志桥自身兜底:此处在日志通道内,不再调日志以免递归
         }
     }
 
     public int getScreenOrientation() {
         try {
-            Activity activity = App.getInstance().getCurrentActivity();
-            Context context = activity == null ? App.getInstance() : activity;
+            Activity activity = com.github.tvbox.osc.util.AppManager.getInstance().currentActivity();
+            Context context = activity == null ? AppContextHolder.context() : activity;
             int orientation = context.getResources().getConfiguration().orientation;
             int rotation = Surface.ROTATION_0;
             WindowManager windowManager = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
@@ -79,9 +81,10 @@ public class SpiderApi {
     }
 
     public String multiReq(JsonArray array) {
+        ExecutorService executor = null;
         try {
             if (array == null || array.size() == 0) return "";
-            ExecutorService executor = Executors.newFixedThreadPool(Math.min(array.size(), 6));
+            executor = Executors.newFixedThreadPool(Math.min(array.size(), 6));
             java.util.ArrayList<Future<String>> futures = new java.util.ArrayList<>();
             for (JsonElement element : array) {
                 if (!element.isJsonObject()) continue;
@@ -90,10 +93,11 @@ public class SpiderApi {
             }
             JsonArray result = new JsonArray();
             for (Future<String> future : futures) result.add(toResult(future.get()));
-            executor.shutdown();
             return result.toString();
         } catch (Throwable th) {
             return "";
+        } finally {
+            if (executor != null) executor.shutdown();
         }
     }
 
@@ -132,6 +136,7 @@ public class SpiderApi {
                 return JsonParser.parseString(trim);
             }
         } catch (Throwable ignored) {
+            LOG.d("SpiderApi", "result json invalid, keep as string");
         }
         return new JsonPrimitive(text);
     }

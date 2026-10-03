@@ -8,10 +8,14 @@ import androidx.annotation.NonNull;
 import androidx.collection.ArrayMap;
 
 import com.github.catvod.net.OkHttp;
+import com.github.tvbox.osc.R;
+import com.github.tvbox.osc.base.App;
 import com.github.tvbox.osc.bean.DanmuSearchResult;
+import com.github.tvbox.osc.bean.SourceBean;
 import com.github.tvbox.osc.util.DanmuHelper;
 import com.github.tvbox.osc.util.HawkConfig;
 import com.github.tvbox.osc.util.LOG;
+import com.github.tvbox.osc.util.LanguageManager;
 import com.github.catvod.crawler.js.Trans;
 import com.github.tvbox.osc.util.KV;
 
@@ -30,6 +34,13 @@ import okhttp3.Callback;
 import okhttp3.Response;
 
 public class DanmakuApi {
+
+    /** 资源文案:Application 的 base 只在进程启动时挂一次,切语言后直接用 app.getString 会停在旧语言 */
+    private static String str(int resId, Object... args) {
+        App app = App.getInstance();
+        return app == null ? "" : LanguageManager.INSTANCE.localized(app).getString(resId, args);
+    }
+
     private static final String TAG = DanmakuApi.class.getSimpleName();
 //    private static final String BUILTIN_API = "https://saas-oa.shyeguang.cn";
     private static final String BUILTIN_API = "https://logvardanmu.konfan.cn/87654321";
@@ -60,7 +71,9 @@ public class DanmakuApi {
         void onError(String message);
     }
 
-    public static boolean canSearch() {
+    /** 站点可标 `danmaku:0` 关掉本站的自动搜弹幕;手动搜索不受此限 */
+    public static boolean canSearch(SourceBean sourceBean) {
+        if (sourceBean != null && !sourceBean.isDanmakuEnabled()) return false;
         return DanmuHelper.isOpen() && !TextUtils.isEmpty(getApiUrl());
     }
 
@@ -132,7 +145,7 @@ public class DanmakuApi {
         int seq = searchSeq.incrementAndGet();
         String apiUrl = getApiUrl();
         if (TextUtils.isEmpty(apiUrl)) {
-            notifySearchListError(callback, seq, "弹幕搜索接口为空");
+            notifySearchListError(callback, seq, str(R.string.danmu_search_api_empty));
             return;
         }
         if (!hasPlaceholder(apiUrl) && !isDanmakuSearchApi(apiUrl)) {
@@ -169,7 +182,7 @@ public class DanmakuApi {
         OkHttp.cancel(TAG);
         int seq = searchSeq.incrementAndGet();
         if (result == null || TextUtils.isEmpty(result.getUrl())) {
-            notifySearchResultError(callback, seq, "弹幕地址为空");
+            notifySearchResultError(callback, seq, str(R.string.danmu_url_empty));
             return;
         }
         if (!result.isBuiltIn()) {
@@ -188,7 +201,7 @@ public class DanmakuApi {
                     if (!response.isSuccessful()) throw new IOException("HTTP " + response.code());
                     String body = response.body() == null ? "" : response.body().string();
                     String danmu = commentJsonToXml(body);
-                    if (TextUtils.isEmpty(danmu)) throw new IOException("未获取到弹幕内容");
+                    if (TextUtils.isEmpty(danmu)) throw new IOException(str(R.string.danmu_content_empty));
                     notifySearchResultSuccess(callback, seq, danmu);
                 } catch (Throwable th) {
                     notifySearchResultError(callback, seq, getErrorMessage(th));
@@ -412,12 +425,22 @@ public class DanmakuApi {
         name = Trans.t2s(name == null ? "" : name);
         episode = Trans.t2s(episode == null ? "" : episode);
         if (hasPlaceholder(apiUrl)) {
-            return OkHttp.newCall(apiUrl.replace("{name}", name).replace("{episode}", episode), TAG);
+            return OkHttp.newCall(fillPlaceholders(apiUrl, name, episode), TAG);
         }
         ArrayMap<String, String> params = new ArrayMap<>();
         params.put("name", name);
         params.put("episode", episode);
         return OkHttp.newCall(apiUrl, OkHttp.toBody(params), TAG);
+    }
+
+    /** 占位符替换前必须编码:剧名里的 & 会被当成额外参数、# 之后整段变 fragment */
+    static String fillPlaceholders(String apiUrl, String name, String episode) {
+        return apiUrl.replace("{name}", encodePlaceholder(name)).replace("{episode}", encodePlaceholder(episode));
+    }
+
+    /** 占位符可能落在 path 上:空格编成 %20(+ 在 path 里是字面量;在 query 里两种写法都表示空格) */
+    private static String encodePlaceholder(String text) {
+        return encode(text).replace("+", "%20");
     }
 
     private static String getApiUrl() {
@@ -594,6 +617,7 @@ public class DanmakuApi {
                 if (anime != null && isMovieType(anime) && anime.optJSONArray("episodes") != null) return true;
             }
         } catch (Throwable ignored) {
+            LOG.d("DanmakuApi", "search body parse failed, treat as not movie");
         }
         return false;
     }
@@ -707,6 +731,7 @@ public class DanmakuApi {
             if (text.startsWith("#")) return String.valueOf(Long.parseLong(text.substring(1), 16));
             if (text.startsWith("0x") || text.startsWith("0X")) return String.valueOf(Long.parseLong(text.substring(2), 16));
         } catch (Throwable ignored) {
+            LOG.d("DanmakuApi", "color '" + text + "' parse failed, keep raw");
         }
         return text;
     }
@@ -837,7 +862,7 @@ public class DanmakuApi {
 
     private static String getErrorMessage(Throwable th) {
         String message = th == null ? "" : th.getMessage();
-        return TextUtils.isEmpty(message) ? "弹幕搜索失败" : message;
+        return TextUtils.isEmpty(message) ? str(R.string.danmu_search_failed) : message;
     }
 
     private static class EpisodeList {

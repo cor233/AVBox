@@ -92,6 +92,12 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
     public static final int STATE_START_ABORT = 8;//开始播放中止
     protected int mCurrentPlayState = STATE_IDLE;//当前播放器的状态
 
+    /**
+     * 暂停记忆:内核围绕 seek 会发缓冲/首帧回调把播放状态顶回"在播",而 setPlayState(STATE_PAUSED) 只在
+     * pause() 里 ⇒ 暂停语义丢失(中央播放暂停图标与实际画面相反)。暂停生效即记(含"seek 中暂停"),播放意图动作清除。
+     */
+    private boolean mPausedBeforeSeek;
+
     public static final int PLAYER_NORMAL = 10;        // 普通播放器
     public static final int PLAYER_FULL_SCREEN = 11;   // 全屏播放器
     public static final int PLAYER_TINY_SCREEN = 12;   // 小屏播放器
@@ -206,11 +212,19 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
         }
         //监听音频焦点改变
         if (mEnableAudioFocus) {
-            mAudioFocusHelper = new AudioFocusHelper(this);
+            ensureAudioFocusHelper();
+            if (mAudioFocusHelper != null) {
+                mAudioFocusHelper.onNewPlayback();
+            }
         }
         //读取播放进度
         if (mProgressManager != null) {
             mCurrentPosition = mProgressManager.getSavedProgress(mProgressKey == null ? mUrl : mProgressKey);
+        }
+        // 新建前必释放旧实例:本路径可能在「IDLE + 内核仍在」下被调用,直接 initPlayer() 会覆盖旧实例而不 release
+        if (mMediaPlayer != null) {
+            mMediaPlayer.release();
+            mMediaPlayer = null;
         }
         initPlayer();
         addDisplay();
@@ -254,6 +268,25 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
     }
 
     /**
+     * 预热内核:建内核与渲染视图但不 prepare(须主线程调用)。已有内核时幂等 ——
+     * 预热后首次起播命中 replay 复用,省去内核构造与渲染视图创建两段。
+     */
+    public void prewarmKernel() {
+        if (mMediaPlayer != null) return;
+        // 起播走 replay 不经 startPlay:助手不预建,onPrepared 的判空会让首次会话没有音频焦点
+        ensureAudioFocusHelper();
+        initPlayer();
+        addDisplay();
+    }
+
+    /** 音频焦点监听只建一次(覆盖引用会留下永不释放的旧 listener,它们仍会响应焦点事件去 pause/start) */
+    private void ensureAudioFocusHelper() {
+        if (mEnableAudioFocus && mAudioFocusHelper == null) {
+            mAudioFocusHelper = new AudioFocusHelper(this);
+        }
+    }
+
+    /**
      * 初始化之前的配置项
      */
     protected void setInitOptions() {
@@ -293,6 +326,8 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
     }
 
     protected void startPrepare(boolean reset, boolean rebindRenderView) {
+        // 新一次起播(replay 也走这里):seek 前的暂停记忆随之作废,否则会把在播的新内容按回暂停
+        mPausedBeforeSeek = false;
         if (reset) {
             mMediaPlayer.reset();
             //重新设置option，media player reset之后，option会失效
@@ -329,6 +364,7 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
      * 播放状态下开始播放
      */
     protected void startInPlaybackState() {
+        mPausedBeforeSeek = false;
         mMediaPlayer.start();
         setPlayState(STATE_PLAYING);
         if (mAudioFocusHelper != null && !isMute()) {
@@ -344,6 +380,8 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
     public void pause() {
         if (isInPlaybackState()
                 && mMediaPlayer.isPlaying()) {
+            // 暂停生效即记:seek 后立刻暂停时状态停在 BUFFERING(不是 PAUSED),不记的话随后的首帧回调会把 UI 顶回在播
+            mPausedBeforeSeek = true;
             mMediaPlayer.pause();
             setPlayState(STATE_PAUSED);
             if (mAudioFocusHelper != null && !isMute()) {
@@ -396,6 +434,7 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
     }
 
     private void resumePlay(){
+        mPausedBeforeSeek = false;
         mMediaPlayer.start();
         setPlayState(STATE_PLAYING);
         if (mAudioFocusHelper != null && !isMute()) {
@@ -415,8 +454,8 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
     public void stopPlaybackKeepPlayer() {
         if (mMediaPlayer == null) return;
         // 已被 pause() 停住的保持 PAUSED:**PAUSED + 实例仍在 = 可复用状态**;
-        // 反之若置成 IDLE,则 IDLE + 实例仍在 是个危险组合 —— 此后任何 start() 都会走
-        // startPlay() → initPlayer() 新建一个内核并覆盖旧的(旧的不会被 release),既泄漏又毁掉跨页复用
+        // 反之若置成 IDLE,则 IDLE + 实例仍在 是个危险组合 —— 此后 start() 会走 startPlay() → initPlayer() 新建内核
+        // (该组合下的旧实例释放已由 release() 与 startPlay() 各自兜底);语义上仍保持本方法不产出该组合。
         if (mCurrentPlayState == STATE_PAUSED) return;
         mMediaPlayer.stop();
         setPlayState(STATE_IDLE);
@@ -439,12 +478,19 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
      * 释放播放器
      */
     public void release() {
+        mPausedBeforeSeek = false;
+        //焦点监听与 IDLE 无关:stopPlaybackKeepPlayer 置 IDLE 后再 release 也必须清,否则 listener 残留在系统里
+        if (mAudioFocusHelper != null) {
+            mAudioFocusHelper.abandonFocus();
+            mAudioFocusHelper = null;
+        }
+        // 内核释放不随播放状态跳过:stopPlaybackKeepPlayer 会留下「IDLE + 内核仍在」,此时若跳过释放,
+        // 后续 startPlay() 将覆盖旧实例而不 release(引擎与页面桥都走本方法,不能靠状态闸拦)。
+        if (mMediaPlayer != null) {
+            mMediaPlayer.release();
+            mMediaPlayer = null;
+        }
         if (!isInIdleState()) {
-            //释放播放器
-            if (mMediaPlayer != null) {
-                mMediaPlayer.release();
-                mMediaPlayer = null;
-            }
             //释放renderView
             if (mRenderView != null) {
                 mPlayerContainer.removeView(mRenderView.getView());
@@ -458,11 +504,6 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
                 } catch (IOException e) {
                     e.printStackTrace();
                 }
-            }
-            //关闭AudioFocus监听
-            if (mAudioFocusHelper != null) {
-                mAudioFocusHelper.abandonFocus();
-                mAudioFocusHelper = null;
             }
             //关闭屏幕常亮
             mPlayerContainer.setKeepScreenOn(false);
@@ -524,9 +565,17 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
             mCurrentPosition = 0;
         }
         if (mMediaPlayer == null) {
+            // 不应发生:调用方(内核复用判定)须先确认内核还在 —— 静默转 start() 会把判定错误吞成"看起来正常"
+            L.w("replay() called without kernel, fallback to start()");
             start();
             return;
         }
+        // 复用内核不经 startPlay():补一次"新一次播放开始",否则上一段遗留的"待焦点恢复"会被陈旧 GAIN 兑现成自动起播
+        if (mEnableAudioFocus && mAudioFocusHelper != null) {
+            mAudioFocusHelper.onNewPlayback();
+        }
+        // 内核复用的内容边界:同一选轨器接着用,上一段选过的轨(轨道组按内容比相等)会串到这一段
+        mMediaPlayer.resetTrackSelection();
         if (mMediaPlayer.keepRenderViewOnReset()) {
             mMediaPlayer.reset();
             setOptions();
@@ -566,8 +615,24 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
     @Override
     public void seekTo(long pos) {
         if (isInPlaybackState()) {
+            // 暂停中的 seek:内核不会因此续播,但随后的缓冲回调会把状态顶离 PAUSED,先记下
+            if (mCurrentPlayState == STATE_PAUSED) {
+                mPausedBeforeSeek = true;
+            }
             mMediaPlayer.seekTo(pos);
         }
+    }
+
+    /**
+     * 暂停记忆生效期间(seek/缓冲回调)是否仍按"暂停"呈现:返回 true 时调用方不得再改播放状态。
+     * 用户按下播放(start/resume)会先清掉标记,不会被误按回暂停。
+     */
+    private boolean keepPausedStateAfterSeek() {
+        if (!mPausedBeforeSeek) return false;
+        if (mCurrentPlayState != STATE_PAUSED) {
+            setPlayState(STATE_PAUSED);
+        }
+        return true;
     }
 
     /**
@@ -628,14 +693,17 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
     public void onInfo(int what, int extra) {
         switch (what) {
             case AbstractPlayer.MEDIA_INFO_BUFFERING_START:
-                setPlayState(STATE_BUFFERING);
+                if (!keepPausedStateAfterSeek()) setPlayState(STATE_BUFFERING);
                 break;
             case AbstractPlayer.MEDIA_INFO_BUFFERING_END:
-                setPlayState(STATE_BUFFERED);
+                if (!keepPausedStateAfterSeek()) setPlayState(STATE_BUFFERED);
                 break;
             case AbstractPlayer.MEDIA_INFO_RENDERING_START: // 视频/音频开始渲染
-                setPlayState(STATE_PLAYING);
-                mPlayerContainer.setKeepScreenOn(true);
+                // 暂停中的 seek 也会渲染出新位置的帧,不能据此判成"在播"
+                if (!keepPausedStateAfterSeek()) {
+                    setPlayState(STATE_PLAYING);
+                    mPlayerContainer.setKeepScreenOn(true);
+                }
                 break;
             case AbstractPlayer.MEDIA_INFO_VIDEO_ROTATION_CHANGED:
                 if (mRenderView != null) mRenderView.setVideoRotation(extra);
@@ -720,11 +788,16 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
      * @param headers 请求头
      */
     public void setUrl(String url, Map<String, String> headers) {
+        mPausedBeforeSeek = false;
         mAssetFileDescriptor = null;
         mUrl = url;
         mHeaders = headers;
         mVideoSize[0] = 0;
         mVideoSize[1] = 0;
+        // 换内容:旧尺寸作废(控制层据此丢弃上一会话的残留值)
+        if (mVideoController != null) {
+            mVideoController.onVideoSizeCleared();
+        }
     }
 
     /**
@@ -880,7 +953,7 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
      * 页面内的搬运,本方法只负责"页面 ⇄ 服务"的搬运;两处都先判 parent 再 addView,幂等且不会重复挂载。
      *
      * <p>搬运会触发 SurfaceView 的 surfaceDestroyed/surfaceCreated,dkplayer 既有链路会 setDisplay(null)
-     * 再重挂;IJK/Exo 侧安全性结论见 MEMORY.md「IJK 异步 release × Surface 回调」与播放服务化 Spec §2.3/R1。
+     * 再重挂;Exo 侧安全性结论见播放服务化 Spec §2.3/R1。
      *
      * @param host 页面侧显示宿主(插到 index 0:宿主内的弹幕/覆盖层都在其之上)
      */
@@ -1018,6 +1091,10 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
         mVideoSize[0] = videoWidth;
         mVideoSize[1] = videoHeight;
 
+        // 同步给控制器:控制层原先只能轮询取值,换片后要等下一次轮询才刷新
+        if (mVideoController != null) {
+            mVideoController.onVideoSizeChanged(videoWidth, videoHeight);
+        }
         if (mRenderView != null) {
             mRenderView.setScaleType(mCurrentScreenScaleType);
             mRenderView.setVideoSize(videoWidth, videoHeight);

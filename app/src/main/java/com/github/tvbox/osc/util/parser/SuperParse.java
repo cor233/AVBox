@@ -173,7 +173,7 @@ public class SuperParse {
                     "<!doctype html>\n" +
                     "<html>\n" +
                     "<head>\n" +
-                    "<title>解析</title>\n" +
+                    "<title>解析</title>\n" + // i18n: keep(注入 HTML 片段)
                     "<meta http-equiv=\"Content-Type\" content=\"text/html; charset=utf-8\" />\n" +
                     "<meta http-equiv=\"X-UA-Compatible\" content=\"IE=EmulateIE10\" />\n" +
                     "<meta name=\"renderer\" content=\"webkit|ie-comp|ie-stand\">\n" +
@@ -213,7 +213,7 @@ public class SuperParse {
             result[2] = baos;
             return result;
         } catch (Throwable th) {
-            th.printStackTrace();
+            LOG.e("SuperParse", th);
         }
         return null;
     }

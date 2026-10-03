@@ -1,5 +1,6 @@
 package com.github.tvbox.osc.util;
 
+import com.github.tvbox.osc.util.LOG;
 import android.content.Context;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
@@ -37,21 +38,13 @@ public class DefaultConfig {
                     data.add(sortData);
                 }
                 if (withMy)
-                    data.add(0, new MovieSort.SortData("my0", "主页"));
+                    data.add(0, new MovieSort.SortData("my0", "主页")); // i18n: keep(默认配置数据)
                 Collections.sort(data);
                 return data;
             }
             ArrayList<String> categories = sb.getCategories();
             if (!categories.isEmpty()) {
-                for (String cate : categories) {
-                    for (MovieSort.SortData sortData : list) {
-                        if (sortData.name.equals(cate)) {
-                            if (sortData.filters == null)
-                                sortData.filters = new ArrayList<>();
-                            data.add(sortData);
-                        }
-                    }
-                }
+                data = pickByCategories(list, categories);
             } else {
                 for (MovieSort.SortData sortData : list) {
                     if (sortData.filters == null)
@@ -61,8 +54,30 @@ public class DefaultConfig {
             }
         }
         if (withMy)
-            data.add(0, new MovieSort.SortData("my0", "主页"));
+            data.add(0, new MovieSort.SortData("my0", "主页")); // i18n: keep(默认配置数据)
         Collections.sort(data);
+        return data;
+    }
+
+    /** 按白名单挑分类;一个都没匹配上退化为全量,否则源改分类名会把首页整页过滤成空 */
+    static List<MovieSort.SortData> pickByCategories(List<MovieSort.SortData> list, List<String> categories) {
+        List<MovieSort.SortData> data = new ArrayList<>();
+        for (String cate : categories) {
+            for (MovieSort.SortData sortData : list) {
+                if (sortData.name.equals(cate)) {
+                    if (sortData.filters == null)
+                        sortData.filters = new ArrayList<>();
+                    data.add(sortData);
+                }
+            }
+        }
+        if (data.isEmpty()) {
+            for (MovieSort.SortData sortData : list) {
+                if (sortData.filters == null)
+                    sortData.filters = new ArrayList<>();
+                data.add(sortData);
+            }
+        }
         return data;
     }
 
@@ -73,7 +88,7 @@ public class DefaultConfig {
             PackageInfo packageInfo = pm.getPackageInfo(mContext.getPackageName(), 0);
             return packageInfo.versionCode;
         } catch (PackageManager.NameNotFoundException e) {
-            e.printStackTrace();
+            LOG.e("DefaultConfig", e);
         }
         return -1;
     }
@@ -85,7 +100,7 @@ public class DefaultConfig {
             PackageInfo packageInfo = pm.getPackageInfo(mContext.getPackageName(), 0);
             return packageInfo.versionName;
         } catch (PackageManager.NameNotFoundException e) {
-            e.printStackTrace();
+            LOG.e("DefaultConfig", e);
         }
         return "";
     }
@@ -153,6 +168,7 @@ public class DefaultConfig {
             else
                 return defaultVal;
         } catch (Throwable th) {
+            LOG.d("DefaultConfig", "json key '" + key + "' not a plain string, use default");
         }
         return defaultVal;
     }
@@ -164,6 +180,7 @@ public class DefaultConfig {
             else
                 return defaultVal;
         } catch (Throwable th) {
+            LOG.d("DefaultConfig", "json key '" + key + "' not a number, use default");
         }
         return defaultVal;
     }
@@ -181,6 +198,7 @@ public class DefaultConfig {
                 }
             }
         } catch (Throwable th) {
+            LOG.d("DefaultConfig", "json key '" + key + "' not a string list, use empty");
         }
         return result;
     }
@@ -192,7 +210,7 @@ public class DefaultConfig {
     }
 
     private static final List<String> NO_AD_KEYWORDS = Arrays.asList(
-            "tx", "youku", "qq","qiyi", "letv", "leshi","sohu", "mgtv", "bilibili", "imgo","优酷", "芒果", "腾讯", "奇艺"
+            "tx", "youku", "qq","qiyi", "letv", "leshi","sohu", "mgtv", "bilibili", "imgo","优酷", "芒果", "腾讯", "奇艺" // i18n: keep(默认配置数据)
     );
 
     public static boolean noAd(String flag) {
