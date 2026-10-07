@@ -11,7 +11,6 @@ pluginManagement {
     }
     resolutionStrategy {
         eachPlugin {
-            // Chaquopy 的 plugin marker 未能稳定解析,直接映射到实现工件
             if (requested.id.id == "com.chaquo.python") {
                 useModule("com.chaquo.python:gradle:${requested.version}")
             }
@@ -35,7 +34,6 @@ dependencyResolutionManagement {
 
 rootProject.name = "AVBox"
 include(":app")
-include(":player")
 include(":quickjs")
 include(":pyramid")
 include(":libs:backdrop")

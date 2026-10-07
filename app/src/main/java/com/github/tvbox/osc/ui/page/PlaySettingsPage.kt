@@ -22,6 +22,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.github.tvbox.osc.R
 import com.github.tvbox.osc.player.PlaybackService
+import com.github.tvbox.osc.player.PlayerHelper
 import com.github.tvbox.osc.player.effect.anime4k.Anime4kTier
 import com.github.tvbox.osc.ui.components.AVBoxAlertDialog
 import com.github.tvbox.osc.ui.components.AppTopBarScaffold
@@ -36,11 +37,9 @@ import com.github.tvbox.osc.ui.components.SettingsSwitchRow
 import com.github.tvbox.osc.ui.components.TopBarActionBox
 import com.github.tvbox.osc.util.HawkConfig
 import com.github.tvbox.osc.util.MusicSettings
-import com.github.tvbox.osc.util.PlayerHelper
 import kotlin.math.roundToInt
-import xyz.doikki.videoplayer.player.VideoView
+import com.github.tvbox.osc.player.AppPlayerView
 
-// KV 持久化值(exo_decode),不能翻;显示走 player_decode_* 资源
 private const val DecodeHard = "硬解码" // i18n: keep
 private const val DecodeSoft = "软解码" // i18n: keep
 
@@ -102,12 +101,12 @@ fun PlaySettingsScreen(onNavigateBack: () -> Unit, vm: SettingsViewModel = viewM
                 }
                 SettingsCard(SettingsCardPosition.MIDDLE) {
                     val scales = listOf(
-                        VideoView.SCREEN_SCALE_DEFAULT to stringResource(R.string.common_default),
-                        VideoView.SCREEN_SCALE_16_9 to "16:9",
-                        VideoView.SCREEN_SCALE_4_3 to "4:3",
-                        VideoView.SCREEN_SCALE_MATCH_PARENT to stringResource(R.string.player_scale_fill),
-                        VideoView.SCREEN_SCALE_ORIGINAL to stringResource(R.string.player_scale_origin),
-                        VideoView.SCREEN_SCALE_CENTER_CROP to stringResource(R.string.player_scale_crop),
+                        AppPlayerView.SCREEN_SCALE_DEFAULT to stringResource(R.string.common_default),
+                        AppPlayerView.SCREEN_SCALE_16_9 to "16:9",
+                        AppPlayerView.SCREEN_SCALE_4_3 to "4:3",
+                        AppPlayerView.SCREEN_SCALE_MATCH_PARENT to stringResource(R.string.player_scale_fill),
+                        AppPlayerView.SCREEN_SCALE_ORIGINAL to stringResource(R.string.player_scale_origin),
+                        AppPlayerView.SCREEN_SCALE_CENTER_CROP to stringResource(R.string.player_scale_crop),
                     )
                     SettingsOptionMenuRow(
                         title = stringResource(R.string.settings_play_scale),
@@ -119,8 +118,6 @@ fun PlaySettingsScreen(onNavigateBack: () -> Unit, vm: SettingsViewModel = viewM
                     )
                 }
                 SettingsCard(SettingsCardPosition.MIDDLE) {
-                    // 解码方式:软解 = 系统软件解码器 c2.android.*(仅视频渲染器);
-                    // 内核选外部播放器时该设置不生效,行置灰
                     val codec = state.exoDecode
                     val decodeLabels = listOf(
                         stringResource(R.string.player_decode_hard),
@@ -147,7 +144,6 @@ fun PlaySettingsScreen(onNavigateBack: () -> Unit, vm: SettingsViewModel = viewM
                     SettingsOptionMenuRow(
                         title = stringResource(R.string.settings_play_anime4k),
                         leadingIconRes = R.drawable.ic_play_anime4k,
-                        subtitle = stringResource(R.string.settings_play_anime4k_subtitle),
                         valueText = labels[selected],
                         enabled = state.playType == 2,
                         options = labels,

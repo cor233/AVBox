@@ -88,6 +88,7 @@ android {
 
     testOptions {
         unitTests.isReturnDefaultValues = true
+        unitTests.isIncludeAndroidResources = true
     }
 }
 kotlin {
@@ -120,6 +121,7 @@ dependencies {
     implementation(libs.androidx.media)
     implementation(libs.okhttp)
     implementation(libs.okhttp.dnsoverhttps)
+    implementation(libs.kotlinx.coroutines.android)
     ksp(libs.androidx.room.compiler)
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.sqlite.bundled)
@@ -134,26 +136,28 @@ dependencies {
     implementation(libs.mmkv)
     implementation(libs.danmaku.flame.master)
 
-    implementation(project(":player"))
-    // 画质参数(调色)的着色器效果:ExoPlayer#setVideoEffects 在运行期反射查找效果模块,必须打进包
+    implementation(libs.media3.exoplayer)
+    implementation(libs.media3.exoplayer.dash)
+    implementation(libs.media3.exoplayer.hls)
+    implementation(libs.media3.exoplayer.rtsp)
+    implementation(libs.media3.datasource)
+    implementation(libs.media3.datasource.rtmp)
+    implementation(libs.media3.database)
+    implementation(libs.media3.ui)
+    implementation(libs.media3.ffmpeg.decoder)
     implementation(libs.media3.effect)
     implementation(project(":quickjs"))
     implementation(project(":pyramid"))
 
-    implementation(libs.okgo)
     implementation(libs.xx.permissions)
     implementation(libs.jsoup)
     implementation(libs.commons.io)
     implementation(libs.juniversalchardet)
-    // zxing:动态加载的爬虫 jar 运行期需要 com.google.zxing.*(二维码),宿主必须提供。
-    // 宿主源码无静态引用,禁止按"零引用"删除;keep 规则见 proguard-rules.pro
     implementation(libs.zxing.core)
-    // sardine:订阅源 jar 里的 WebDAV 爬虫(com.github.catvod.spider.WebDAV)用它做
     implementation(libs.sardine) {
         exclude(group = "xpp3", module = "xpp3")
     }
 
-    // Compose UI(avbox-mobile-ui-spec §2)
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.runtime.compose)
@@ -173,6 +177,13 @@ dependencies {
     coreLibraryDesugaring(libs.desugar.jdk.libs)
 
     testImplementation(libs.junit)
+
+    testImplementation(platform(libs.androidx.compose.bom))
+    testImplementation(libs.androidx.compose.ui.test.junit4)
+    testImplementation(libs.androidx.compose.ui.test.manifest)
+    testImplementation(libs.robolectric)
+    testImplementation(libs.androidx.test.core)
+    testImplementation(libs.androidx.test.ext.junit)
 }
 
 configurations.configureEach {

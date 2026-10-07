@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.github.tvbox.osc.R
 import com.github.tvbox.osc.api.ApiConfig
+import com.github.tvbox.osc.api.SortAdjuster
 import com.github.tvbox.osc.base.App
 import com.github.tvbox.osc.bean.AbsSortXml
 import com.github.tvbox.osc.bean.AbsXml
@@ -11,24 +12,27 @@ import com.github.tvbox.osc.bean.Movie
 import com.github.tvbox.osc.bean.MovieSort
 import com.github.tvbox.osc.bean.SourceBean
 import com.github.tvbox.osc.event.RefreshEvent
-import com.github.tvbox.osc.util.DefaultConfig
-import com.github.tvbox.osc.util.HomeSettings
-import com.github.tvbox.osc.util.LanguageManager
-import com.github.tvbox.osc.util.LOG
 import com.github.tvbox.osc.sourcedata.SourceRuntimeState
 import com.github.tvbox.osc.sourcedata.SourceViewModel
-import com.github.tvbox.osc.sourcedata.observeAsFlow
+import com.github.tvbox.osc.util.BootGuard
+import com.github.tvbox.osc.util.HawkConfig
+import com.github.tvbox.osc.util.HistoryHelper
+import com.github.tvbox.osc.util.HomeSettings
+import com.github.tvbox.osc.util.KV
+import com.github.tvbox.osc.util.LOG
+import com.github.tvbox.osc.util.LanguageManager
+import kotlin.coroutines.resume
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -36,10 +40,8 @@ import org.greenrobot.eventbus.EventBus
 import org.greenrobot.eventbus.Subscribe
 import org.greenrobot.eventbus.ThreadMode
 import org.json.JSONObject
-import kotlin.coroutines.resume
 
 class HomeViewModel : ViewModel() {
-    /** 资源文案:ViewModel 无 Context,走 LanguageManager(Application 的 base 切语言不会重挂) */
     private fun str(resId: Int, vararg args: Any): String {
         val app = App.getInstance() ?: return ""
         return LanguageManager.localized(app).getString(resId, *args)
@@ -71,6 +73,8 @@ class HomeViewModel : ViewModel() {
 
     val currentSource = MutableStateFlow<SourceBean?>(null)
     val sources = MutableStateFlow<List<SourceBean>>(emptyList())
+    val subscribeItems = MutableStateFlow<List<SubscribeSource>>(emptyList())
+    val activeSubscribeIndex = MutableStateFlow(-1)
     val allSorts = MutableStateFlow<List<MovieSort.SortData>>(emptyList())
     val sorts = MutableStateFlow<List<MovieSort.SortData>>(emptyList())
     val rec = MutableStateFlow(Rec(PartitionState.Loading, emptyList()))
@@ -81,7 +85,6 @@ class HomeViewModel : ViewModel() {
     private val bootReady = MutableStateFlow(false)
     val pageErrorEvents = MutableSharedFlow<String>(extraBufferCapacity = 1)
 
-    /** 分类取数失败(含一次自动重试仍失败):首页整页错误态,与真空区分 */
     val sortLoadFailed = MutableStateFlow(false)
     private var sortRetried = false
     private val listRetried = HashSet<String>()
@@ -94,6 +97,7 @@ class HomeViewModel : ViewModel() {
     private val loadSemaphore = Semaphore(2)
     private var loadGeneration = 0
     private var loadingSourceKey: String? = null
+    private var configReloading = false
     private var watchdogJob: Job? = null
 
     var activeSortId: String? = null
@@ -109,20 +113,24 @@ class HomeViewModel : ViewModel() {
 
     init {
         EventBus.getDefault().register(this)
-        scope.launch { sortViewModel.sortResult.observeAsFlow().collect { onSortResult(it) } }
-        scope.launch { recViewModel.sortResult.observeAsFlow().collect { onRecResult(it) } }
+        scope.launch { sortViewModel.sortResult.flow.collect { onSortResult(it) } }
+        scope.launch { recViewModel.sortResult.flow.collect { onRecResult(it) } }
         scope.launch {
-            actionViewModel.actionResult.observeAsFlow().collect { json ->
+            actionViewModel.actionResult.flow.collect { json ->
                 val msg = json?.optString("msg").orEmpty()
                 if (msg.isNotEmpty()) actionMessages.tryEmit(msg)
             }
         }
         sources.value = ApiConfig.get().getSwitchSourceBeanList()
         currentSource.value = ApiConfig.get().getHomeSourceBean()
+        refreshSubscribes()
         scope.launch {
             AppBootstrap.state.collect {
                 bootReady.value = it is AppBootstrap.Boot.Ready
-                if (it is AppBootstrap.Boot.Ready) loadHome()
+                if (it is AppBootstrap.Boot.Ready) {
+                    configReloading = false
+                    loadHome()
+                }
             }
         }
         scope.launch {
@@ -137,7 +145,6 @@ class HomeViewModel : ViewModel() {
     }
 
     override fun onCleared() {
-        // 三个通道的收集器不用手工摘:onCleared 返回后框架才取消 viewModelScope,桥接器的 awaitClose 随之摘观察者
         EventBus.getDefault().unregister(this)
         val staleLoaders = ArrayList(loaders.values)
         loaders.clear()
@@ -147,6 +154,7 @@ class HomeViewModel : ViewModel() {
     @Subscribe(threadMode = ThreadMode.MAIN)
     fun onRefreshEvent(event: RefreshEvent) {
         if (event.type == RefreshEvent.TYPE_API_URL_CHANGE) {
+            configReloading = true
             reload()
         }
     }
@@ -164,8 +172,24 @@ class HomeViewModel : ViewModel() {
         loadHome()
     }
 
+    fun isSubscribeDisabled(item: SubscribeSource): Boolean = BootGuard.isDisabledSource(item.url)
+
+    fun switchSubscribe(item: SubscribeSource) {
+        AppBootstrap.switchVodSubscription(item.url)
+    }
+
+    fun refreshSubscribes() {
+        val items = vodSubscribes()
+        val active = KV.get(HawkConfig.API_URL, "")
+        subscribeItems.value = items
+        activeSubscribeIndex.value = items.indexOfFirst {
+            it.url == active || HistoryHelper.isApiLineSourceOf(it.url, active)
+        }
+    }
+
     fun loadHome() {
         sources.value = ApiConfig.get().getSwitchSourceBeanList()
+        refreshSubscribes()
         val home = ApiConfig.get().getHomeSourceBean()
         loadingSourceKey = if (home.key.isNullOrEmpty()) null else home.key
         LOG.i("echo--sort-loadHome: key=${loadingSourceKey} name=${home.name} srcCount=${sources.value.size}")
@@ -213,7 +237,6 @@ class HomeViewModel : ViewModel() {
         requestPartition(partition, Partition.FIRST_PAGE)
     }
 
-    /** 整页错误态(分类取数失败)手动重试 */
     fun retrySort() {
         val key = loadingSourceKey ?: return
         LOG.i("echo--sort-manual-retry: key=$key")
@@ -258,7 +281,8 @@ class HomeViewModel : ViewModel() {
     private fun onSortResult(absXml: AbsSortXml?) {
         val key = loadingSourceKey
         if (key == null) {
-            LOG.i("echo--sort-null-key: srcName=${currentSource.value?.name} srcCount=${sources.value.size} absXml=${absXml != null}")
+            LOG.i("echo--sort-null-key: srcName=${currentSource.value?.name} srcCount=${sources.value.size} absXml=${absXml != null} reloading=$configReloading")
+            if (configReloading) return
             rec.value = Rec(PartitionState.Empty, emptyList())
             partitions.value = emptyList()
             sorts.value = emptyList()
@@ -289,10 +313,11 @@ class HomeViewModel : ViewModel() {
         }
 
         LOG.i("echo--sort-result: src=$key hasClasses=${absXml?.classes?.sortList != null} sortSize=${absXml?.classes?.sortList?.size}")
-        val adjusted = if (absXml?.classes?.sortList != null) {
-            DefaultConfig.adjustSort(key, absXml.classes.sortList, true)
+        val sortList = absXml?.classes?.sortList
+        val adjusted = if (sortList != null) {
+            SortAdjuster.adjustSort(key, sortList, true)
         } else {
-            DefaultConfig.adjustSort(key, ArrayList(), true)
+            SortAdjuster.adjustSort(key, ArrayList(), true)
         }
         allSorts.value = adjusted
 
@@ -368,16 +393,17 @@ class HomeViewModel : ViewModel() {
 
     private fun requestPartition(current: Partition, page: Int) {
         val generation = loadGeneration
-        val loader = loaders.getOrPut(current.sort.id) { PartitionLoader(current.sort) }
+        val sourceKey = loadingSourceKey
+        val loader = loaders.getOrPut(current.sort.id.orEmpty()) { PartitionLoader(sourceKey, current.sort) }
         scope.launch {
             loadSemaphore.withPermit {
-                if (generation != loadGeneration || loader.released) return@withPermit
+                if (generation != loadGeneration || loader.released || loader.sourceKey != loadingSourceKey) return@withPermit
                 armWatchdog()
                 val result = suspendCancellableCoroutine<LoaderResult> { cont ->
                     loader.request(page) { r -> if (cont.isActive) cont.resume(r) }
                 }
                 if (!result.stale) {
-                    applyPartitionResult(current.sort.id, page, result.absXml)
+                    applyPartitionResult(current.sort.id.orEmpty(), page, result.absXml)
                 }
             }
         }
@@ -453,7 +479,7 @@ class HomeViewModel : ViewModel() {
         targets.forEach { p -> requestPartition(p, Partition.FIRST_PAGE) }
     }
 
-    private inner class PartitionLoader(val sort: MovieSort.SortData) {
+    private inner class PartitionLoader(val sourceKey: String?, val sort: MovieSort.SortData) {
         private val svm = SourceViewModel()
         @Volatile
         private var pending: ((LoaderResult) -> Unit)? = null
@@ -466,22 +492,13 @@ class HomeViewModel : ViewModel() {
         var released: Boolean = false
             private set
 
-        /**
-         * 收集作用域随本 loader 生命周期:release() 取消它即摘掉观察者(等价旧 removeObserver)。
-         *
-         * ⚠️ 两个坑都在这一行:①`CoroutineScope(viewModelScope.coroutineContext)` 会**复用** VM 的
-         * SupervisorJob,`cancel()` 就会把整个 viewModelScope 一起杀掉(而 `loadHome()` 每次换源都
-         * release 旧 loader ⇒ 首页永久 loading);②context 里若没有 Dispatcher,`launch` 兜底用
-         * `Dispatchers.Default`,而 `observeForever` 有主线程断言 ⇒ 直接抛。故显式 `SupervisorJob(parent)`
-         * 造子 Job + `Dispatchers.Main.immediate`。
-         */
         private val observeScope = CoroutineScope(
             SupervisorJob(viewModelScope.coroutineContext[Job]) + Dispatchers.Main.immediate
         )
 
         init {
             observeScope.launch {
-                svm.listResult.observeAsFlow().collect { abs ->
+                svm.listResult.flow.collect { abs ->
                     val current = pending
                     pending = null
                     busy = false
@@ -494,7 +511,7 @@ class HomeViewModel : ViewModel() {
             pending?.invoke(LoaderResult(stale = true, absXml = null))
             pending = onDone
             busy = true
-            svm.getList(sort, page)
+            svm.getList(sourceKey, sort, page)
         }
 
         fun release() {
@@ -502,9 +519,6 @@ class HomeViewModel : ViewModel() {
             pending?.invoke(LoaderResult(stale = true, absXml = null))
             pending = null
             busy = false
-            // 释放即弃用:observeScope 是一次性的(取消后不能再 launch),所以调用方必须**先把它从
-            // `loaders` 表里摘掉/清表再 release** —— 否则后续 requestPartition 会 getOrPut 取回它,
-            // pending 永远等不到回包、该分区永停 Loading。当前两个调用点(loadHome/onCleared)都是先 clear 再 release。
             observeScope.cancel()
         }
     }

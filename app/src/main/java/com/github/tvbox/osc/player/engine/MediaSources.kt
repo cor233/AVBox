@@ -1,0 +1,286 @@
+package com.github.tvbox.osc.player.engine
+
+import android.content.Context
+import android.net.Uri
+import android.os.Bundle
+import android.text.TextUtils
+import androidx.media3.common.C
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
+import androidx.media3.datasource.DataSource
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.cache.Cache
+import androidx.media3.datasource.cache.CacheDataSource
+import androidx.media3.exoplayer.dash.DashMediaSource
+import androidx.media3.exoplayer.hls.HlsMediaSource
+import androidx.media3.exoplayer.rtsp.RtspMediaSource
+import androidx.media3.exoplayer.source.MediaSource
+import androidx.media3.exoplayer.source.ProgressiveMediaSource
+import com.github.tvbox.osc.net.OkGoHelper
+import java.util.HashMap
+import java.util.Locale
+import java.util.TreeMap
+import okhttp3.OkHttpClient
+
+class MediaSources(
+    context: Context,
+    private var client: OkHttpClient? = null,
+    private var cache: Cache? = null,
+) {
+
+    private val appContext: Context = context.applicationContext
+
+    fun setOkClient(client: OkHttpClient?) {
+        this.client = client
+    }
+
+    fun setCache(cache: Cache?) {
+        this.cache = cache
+    }
+
+    fun getMediaSource(uri: String): MediaSource = getMediaSource(uri, null, false)
+
+    fun getMediaSource(uri: String, headers: Map<String, String>?): MediaSource =
+        getMediaSource(uri, headers, false)
+
+    fun getMediaSource(uri: String, isCache: Boolean): MediaSource =
+        getMediaSource(uri, null, isCache)
+
+    fun getMediaSource(uri: String, headers: Map<String, String>?, isCache: Boolean): MediaSource =
+        getMediaSource(uri, headers, isCache, false, inferContentType(uri, headers))
+
+    fun getPreloadTargetMediaSource(uri: String, headers: Map<String, String>?): MediaSource =
+        getMediaSource(uri, headers, true, true, inferContentType(uri, headers))
+
+    fun getHlsMediaSource(uri: String, headers: Map<String, String>?): MediaSource =
+        getMediaSource(uri, headers, false, false, C.TYPE_HLS)
+
+    private fun getMediaSource(
+        uri: String,
+        headers: Map<String, String>?,
+        isCache: Boolean,
+        useDefaultCacheKey: Boolean,
+        contentType: Int,
+    ): MediaSource {
+        val contentUri = Uri.parse(uri)
+        if ("rtsp" == contentUri.scheme) {
+            return RtspMediaSource.Factory().createMediaSource(MediaItem.fromUri(contentUri))
+        }
+        val requestHeaders = toRequestHeaders(headers)
+        val mediaItem = buildMediaItem(uri, headers)
+        var factory: DataSource.Factory = createDataSourceFactory(requestHeaders)
+        if (isCache) {
+            factory = getCacheDataSourceFactory(factory, requestHeaders, useDefaultCacheKey)
+        }
+        return when (contentType) {
+            C.TYPE_DASH -> DashMediaSource.Factory(factory).createMediaSource(mediaItem)
+            C.TYPE_HLS -> HlsMediaSource.Factory(factory)
+                .setLoadErrorHandlingPolicy(HlsErrorHandlingPolicy())
+                .createMediaSource(mediaItem)
+            else -> ProgressiveMediaSource.Factory(factory).createMediaSource(mediaItem)
+        }
+    }
+
+    fun createDataSourceFactory(headers: Map<String, String>?): DataSource.Factory {
+        val normalized = toRequestHeaders(headers)
+        var userAgent: String? = null
+        val requestHeaders = HashMap<String, String>()
+        for (entry in normalized.entries) {
+            if ("User-Agent".equals(entry.key, ignoreCase = true)) {
+                userAgent = entry.value
+            } else {
+                requestHeaders[entry.key] = entry.value
+            }
+        }
+        val httpFactory = OkHttpDataSource.Factory(client ?: OkGoHelper.getItvClient() ?: FallbackClient.INSTANCE)
+        httpFactory.setUserAgent(userAgent)
+        httpFactory.setDefaultRequestProperties(requestHeaders)
+        return DefaultDataSource.Factory(appContext, httpFactory)
+    }
+
+    fun createDataSourceFactory(mediaItem: MediaItem): DataSource.Factory =
+        createDataSourceFactory(getHeadersFrom(mediaItem))
+
+    private fun getCacheDataSourceFactory(
+        upstream: DataSource.Factory,
+        headers: Map<String, String>?,
+        useDefaultCacheKey: Boolean,
+    ): DataSource.Factory {
+        val cache = this.cache ?: PlayerCache.getSharedCache(appContext)
+        val factory = CacheDataSource.Factory()
+            .setCache(cache)
+            .setUpstreamDataSourceFactory(upstream)
+            .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+        if (!useDefaultCacheKey) {
+            val keySuffix = headerKeySuffix(headers)
+            if (keySuffix.isNotEmpty()) {
+                factory.setCacheKeyFactory { dataSpec -> dataSpec.uri.toString() + keySuffix }
+            }
+        }
+        return factory
+    }
+
+    companion object {
+
+        const val HEADER_FORMAT = "TVBox-Format"
+
+        const val EXTRA_HEADERS = "avbox.extras.httpHeaders"
+
+        private object FallbackClient {
+            val INSTANCE: OkHttpClient = OkHttpClient.Builder().build()
+        }
+
+        @Volatile
+        private var instance: MediaSources? = null
+
+        @JvmStatic
+        fun getInstance(context: Context): MediaSources {
+            val existing = instance
+            if (existing != null) return existing
+            synchronized(MediaSources::class.java) {
+                instance?.let { return it }
+                val created = MediaSources(context.applicationContext)
+                instance = created
+                return created
+            }
+        }
+
+        @JvmStatic
+        fun buildMediaItem(uri: String, headers: Map<String, String>?): MediaItem {
+            val extras = Bundle()
+            extras.putSerializable(EXTRA_HEADERS, toRequestHeaders(headers))
+            val requestMetadata = MediaItem.RequestMetadata.Builder()
+                .setMediaUri(Uri.parse(uri))
+                .setExtras(extras)
+                .build()
+            return MediaItem.Builder()
+                .setUri(uri)
+                .setRequestMetadata(requestMetadata)
+                .build()
+        }
+
+        @JvmStatic
+        fun buildPreloadMediaItem(uri: String, headers: Map<String, String>?): MediaItem {
+            val item = buildMediaItem(uri, headers)
+            val mimeType = mimeTypeOf(inferContentType(uri, headers)) ?: return item
+            return item.buildUpon().setMimeType(mimeType).build()
+        }
+
+        @JvmStatic
+        fun getHeadersFrom(mediaItem: MediaItem): Map<String, String>? {
+            val extras = mediaItem.requestMetadata.extras ?: return null
+            val stored = extras.getSerializable(EXTRA_HEADERS)
+            @Suppress("UNCHECKED_CAST")
+            return stored as? Map<String, String>
+        }
+
+        @JvmStatic
+        fun headerKeySuffix(headers: Map<String, String>?): String {
+            if (headers == null || headers.isEmpty()) {
+                return ""
+            }
+            val sorted = TreeMap<String, String>(String.CASE_INSENSITIVE_ORDER)
+            for (entry in headers.entries) {
+                val key = entry.key
+                val value = entry.value
+                if (key != null && value != null) {
+                    sorted[key.trim { it <= ' ' }] = value.trim { it <= ' ' }
+                }
+            }
+            if (sorted.isEmpty()) {
+                return ""
+            }
+            val sb = StringBuilder()
+            for ((key, value) in sorted) {
+                sb.append('\n').append(key).append(':').append(value).append(';')
+            }
+            return sb.toString()
+        }
+
+        @JvmStatic
+        fun toRequestHeaders(headers: Map<String, String>?): HashMap<String, String> {
+            val requestHeaders = HashMap<String, String>()
+            if (headers == null) {
+                return requestHeaders
+            }
+            for (entry in headers.entries) {
+                val key = entry.key
+                val value = entry.value
+                if (TextUtils.isEmpty(key) || TextUtils.isEmpty(value)) {
+                    continue
+                }
+                if (HEADER_FORMAT.equals(key, ignoreCase = true)) {
+                    continue
+                }
+                requestHeaders[key] = value.trim { it <= ' ' }
+            }
+            return requestHeaders
+        }
+
+        @JvmStatic
+        fun inferContentType(fileName: String, headers: Map<String, String>?): Int {
+            val formatType = inferFormatContentType(headers)
+            if (formatType != C.TYPE_OTHER) {
+                return formatType
+            }
+            val name = fileName.lowercase(Locale.getDefault())
+            return when {
+                name.contains(".mpd") || name.contains("type=mpd") || name.contains("type=dash")
+                    || name.contains("format=mpd") || name.contains("format=dash") -> C.TYPE_DASH
+                isHlsUri(name) -> C.TYPE_HLS
+                else -> C.TYPE_OTHER
+            }
+        }
+
+        @JvmStatic
+        fun inferFormatContentType(headers: Map<String, String>?): Int {
+            if (headers == null || !headers.containsKey(HEADER_FORMAT)) {
+                return C.TYPE_OTHER
+            }
+            val format = (headers[HEADER_FORMAT] ?: return C.TYPE_OTHER).trim { it <= ' ' }.lowercase(Locale.getDefault())
+            if (format == "hls" || format.contains("mpegurl") || format.contains("m3u8")) {
+                return C.TYPE_HLS
+            }
+            if (format == "dash" || format == "mpd" || format.contains("dash+xml")) {
+                return C.TYPE_DASH
+            }
+            return C.TYPE_OTHER
+        }
+
+        @JvmStatic
+        fun mimeTypeOf(contentType: Int): String? = when (contentType) {
+            C.TYPE_HLS -> MimeTypes.APPLICATION_M3U8
+            C.TYPE_DASH -> MimeTypes.APPLICATION_MPD
+            else -> null
+        }
+
+        @JvmStatic
+        fun isHlsUri(uri: String): Boolean {
+            if (isAudioUri(uri)) {
+                return false
+            }
+            if (uri.contains("m3u8") || uri.contains("type=hls") || uri.contains("format=hls")) {
+                return true
+            }
+            val parsedUri: Uri? = Uri.parse(uri)
+            val path = parsedUri?.path ?: return false
+            val lower = path.lowercase(Locale.getDefault())
+            return lower.endsWith("/live.php") || lower.contains("/live/")
+        }
+
+        @JvmStatic
+        fun isAudioUri(uri: String): Boolean {
+            val parsedUri: Uri? = Uri.parse(uri)
+            var path = parsedUri?.path ?: uri
+            path = path.lowercase(Locale.getDefault())
+            return path.endsWith(".mp3")
+                || path.endsWith(".m4a")
+                || path.endsWith(".aac")
+                || path.endsWith(".flac")
+                || path.endsWith(".wav")
+                || path.endsWith(".ogg")
+                || path.endsWith(".opus")
+                || path.endsWith(".amr")
+        }
+    }
+}

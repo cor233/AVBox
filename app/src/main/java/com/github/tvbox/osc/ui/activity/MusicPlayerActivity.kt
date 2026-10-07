@@ -15,7 +15,10 @@ import com.github.tvbox.osc.api.ApiConfig
 import com.github.tvbox.osc.base.BaseActivity
 import com.github.tvbox.osc.ui.components.SheetHostScaffold
 import com.github.tvbox.osc.bean.VodInfo
-import com.github.tvbox.osc.data.RoomDataManger
+import com.github.tvbox.osc.data.AppGraph
+import com.github.tvbox.osc.data.EpisodeTotals
+import com.github.tvbox.osc.data.HistoryWriter
+import com.github.tvbox.osc.data.WatchProgressStore
 import com.github.tvbox.osc.dlna.CastVideo
 import com.github.tvbox.osc.event.RefreshEvent
 import com.github.tvbox.osc.player.KernelDecision
@@ -28,7 +31,9 @@ import com.github.tvbox.osc.player.PlaybackPage
 import com.github.tvbox.osc.player.PlaybackService
 import com.github.tvbox.osc.player.PlaybackSession
 import com.github.tvbox.osc.player.PlaybackViewBridge
+import com.github.tvbox.osc.player.PlayerHelper
 import com.github.tvbox.osc.player.state.CastSheetState
+import com.github.tvbox.osc.player.state.PlayState
 import com.github.tvbox.osc.ui.music.MusicLrc
 import com.github.tvbox.osc.ui.music.MusicPlayMode
 import com.github.tvbox.osc.ui.music.MusicPlayerScreen
@@ -36,13 +41,10 @@ import com.github.tvbox.osc.ui.music.MusicPlayerState
 import com.github.tvbox.osc.ui.player.PlayerTipBridge
 import com.github.tvbox.osc.ui.theme.AVBoxTheme
 import com.github.tvbox.osc.ui.theme.enableTransparentEdgeToEdge
-import com.github.tvbox.osc.util.EpisodeTotals
-import com.github.tvbox.osc.util.HistoryWriter
 import com.github.tvbox.osc.util.LOG
 import com.github.tvbox.osc.util.MusicSettings
 import com.github.tvbox.osc.util.PermissionHelper
-import com.github.tvbox.osc.util.PlayerHelper
-import com.github.tvbox.osc.util.WatchProgressStore
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -50,8 +52,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import org.greenrobot.eventbus.EventBus
-import xyz.doikki.videoplayer.player.VideoView
-import xyz.doikki.videoplayer.render.TextureRenderViewFactory
+import com.github.tvbox.osc.player.host.EngineTextureRenderViewFactory
 
 private const val POSITION_TICK_MS = 400L
 
@@ -60,7 +61,6 @@ class MusicPlayerActivity : BaseActivity(), PlaybackPage {
     companion object {
         private const val EXTRA_HISTORY_SOURCE_KEY = "historySourceKey"
 
-        /** [historySourceKey] 必须是详情页写历史用的那个 key(firstsourceKey),否则换过源会写出第二条记录 */
         fun start(context: Context, historySourceKey: String? = null) {
             context.startActivity(
                 Intent(context, MusicPlayerActivity::class.java)
@@ -88,8 +88,6 @@ class MusicPlayerActivity : BaseActivity(), PlaybackPage {
     private var lyricSource: String? = null
     private var lyricJob: Job? = null
 
-    override fun getLayoutResID(): Int = R.layout.activity_main
-
     override fun shouldRefreshAutoSize(): Boolean = true
 
     override fun hideSysBar() {}
@@ -112,10 +110,11 @@ class MusicPlayerActivity : BaseActivity(), PlaybackPage {
         bridge = MusicPageBridge(this, engine.headlessBridge())
         host = MusicHost()
         engine.attach(this)
-        player.addOnStateChangeListener(stateListener)
+        scope.launch(Dispatchers.Main.immediate) {
+            player.playStateFlow.collect { playState -> onPlayStateChanged(playState) }
+        }
         findViewById<ComposeView>(R.id.compose_view).setContent {
             AVBoxTheme {
-                // 独立 Activity 页面:套窗口根槽位,弹层无论写在哪都能全屏弹出(见 SheetHostScaffold)
                 SheetHostScaffold {
                     MusicPlayerScreen(
                         state = ui,
@@ -133,7 +132,7 @@ class MusicPlayerActivity : BaseActivity(), PlaybackPage {
             }
         }
         ui.playMode = MusicPlayMode.of(MusicSettings.playMode())
-        ui.collected = RoomDataManger.isVodCollect(sourceKey, vod.id)
+        ui.collected = AppGraph.collectRepository.isVodCollect(sourceKey, vod.id)
         refreshMeta()
         syncLyric()
         ready = true
@@ -172,9 +171,7 @@ class MusicPlayerActivity : BaseActivity(), PlaybackPage {
         scope.cancel()
         lyricJob = null
         if (ready) {
-            player.removeOnStateChangeListener(stateListener)
             PlayerTipBridge.hide()
-            // 退出页面时再落一次:刷新 updateTime(历史列表按时间排序)并记下最后播到哪首
             syncHistory()
             engine.detach(this)
         }
@@ -185,44 +182,43 @@ class MusicPlayerActivity : BaseActivity(), PlaybackPage {
         override fun run() {
             ui.positionMs = player.currentPosition.coerceAtLeast(0L)
             ui.durationMs = player.duration.coerceAtLeast(0L)
-            val state = player.currentPlayState
-            ui.buffering = state == VideoView.STATE_PREPARING || state == VideoView.STATE_BUFFERING
+            val state = player.playState
+            ui.buffering = state == PlayState.PREPARING || state == PlayState.BUFFERING
             ui.playing = player.isPlaying
             main.postDelayed(this, POSITION_TICK_MS)
         }
     }
 
-    private val stateListener = object : VideoView.SimpleOnStateChangeListener() {
-        override fun onPlayStateChanged(playState: Int) {
-            when (playState) {
-                VideoView.STATE_PREPARING, VideoView.STATE_BUFFERING -> ui.buffering = true
-                VideoView.STATE_PREPARED, VideoView.STATE_BUFFERED -> ui.buffering = false
-                VideoView.STATE_PLAYING -> {
-                    ui.buffering = false
-                    ui.playing = true
-                }
-                VideoView.STATE_PAUSED -> {
-                    ui.buffering = false
-                    ui.playing = false
-                }
-                VideoView.STATE_PLAYBACK_COMPLETED -> {
-                    ui.buffering = false
-                    ui.playing = false
-                    onSongCompleted()
-                }
-                VideoView.STATE_ERROR -> {
-                    ui.buffering = false
-                    ui.playing = false
-                }
+    private fun onPlayStateChanged(playState: PlayState) {
+        when (playState) {
+            PlayState.PREPARING, PlayState.BUFFERING -> ui.buffering = true
+            PlayState.PREPARED, PlayState.BUFFERED -> ui.buffering = false
+            PlayState.PLAYING -> {
+                ui.buffering = false
+                ui.playing = true
             }
-            ui.durationMs = player.duration.coerceAtLeast(0L)
-            if (playState == VideoView.STATE_PREPARING
-                || playState == VideoView.STATE_PREPARED
-                || playState == VideoView.STATE_PLAYING
-            ) {
-                refreshMeta()
-                syncLyric()
+            PlayState.PAUSED -> {
+                ui.buffering = false
+                ui.playing = false
             }
+            PlayState.COMPLETED -> {
+                ui.buffering = false
+                ui.playing = false
+                onSongCompleted()
+            }
+            PlayState.ERROR -> {
+                ui.buffering = false
+                ui.playing = false
+            }
+            PlayState.IDLE, PlayState.START_ABORT -> {}
+        }
+        ui.durationMs = player.duration.coerceAtLeast(0L)
+        if (playState == PlayState.PREPARING
+            || playState == PlayState.PREPARED
+            || playState == PlayState.PLAYING
+        ) {
+            refreshMeta()
+            syncLyric()
         }
     }
 
@@ -244,7 +240,6 @@ class MusicPlayerActivity : BaseActivity(), PlaybackPage {
     private fun playAt(index: Int, removeProgress: Boolean) {
         val list = queueList()
         if (index < 0 || index >= list.size || index == vod.playIndex) return
-        // 必须在 engine.play() 之前(见 PlaybackController.beginSwitchPlayback)
         controller.beginSwitchPlayback()
         if (removeProgress) {
             controller.progressKey()?.let { WatchProgressStore.clear(controller.progressOwner(), it) }
@@ -259,13 +254,8 @@ class MusicPlayerActivity : BaseActivity(), PlaybackPage {
         syncHistory()
     }
 
-    /**
-     * 刷新观看历史。音乐页不走详情页的 preparePlaySession,而 RoomDataManger.insertVodRecord 是历史的
-     * 唯一落库点 —— 不在这里补,历史会永远停在详情页交接那一刻(集数/备注/时间都不再更新)。
-     */
     private fun syncHistory() {
         vod.playNote = queueList().getOrNull(vod.playIndex)?.name.orEmpty()
-        // 音乐页是另一条历史落库路径,集数快照必须跟着一起写(否则纯音频片丢"X/Y 集")
         EpisodeTotals.putFromVod(vod)
         HistoryWriter.write(historySourceKey, vod)
     }
@@ -284,7 +274,6 @@ class MusicPlayerActivity : BaseActivity(), PlaybackPage {
     }
 
     private fun replayCurrent() {
-        // 同 playAt:必须在 engine.play() 之前
         controller.beginSwitchPlayback()
         controller.progressKey()?.let { WatchProgressStore.clear(controller.progressOwner(), it) }
         controller.clearTriedLines()
@@ -300,16 +289,15 @@ class MusicPlayerActivity : BaseActivity(), PlaybackPage {
 
     private fun toggleCollect() {
         if (ui.collected) {
-            RoomDataManger.deleteVodCollect(sourceKey, vod)
+            AppGraph.collectRepository.deleteVodCollect(sourceKey, vod)
             ui.collected = false
         } else {
-            RoomDataManger.insertVodCollect(sourceKey, vod)
+            AppGraph.collectRepository.insertVodCollect(sourceKey, vod)
             ui.collected = true
         }
         EventBus.getDefault().post(RefreshEvent(RefreshEvent.TYPE_COLLECT_REFRESH))
     }
 
-    // 与 PlayContainer.showCastDialog 同一套取数口径:可播地址 + 头部 + 当前位置,标题 = 影片名 + 集名
     private fun showCast() {
         val url = controller.webPlayUrl()
         if (url.isNullOrEmpty()) {
@@ -323,7 +311,7 @@ class MusicPlayerActivity : BaseActivity(), PlaybackPage {
         val headers = controller.webHeaderMap()?.let { HashMap(it) }
         ui.castSheet = CastSheetState(
             CastVideo(
-                controller.getCastUrl(url),
+                controller.getCastUrl(url) ?: url,
                 title,
                 headers,
                 player.currentPosition.coerceAtLeast(0L),
@@ -365,11 +353,14 @@ class MusicPlayerActivity : BaseActivity(), PlaybackPage {
         lyricSource = source
         lyricJob?.cancel()
         lyricJob = scope.launch {
-            val result = runCatching { MusicLrc.load(source) }
-            // 禁止静默吞错:MusicLrc 类初始化失败(标签正则被 ICU 拒绝)与"解析出 0 行"症状完全一样
-            // (界面无歌词、无任何提示),不打日志根本分不清是哪一种
-            result.exceptionOrNull()?.let { LOG.i("echo-music lyric parse failed: $it") }
-            val lines = result.getOrDefault(emptyList())
+            val lines = try {
+                MusicLrc.load(source)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                LOG.i("echo-music lyric parse failed: $e")
+                emptyList()
+            }
             LOG.i("echo-music lyric parsed: ${lines.size} lines")
             if (source == lyricSource) ui.lyrics = lines
         }
@@ -386,7 +377,6 @@ class MusicPlayerActivity : BaseActivity(), PlaybackPage {
 
     private fun startPlayback(url: String, headers: HashMap<String, String>?, forceExoPlayer: Boolean) {
         PlayerTipBridge.hide()
-        // 纯音频会话的视图最终总会热切 Texture(见 ensureAudioOnlyRender),按用户设置重建只会白断一次声音
         if (player.mediaPlayer != null
             && !controller.isConfirmedAudioOnly()
             && player.needsRenderRebuild(player.factoryRenderType())
@@ -394,7 +384,6 @@ class MusicPlayerActivity : BaseActivity(), PlaybackPage {
             player.requireKernelRebuild()
             LOG.i("echo-render-changed: rebuild kernel on next start")
         }
-        // 许可放行后内核仍可能报错:坏内核不能接着 reset 用(与点播页同一口径)
         if (player.isKernelErrored()) {
             player.requireKernelRebuild()
             LOG.i("echo-kernel-error: rebuild errored kernel on start")
@@ -402,16 +391,17 @@ class MusicPlayerActivity : BaseActivity(), PlaybackPage {
         val rebuildKernel = player.consumeKernelRebuildRequired()
         val kernelPresent = player.mediaPlayer != null
         val reusePlayer = KernelReusePolicy.decide(kernelPresent, rebuildKernel, forceExoPlayer, true) == KernelDecision.REUSE
+        val sameContent = reusePlayer && controller.isSameStartedContent()
         if (!reusePlayer && kernelPresent) engine.releasePlayer()
-        // 换歌一律是换内容(进度键每首不同),上一首的落盘由 PlaybackController.play() 在键易主前统一做
+        if (sameContent) player.saveCurrentProgress()
         player.setProgressKey(controller.progressKey())
-        // 记忆键随内核作废(MyVideoView.release),复用别页留下的内核时必须显式清,否则会沿用上一部片的字幕记忆
         player.setTrackMemoryKey("")
         controller.markContentStarted()
         if (headers != null) player.setUrl(url, headers) else player.setUrl(url)
         controller.startSwitchLinePlayTimeout()
         if (reusePlayer) {
-            player.skipPositionWhenPlay(controller.playTimeoutBasePosition().toInt())
+            val base = controller.playTimeoutBasePosition()
+            player.skipPositionWhenPlay((if (sameContent) player.resumePositionForReplay(base) else base).toInt())
             player.replay(false)
         } else {
             player.start()
@@ -473,7 +463,6 @@ class MusicPlayerActivity : BaseActivity(), PlaybackPage {
         override fun hostPause() {
             if (!controller.isConfirmedAudioOnly()) {
                 lifecyclePaused = player.isPlaying
-                // 与"通知消失"同判据:留痕才能区分音频轨读不到与真判成影视
                 LOG.i("echo-music hostPause -> pause player (lifecyclePaused=$lifecyclePaused)")
                 player.pause()
             }
@@ -570,7 +559,19 @@ class MusicPlayerActivity : BaseActivity(), PlaybackPage {
         }
 
         override fun useTextureRenderForAudio() {
-            activity.player.setRenderViewFactory(TextureRenderViewFactory.create())
+            activity.player.setRenderViewFactory(EngineTextureRenderViewFactory.create())
+        }
+
+        override fun playExternalPlayer(
+            playerType: Int,
+            url: String,
+            title: String,
+            subtitle: String?,
+            headers: HashMap<String, String>?,
+            progress: Long,
+        ): Boolean {
+            if (!isPageAlive()) return false
+            return PlayerHelper.runExternalPlayer(playerType, activity, url, title, subtitle.orEmpty(), headers, progress)
         }
     }
 }

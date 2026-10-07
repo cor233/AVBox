@@ -21,7 +21,6 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -31,6 +30,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -85,7 +86,6 @@ fun SubtitleSheet(sheet: SubtitleSheetState, onDismiss: () -> Unit) {
                         dismissThen { sheet.onSelectRemote() }
                     }, modifier = Modifier.fillMaxWidth())
                     Spacer(Modifier.height(playerDim(R.dimen.vs_10)))
-                    // 字号行:exo 模式百分比 50~200 步 5;外挂字号 12~60 步 2
                     Row(
                         Modifier
                             .fillMaxWidth()
@@ -144,7 +144,6 @@ fun SubtitleSheet(sheet: SubtitleSheetState, onDismiss: () -> Unit) {
                                     SubtitleHelper.setExoSubtitlePosition(position)
                                     posText = if (position == 0.0f) "0" else "$position%"
                                 } else {
-                                    // 样式一 = 外挂字幕白色
                                     sheet.onSelectStyle(0)
                                     dismiss()
                                     Toast.makeText(context, context.getString(R.string.toast_subtitle_style_ok), Toast.LENGTH_SHORT).show()
@@ -174,7 +173,6 @@ fun SubtitleSheet(sheet: SubtitleSheetState, onDismiss: () -> Unit) {
                                     SubtitleHelper.setExoSubtitlePosition(position)
                                     posText = if (position == 0.0f) "0" else "$position%"
                                 } else {
-                                    // 样式二 = 外挂字幕粉色 #FFB6C1
                                     sheet.onSelectStyle(1)
                                     dismiss()
                                     Toast.makeText(context, context.getString(R.string.toast_subtitle_style_ok), Toast.LENGTH_SHORT).show()
@@ -205,7 +203,6 @@ fun SubtitleSheet(sheet: SubtitleSheetState, onDismiss: () -> Unit) {
                         modifier = Modifier.fillMaxWidth(),
                     )
                     Spacer(Modifier.height(playerDim(R.dimen.vs_10)))
-                    // 延时行:±0.5s 步进,增量回调按 ±0.5*1000ms(旧 mseconds 语义)
                     Row(
                         Modifier
                             .fillMaxWidth()
@@ -238,10 +235,6 @@ fun SubtitleSheet(sheet: SubtitleSheetState, onDismiss: () -> Unit) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// 字幕搜索(数据链沿用 SubtitleViewModel:assrt 搜索 / zip 展开 / 分页)
-// ---------------------------------------------------------------------------
-
 @Composable
 fun SubtitleSearchSheet(sheet: SubtitleSearchSheetState, onDismiss: () -> Unit) {
     val context = LocalContext.current
@@ -250,11 +243,10 @@ fun SubtitleSearchSheet(sheet: SubtitleSearchSheetState, onDismiss: () -> Unit) 
     var word by remember { mutableStateOf("") }
     var items by remember { mutableStateOf(emptyList<Subtitle>()) }
     var loading by remember { mutableStateOf(false) }
-    var mode by remember { mutableStateOf("search") } // search | zipfiles
+    var mode by remember { mutableStateOf("search") }
     var page by remember { mutableIntStateOf(1) }
     var canLoadMore by remember { mutableStateOf(false) }
     val zipCache = remember { mutableListOf<Subtitle>() }
-    // 当前展开的发布页(zipfiles 模式下列表是它内部的文件):随选择回传,供播放层记住来源
     var release by remember { mutableStateOf<Subtitle?>(null) }
     val maxPage = 5
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
@@ -274,46 +266,45 @@ fun SubtitleSearchSheet(sheet: SubtitleSearchSheetState, onDismiss: () -> Unit) 
         }
     }
 
-    // 观察 SubtitleViewModel.searchResult
-    DisposableEffect(viewModel) {
-        val observer = androidx.lifecycle.Observer<com.github.tvbox.osc.bean.SubtitleData> { data ->
-            mainHandler.post {
-                loading = false
-                val list = data.subtitleList
-                if (list == null) {
-                    Toast.makeText(context, context.getString(R.string.toast_subtitle_not_found), Toast.LENGTH_SHORT).show()
-                    return@post
-                }
-                if (list.isNotEmpty()) {
-                    if (data.isZip) {
-                        if (data.isNew) {
+    LaunchedEffect(viewModel, lifecycleOwner) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            viewModel.searchResult.flow.collect { data ->
+                mainHandler.post {
+                    loading = false
+                    val result = data
+                    val list = result?.subtitleList
+                    if (result == null || list == null) {
+                        Toast.makeText(context, context.getString(R.string.toast_subtitle_not_found), Toast.LENGTH_SHORT).show()
+                        return@post
+                    }
+                    if (list.isNotEmpty()) {
+                        if (result.isZip == true) {
+                            if (result.isNew == true) {
+                                items = list
+                                zipCache.clear()
+                                zipCache.addAll(list)
+                            } else {
+                                items = items + list
+                                zipCache.addAll(list)
+                            }
+                            page++
+                            if (page > maxPage) {
+                                canLoadMore = false
+                            } else {
+                                canLoadMore = true
+                            }
+                        } else {
                             items = list
-                            zipCache.clear()
-                            zipCache.addAll(list)
-                        } else {
-                            items = items + list
-                            zipCache.addAll(list)
-                        }
-                        page++
-                        if (page > maxPage) {
                             canLoadMore = false
-                        } else {
-                            canLoadMore = true
                         }
                     } else {
-                        items = list
                         canLoadMore = false
                     }
-                } else {
-                    canLoadMore = false
                 }
             }
         }
-        viewModel.searchResult.observe(lifecycleOwner, observer)
-        onDispose { viewModel.searchResult.removeObserver(observer) }
     }
 
-    // 进入即清洗片名并自动搜索(旧 setSearchWord 的清洗链)
     LaunchedEffect(Unit) {
         var wd = sheet.searchWord
         wd = wd.replace(Regex("(?:（|\\(|\\[|【|\\.mp4|\\.mkv|\\.avi|\\.MP4|\\.MKV|\\.AVI)"), "")
@@ -323,7 +314,6 @@ fun SubtitleSearchSheet(sheet: SubtitleSearchSheetState, onDismiss: () -> Unit) 
         if (wd.isNotEmpty()) search(wd)
     }
 
-    // zip 展开态按返回回搜索列表(旧 onBackPressed)
     BackHandler(enabled = mode == "zipfiles") {
         mode = "search"
         release = null
@@ -332,7 +322,6 @@ fun SubtitleSearchSheet(sheet: SubtitleSearchSheetState, onDismiss: () -> Unit) 
         loading = false
     }
 
-    // 触底加载更多(zip 搜索态)
     val listState = rememberLazyListState()
     LaunchedEffect(listState, canLoadMore, mode, items) {
         snapshotFlow { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index }
@@ -392,8 +381,6 @@ fun SubtitleSearchSheet(sheet: SubtitleSearchSheetState, onDismiss: () -> Unit) 
                                             loading = true
                                             viewModel.getSearchResultSubtitleUrls(item)
                                         } else {
-                                            // 旧行为:发起直链解析后立即收起,回调在容器侧落地。
-                                            // 发布页取不到就传空串:宁可不记,也不要把文件直链当发布页存进记忆
                                             val releaseUrl = release?.url.orEmpty()
                                             viewModel.getSubtitleUrl(item) { subtitle ->
                                                 mainHandler.post {

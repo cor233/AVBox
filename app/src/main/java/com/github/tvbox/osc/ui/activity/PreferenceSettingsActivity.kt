@@ -18,8 +18,6 @@ class PreferenceSettingsActivity : BaseActivity() {
         }
     }
 
-    override fun getLayoutResID(): Int = R.layout.activity_main
-
     override fun shouldRefreshAutoSize(): Boolean = true
 
     override fun hideSysBar() {
@@ -29,8 +27,6 @@ class PreferenceSettingsActivity : BaseActivity() {
         enableTransparentEdgeToEdge()
         findViewById<ComposeView>(R.id.compose_view).setContent {
             AVBoxTheme {
-                // 独立 Activity 页面:必须给弹层一个窗口根槽位,否则"切换语言"之类的对话框
-                // 会就地渲染进设置列表(见 SheetHostScaffold 注释)
                 SheetHostScaffold {
                     PreferenceSettingsScreen(onNavigateBack = { finish() })
                 }

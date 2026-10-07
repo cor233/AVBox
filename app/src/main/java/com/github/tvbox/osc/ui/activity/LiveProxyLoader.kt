@@ -8,24 +8,24 @@ import com.github.tvbox.osc.api.ApiConfig
 import com.github.tvbox.osc.bean.LiveChannelGroup
 import com.github.tvbox.osc.util.BoundedCall
 import com.github.tvbox.osc.util.LOG
+import com.github.tvbox.osc.util.SpiderReaper
 import com.github.tvbox.osc.util.live.TxtSubscribe
-import com.lzy.okgo.OkGo
-import com.lzy.okgo.callback.AbsCallback
-import com.lzy.okgo.model.Response
+import com.github.tvbox.osc.util.net.Http
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelChildren
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.ArrayList
 import java.util.Locale
 import java.util.concurrent.Callable
 import java.util.concurrent.Executors
 
-/**
- * 代理直播源加载:配置里只有一条 `http://127.0.0.1:9978/proxy?...&ext=<base64>` 合成地址时,
- * 解开 ext 再取真正的直播列表 —— py/js 源走 Spider(带超时,超时作废),其余走 OkGo。
- * 频道列表与页面态留在宿主,这里只回调结果。
- */
 internal class LiveProxyLoader(private val host: Host) {
 
     internal interface Host {
-        /** 是否处于"刷新已有列表"流程(此时不改页面态,避免闪 loading) */
         fun isRefreshing(): Boolean
 
         fun onLoading()
@@ -36,7 +36,6 @@ internal class LiveProxyLoader(private val host: Host) {
     }
 
     companion object {
-        /** 代理源地址白名单;不得改用 TextUtils.isEmpty(单测 returnDefaultValues 会静默返 false) */
         fun isValidProxyUrl(url: String?): Boolean {
             if (url == null || url.isEmpty()) return false
             val lowerUrl = url.trim { it <= ' ' }.lowercase(Locale.US)
@@ -50,9 +49,13 @@ internal class LiveProxyLoader(private val host: Host) {
 
     private val mHandler = Handler(Looper.getMainLooper())
 
-    /** 页面销毁时清掉已入队的回调(晚到的网络响应由宿主自行兜底) */
+    private val loadScope: CoroutineScope by lazy {
+        CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    }
+
     fun cancelAll() {
         mHandler.removeCallbacksAndMessages(null)
+        loadScope.coroutineContext.cancelChildren()
     }
 
     fun load(url: String) {
@@ -82,7 +85,7 @@ internal class LiveProxyLoader(private val host: Host) {
             val waitResponse = Runnable {
                 val sortJson = BoundedCall.call(Callable {
                     val sp = ApiConfig.get().getLiveCSP(finalUrl)
-                    sp.liveContent(finalUrl)
+                    SpiderReaper.track(sp) { sp.liveContent(finalUrl) }
                 }, ApiConfig.get().liveConnectTimeoutSeconds * 1000L, "echo-live-proxy")
                 if (sortJson.isNullOrEmpty()) {
                     mHandler.post { host.onEmpty() }
@@ -108,27 +111,24 @@ internal class LiveProxyLoader(private val host: Host) {
                 it.shutdown()
             }
         } else {
-            OkGo.get<String>(realUrl).execute(object : AbsCallback<String>() {
-                override fun convertResponse(response: okhttp3.Response): String {
-                    return response.body.string()
-                }
-
-                override fun onSuccess(response: Response<String>) {
-                    val livesArray = TxtSubscribe.parseToJsonArray(response.body())
+            loadScope.launch {
+                try {
+                    val body = Http.get(realUrl)
+                    val livesArray = withContext(Dispatchers.IO) { TxtSubscribe.parseToJsonArray(body) }
                     ApiConfig.get().loadLives(livesArray)
                     val list = ApiConfig.get().channelGroupList
                     if (list.isEmpty()) {
                         mHandler.post { host.onEmpty() }
-                        return
+                        return@launch
                     }
                     val loadedGroups = ArrayList(list)
                     mHandler.post { host.onGroupsLoaded(loadedGroups) }
-                }
-
-                override fun onError(response: Response<String>) {
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
                     mHandler.post { host.onEmpty() }
                 }
-            })
+            }
         }
     }
 }

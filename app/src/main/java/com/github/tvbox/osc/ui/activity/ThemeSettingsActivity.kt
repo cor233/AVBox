@@ -18,8 +18,6 @@ class ThemeSettingsActivity : BaseActivity() {
         }
     }
 
-    override fun getLayoutResID(): Int = R.layout.activity_main
-
     override fun shouldRefreshAutoSize(): Boolean = true
 
     override fun hideSysBar() {
@@ -29,7 +27,6 @@ class ThemeSettingsActivity : BaseActivity() {
         enableTransparentEdgeToEdge()
         findViewById<ComposeView>(R.id.compose_view).setContent {
             AVBoxTheme {
-                // 独立 Activity 页面:套窗口根槽位,弹层无论写在哪都能全屏弹出(见 SheetHostScaffold)
                 SheetHostScaffold {
                     ThemeSettingsScreen(onNavigateBack = { finish() })
                 }

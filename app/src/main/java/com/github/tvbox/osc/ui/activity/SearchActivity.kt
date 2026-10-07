@@ -9,8 +9,6 @@ import com.github.tvbox.osc.ui.theme.enableTransparentEdgeToEdge
 
 class SearchActivity : BaseActivity() {
 
-    override fun getLayoutResID(): Int = R.layout.activity_main
-
     override fun shouldRefreshAutoSize(): Boolean = true
 
     override fun hideSysBar() {
@@ -20,7 +18,6 @@ class SearchActivity : BaseActivity() {
         enableTransparentEdgeToEdge()
         findViewById<androidx.compose.ui.platform.ComposeView>(R.id.compose_view).setContent {
             AVBoxTheme {
-                // 独立 Activity 页面:套窗口根槽位,弹层无论写在哪都能全屏弹出(见 SheetHostScaffold)
                 SheetHostScaffold {
                     SearchScreen()
                 }

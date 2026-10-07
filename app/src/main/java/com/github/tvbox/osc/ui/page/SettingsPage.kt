@@ -41,28 +41,28 @@ import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.github.tvbox.osc.R
+import com.github.tvbox.osc.io.FileUtils
+import com.github.tvbox.osc.net.OkGoHelper
+import com.github.tvbox.osc.player.effect.anime4k.Anime4kTier
+import com.github.tvbox.osc.ui.activity.ConfigManageActivity
+import com.github.tvbox.osc.ui.activity.PlaySettingsActivity
+import com.github.tvbox.osc.ui.activity.PreferenceSettingsActivity
+import com.github.tvbox.osc.ui.activity.ThemeSettingsActivity
 import com.github.tvbox.osc.ui.components.AVBoxAlertDialog
-import com.github.tvbox.osc.ui.components.AppTopBarScaffold
 import com.github.tvbox.osc.ui.components.AVBoxBottomSheet
+import com.github.tvbox.osc.ui.components.AppTopBarScaffold
 import com.github.tvbox.osc.ui.components.LocalSheetDismissThen
 import com.github.tvbox.osc.ui.components.SettingsCard
 import com.github.tvbox.osc.ui.components.SettingsCardPosition
 import com.github.tvbox.osc.ui.components.SettingsGroup
 import com.github.tvbox.osc.ui.components.SettingsOptionMenuRow
 import com.github.tvbox.osc.ui.components.SettingsRow
-import com.github.tvbox.osc.ui.activity.ConfigManageActivity
-import com.github.tvbox.osc.ui.activity.PlaySettingsActivity
-import com.github.tvbox.osc.ui.activity.PreferenceSettingsActivity
-import com.github.tvbox.osc.ui.activity.ThemeSettingsActivity
 import com.github.tvbox.osc.util.DefaultConfig
-import com.github.tvbox.osc.util.FileUtils
+import com.github.tvbox.osc.util.HawkConfig
 import com.github.tvbox.osc.util.HistoryHelper
 import com.github.tvbox.osc.util.HistoryMerge
-import com.github.tvbox.osc.player.effect.anime4k.Anime4kTier
-import com.github.tvbox.osc.util.HawkConfig
-import com.github.tvbox.osc.util.MusicSettings
-import com.github.tvbox.osc.util.OkGoHelper
 import com.github.tvbox.osc.util.KV
+import com.github.tvbox.osc.util.MusicSettings
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -119,12 +119,6 @@ class SettingsViewModel : ViewModel() {
         refreshCacheSize()
     }
 
-    /**
-     * 只重读 KV 状态,不重算缓存大小。
-     *
-     * <p>{@code getCacheSize()} 是整棵缓存目录的递归遍历,绑到"每次配置变化"上会白跑;
-     * 各行的值(播放内核/默认启动页/历史条数/弹幕 API 等)在别的二级页也能改,回本页时重读一次即可。
-     */
     fun refreshState() {
         _state.value = loadState()
     }
@@ -204,12 +198,9 @@ fun SettingsPage(
     vm: SettingsViewModel = viewModel(),
     contentPadding: PaddingValues = PaddingValues(0.dp),
 ) {
-    // 页面保持全出血(背景延伸到导航栏之下,玻璃才有内容可取),只把内容让开
     val navStart = contentPadding.calculateStartPadding(LocalLayoutDirection.current)
     val navBottom = contentPadding.calculateBottomPadding()
     val state by vm.state
-    // 各行的值都来自 KV,loadState() 只在 ViewModel 构造时读一次,而二级页也能改同一批 KV ⇒ 本页 resume 重读一次。
-    // 缓存大小是整棵缓存目录的递归遍历,距上次计算不足 CACHE_SIZE_REFRESH_MIN_INTERVAL_MS 时不重算。
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
         vm.refreshState()
         vm.refreshCacheSizeIfStale()
@@ -224,7 +215,7 @@ fun SettingsPage(
         topBarStartInset = navStart,
         titleContent = {
             Text(
-                text = stringResource(R.string.settings_title),
+                text = stringResource(R.string.tab_mine),
                 style = MaterialTheme.typography.headlineSmall,
                 color = MaterialTheme.colorScheme.onSurface,
             )
@@ -347,7 +338,7 @@ fun SettingsPage(
                         onClick = { aboutSheet = true },
                     )
                 }
-            
+
                 SettingsCard(SettingsCardPosition.LAST) {
                     SettingsRow(
                         title = stringResource(R.string.settings_github),

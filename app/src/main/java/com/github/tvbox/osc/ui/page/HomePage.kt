@@ -23,11 +23,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -75,13 +75,16 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.github.tvbox.osc.R
 import com.github.tvbox.osc.bean.Movie
+import com.github.tvbox.osc.net.SiteSearch
 import com.github.tvbox.osc.ui.activity.ConfigManageActivity
 import com.github.tvbox.osc.ui.activity.PartitionListActivity
 import com.github.tvbox.osc.ui.activity.SearchActivity
+import com.github.tvbox.osc.ui.activity.SearchViewModel
 import com.github.tvbox.osc.ui.components.AVBoxBottomSheet
+import com.github.tvbox.osc.ui.components.AVBoxOptionMenuAction
+import com.github.tvbox.osc.ui.components.AppTopBarScaffold
 import com.github.tvbox.osc.ui.components.HeroCarousel
 import com.github.tvbox.osc.ui.components.LoadState
-import com.github.tvbox.osc.ui.components.AppTopBarScaffold
 import com.github.tvbox.osc.ui.components.LoadStateBox
 import com.github.tvbox.osc.ui.components.LocalSheetDismiss
 import com.github.tvbox.osc.ui.components.SearchField
@@ -95,24 +98,20 @@ import com.github.tvbox.osc.ui.components.SkeletonBox
 import com.github.tvbox.osc.ui.components.VodCardMenu
 import com.github.tvbox.osc.ui.components.glassTopBarSurface
 import com.github.tvbox.osc.ui.components.rememberVodCardMenuState
+import com.github.tvbox.osc.ui.page.jumpToSearch
 import com.github.tvbox.osc.ui.theme.cardContainer
 import com.github.tvbox.osc.util.HomeSettings
-import com.github.tvbox.osc.util.SiteSearch
 import com.kyant.capsule.ContinuousCapsule
-import com.github.tvbox.osc.ui.page.jumpToSearch
 import kotlin.math.roundToInt
-import com.github.tvbox.osc.ui.activity.SearchViewModel
 
 private val HomeSourceCapsuleMaxWidth = 240.dp
 
-// 自适应图标前景层在系统内的缩放系数，此处复刻以呈现与桌面图标一致的 logo 占比
 private const val CapsuleLogoZoom = 1.5f
 
 private val HomeTopBarControlSpacing = 8.dp
 
 @Composable
 fun HomePage(vm: HomeViewModel, contentPadding: PaddingValues = PaddingValues(0.dp)) {
-    // 页面保持全出血(背景延伸到导航栏之下,玻璃才有内容可取),只把内容让开
     val navStart = contentPadding.calculateStartPadding(LocalLayoutDirection.current)
     val navBottom = contentPadding.calculateBottomPadding()
     val context = LocalContext.current
@@ -161,7 +160,10 @@ fun HomePage(vm: HomeViewModel, contentPadding: PaddingValues = PaddingValues(0.
                         )
                         .glassTopBarSurface(ContinuousCapsule, MaterialTheme.colorScheme.cardContainer)
                         .heightIn(min = 40.dp)
-                        .clickable { showSourceSheet = true }
+                        .clickable {
+                            vm.refreshSubscribes()
+                            showSourceSheet = true
+                        }
                         .padding(horizontal = 12.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -234,7 +236,9 @@ fun HomePage(vm: HomeViewModel, contentPadding: PaddingValues = PaddingValues(0.
         when {
             pageLoading -> {
                 Box(
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(bottom = navBottom),
                     contentAlignment = Alignment.Center,
                 ) {
                     ContainedLoadingIndicator(Modifier.size(64.dp))
@@ -244,7 +248,7 @@ fun HomePage(vm: HomeViewModel, contentPadding: PaddingValues = PaddingValues(0.
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(top = topPad),
+                        .padding(top = topPad, bottom = navBottom),
                     contentAlignment = Alignment.Center,
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -359,7 +363,7 @@ fun HomePage(vm: HomeViewModel, contentPadding: PaddingValues = PaddingValues(0.
                         }
                     }
                 }
-                items(partitions, key = { it.sort.id }) { p ->
+                items(partitions, key = { it.sort.id.orEmpty() }) { p ->
                     PartitionSection(
                         title = p.sort.name ?: "",
                         state = p.state,
@@ -396,12 +400,23 @@ fun HomePage(vm: HomeViewModel, contentPadding: PaddingValues = PaddingValues(0.
         ) {
             val dismissAnimated = LocalSheetDismiss.current
             val keyboard = LocalSoftwareKeyboardController.current
+            val subscribes by vm.subscribeItems.collectAsStateWithLifecycle()
+            val activeSubscribeIndex by vm.activeSubscribeIndex.collectAsStateWithLifecycle()
             var query by remember { mutableStateOf("") }
             val filtered = remember(sources, query) { SiteSearch.filter(sources, query) }
+            val subscribeOptions = remember(subscribes) { subscribes.map { it.name.ifEmpty { it.url } } }
             val listState = rememberLazyListState()
             val selectedIndex = filtered.indexOfFirst { it.key == currentSource?.key }
             LaunchedEffect(query.isEmpty()) {
                 if (query.isEmpty() && selectedIndex > 0) listState.scrollToItem(selectedIndex)
+            }
+            fun switchSubscribe(item: SubscribeSource) {
+                if (vm.isSubscribeDisabled(item)) {
+                    Toast.makeText(context, R.string.toast_source_auto_disabled, Toast.LENGTH_LONG).show()
+                } else {
+                    dismissAnimated()
+                    vm.switchSubscribe(item)
+                }
             }
             SearchField(
                 query = query,
@@ -411,6 +426,18 @@ fun HomePage(vm: HomeViewModel, contentPadding: PaddingValues = PaddingValues(0.
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
+                trailing = if (subscribeOptions.isEmpty()) {
+                    null
+                } else {
+                    {
+                        AVBoxOptionMenuAction(
+                            options = subscribeOptions,
+                            selectedIndex = activeSubscribeIndex,
+                            onSelect = { index -> subscribes.getOrNull(index)?.let(::switchSubscribe) },
+                            contentDescription = stringResource(R.string.home_subscription_source),
+                        )
+                    }
+                },
             )
             LazyColumn(
                 state = listState,
@@ -423,7 +450,6 @@ fun HomePage(vm: HomeViewModel, contentPadding: PaddingValues = PaddingValues(0.
                     item {
                         LoadStateBox(
                             state = LoadState.Empty,
-                            // 空词下为空 = 没配订阅,不是"没搜到"
                             emptyText = stringResource(
                                 if (query.isEmpty()) R.string.config_empty_subscribe else R.string.home_site_search_empty,
                             ),
@@ -436,7 +462,6 @@ fun HomePage(vm: HomeViewModel, contentPadding: PaddingValues = PaddingValues(0.
                         )
                     }
                 }
-                // 源之间 2dp 只能随项带:统一 verticalArrangement 会连带放大"源列表 / 配置接口"的组间距
                 itemsIndexed(filtered) { index, bean ->
                     val selected = bean.key == currentSource?.key
                     SettingsCard(
@@ -450,7 +475,7 @@ fun HomePage(vm: HomeViewModel, contentPadding: PaddingValues = PaddingValues(0.
                         color = MaterialTheme.colorScheme.surfaceBright,
                     ) {
                         SettingsOptionRow(
-                            title = bean.name ?: bean.key,
+                            title = bean.name ?: bean.key.orEmpty(),
                             selected = selected,
                             onClick = {
                                 if (!selected) {

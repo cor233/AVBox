@@ -28,7 +28,7 @@
 | `R.string.` / `getString(R.string.)` 引用 | 盘点时 **0 处**；实施后 **424 处**(`i18n_check_keys.py`：声明=引用) |
 | `res/xml/` | 无 `locales_config.xml`;manifest 无 `android:localeConfig` |
 | 语言设置入口 | 盘点时无；实施后 = 偏好设置页顶部 `LanguageRow`(白名单**按步放开**,四语已全部放开:「跟随系统 / 简体中文 / English / 繁體(台灣) / 繁體(香港)」)。`Trans` 门控已随第 3 步改为跟随应用语言(§4.5) |
-| layout XML 硬编码文本 | 0 处(全项目只有 `activity_main.xml` / `view_play_container.xml`)；实施后复核:除 `strings.xml` 外 `res/*.xml` 无文案 |
+| layout XML 硬编码文本 | 0 处(全项目只有 `view_play_container.xml`)；实施后复核:除 `strings.xml` 外 `res/*.xml` 无文案 |
 | 平台条件 | minSdk 24 / targetSdk 37 / compileSdk 37;appcompat 已在依赖;`supportsRtl="true"` 已声明 |
 
 ### 1.2 文案规模
@@ -58,7 +58,7 @@
 | `player/ui/SubtitleSheets.kt` | 19 | 字幕设置面板 |
 | `player/controller/ComposeVideoController.kt` | 19 | 播放器提示 |
 | `ui/page/ThemeSettingsPage.kt` | 19 | 主题设置页 |
-| `util/PlayerHelper.java` | 17 | 播放器名/缩放名 + 外链播放器提示 |
+| `player/PlayerHelper.kt` | 17 | 播放器名/缩放名 + 外链播放器提示 |
 
 通用词复用度高(去重收益明显):`返回` 9 / `取消` 6 / `播放` 6 / `默认` 5 / `重试` 5 / `全部` 5 / `直播` 5 …… ⇒ 资源 key 按「通用 / 域」两级拆分(§3.2)。
 
@@ -69,7 +69,7 @@
 | R1 | `"硬解码"` / `"软解码"` 取值点已收窄(2026-09-29 IJK 内核移除后:KV 只剩 `EXO_DECODE`、播放配置只剩 `exo`),仍集中在 `bean/LivePlayerManager`、`player/PlaybackController`、`player/controller/ComposeVideoController`、`ui/page/PlaySettingsPage` | `硬解码` / `软解码` | **KV 持久化值**(`HawkConfig.EXO_DECODE`)+ 播放配置 JSON 值 + 逻辑判据(`equals("硬解码")` / 切解码写回)。显示可翻译,**值一律不动** |
 | R2 | `sourcedata/SortLoader.java:135` | `name.endsWith("搜")` | 站点命名约定(数据规则),不能翻译 |
 | R3 | `ui/activity/LiveEpgParser.kt:155` | `contains("未提供")` / `contains("暂无")` | EPG 文本内容判据(数据规则) |
-| R4 | `util/FileUtils.java:536` | `contains("模板.js")` | 本地文件名约定 |
+| R4 | `io/FileUtils.kt:474` | `contains("模板.js")` | 本地文件名约定 |
 | R5 | `player/PlaybackController.java:1232` | `contains("歌词")` | 媒体文件名约定 |
 | R6 | `crawler/js/Trans` 字表 + `DanmakuApi` 的 `Trans.t2s` | 简繁字表 | 数据转换(§4.5),不是 UI 文案 |
 | R7 | `api/ApiConfig.addSuperParse` | `"超级解析"` | 解析名参与 `HawkConfig.DEFAULT_PARSE` 持久化 + `getName().equals()` 比较 ⇒ 值不动(第 1 步实测发现) |

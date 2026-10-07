@@ -4290,3 +4290,418 @@ new-instance v2, Lorg/json/JSONArray;  invoke-direct {v2, v1}      # new JSONArr
 **验证**:`.\gradlew.bat :app:assembleDebug` + `:app:testDebugUnitTest` 每轮改动后均重跑,最终 **BUILD SUCCESSFUL**(末轮 18s)+ **65 类 / 501 用例 / 0 失败 / 0 错误**;Kotlin 告警 2 条 → 1 条(剩下的 `Unnecessary safe call` 是既有);APK 与测试结果时间戳逐轮核对(避免 UP-TO-DATE 误判)。**未真机验证**——三个历史/进度缺陷与复用改动都落在 Android 依赖的类里(`PlaybackProgress.currentKey` 依赖 `App.getInstance()`、seek 在控制器内),当前测试集是纯 JVM,写不出有意义的自动化锁,故只锁了规则层(`WatchProgressRulesTest`)。**待真机走查**:①竖屏预览点箭头直接返回上级(不再出现横屏夹生态)、全屏箭头一步退全屏、系统返回键仍是两步;②切到第 2 集看几秒返回历史页 = 卡片显示第 02 集且重进落在第 2 集;③暂停后拖进度条到 b → 卡片百分比立即变 b(播放中拖动同样立即);④看完一集卡片显示 100%、点进去仍从头播;⑤换线/换源/换片不再出现"黑一下 + 整段重建"、进度接着看、无残留画面/声音;⑥**换分辨率不同的源(4K→720P)时画面几何** —— 复用不重建渲染视图,这是本次唯一新增的曝光面;⑦退出播放页 60 秒内再进=秒开,超过 1 分钟=允许重建。
 
 **文档同步**:活规范 `skill/avbox-mobile-ui-spec.md` 改五处 —— §4.4(返回键两步口径 + 箭头/返回键全屏口径故意不同)、§6.10(`onBackClicked()` 移出"设方向的显式按钮")、§6.14 新增"切集/换线要即时落库"、§6.16(阈值与"看完显示 100% / 续播点由完播清除"、无痕判据位置表述)、**§6.19 整节改写**(标题加"2026-10-03 改为一律不重建",删除被推翻的"换片/换线路不该复用",补三条强重建条件、已知取舍、60 秒上界);`skill/avbox-playback-service-spec.md` 加决策 D8 + 修订记录一行;本条为实施与定位记录。
+
+---
+
+## 全库删注释：代码零注释化（2026-10-06）
+
+**需求**：用户「本项目已经有很完整的文档了，将所有注释删掉，让代码自解释」。
+
+**范围（606 个文件，改 490 个）**：`app/src/**`（kt 365 / xml 106 / java 12）+ `*.gradle.kts` 3 + `app/proguard-*.pro` 2 + `gradle.properties` + `gradle/libs.versions.toml`。**排除**：`示例文件/`、`源码/`、`日志/`、`quickjs/`、`pyramid/`、`libs/`、`assets/Anime4K/*.glsl`、`assets/js/**`（第三方/参考/构建产物）。
+
+**结果**：90721 行 → 82045 行（删 8676 行注释；`git diff --shortstat` 口径 490 文件 / 8801 删 / 133 增，133 增来自"代码行尾带注释"的行改写）。
+
+**三类保留（不可删）**：
+1. **许可证块 20 处**（`subtitle/**` 的 MIT：`Copyright` / `Permission is hereby granted` / `SPDX-License`）—— 删了违反许可。
+2. **`// i18n: keep` 62 处** —— `i18n_gate.py` 读"本行或上一行"做白名单，删了 ui 层硬闸门立刻非 0。
+3. **`//noinspection` 1 处**（`BootGuard.kt`）。
+
+**工具**：`.codebuddy/tools/strip_comments_all.py`（`--dry` 报告 / `--apply` 写回 / `--verify` 校验）。自研分词器：Kotlin/Java/KTS 支持 `//`、`/* */`、字符字面量、`"..."` 转义、`"""` raw string、`${}` 模板（含模板内嵌套字符串与 `{}` 深度）；XML 认 `<!-- -->`；`.pro`/`.properties`/`.toml` 只认**行首** `#`（实测三处配置文件无非行首 `#`）。整行只含注释 ⇒ 整行删（含缩进）；连续空行压成 1；**每文件保留原 EOL**。
+
+**三个踩过的坑（都在这轮修掉）**：
+1. **缩进空格被当成"代码"** ⇒ 带缩进的整行注释判不出"该删"，第一版只删 5386 行（正确值 8676）。修：`add/raw` 只在字符非空白时置 `code=True`。
+2. **删多行块注释时把注释正文写进了输出行** ⇒ `代码 + /* 多行 */` 这种行留下 `/*` 残片（`FormatSCC.kt` 因此掉 170 行）。修：注释正文一律不落地，只按内部换行推进行号并标 `comment=True`。
+3. **`Path.read_text()/write_text()` 会做换行转换** ⇒ 检测不到 CRLF，且写入时把 `\n` 翻成 `\r\n`，会把 457 个 LF 文件全改成 CRLF。修：改二进制 `read_bytes()/write_bytes()` 并逐文件还原 BOM/EOL。
+
+**验证（四道）**：
+1. **代码投影比对 PASS**：`--verify` 把 `git HEAD` 与现文件各自"剥注释 + 去空行"后逐行比对，606 文件全等 ⇒ 证明只动了注释。仅 3 个文件各差 1 行（见下）。
+2. **`:app:assembleDebug` BUILD SUCCESSFUL**；`:app:testDebugUnitTest` **655 / 0 失败 / 0 错误 / 1 跳过 / 82 套件**（与 M9/M10/M11 基线一致）。改完那 3 个文件后**增量复跑一次**（30s）仍全绿。
+3. **`i18n_gate.py` exit 0**：ui 层 0 处（硬闸门过）；非 ui 37 处（`PlayerEngine` 33 / `Trans` 2 / `SourceHelper` 1 / `SourceResultParser` 1，与既有登记一致）。
+4. **残留扫描**：XML `<!--` 0；配置文件行首 `#` 0；`/*`、`*/`、行首 `//` 的残余命中**全部**落在"字符串字面量 / 保留的许可证块 / 保留的指令 / raw string 内的 shader 样例"。
+
+**唯一超出"只删注释"的改动（3 行 import）**：删注释后 3 个文件出现"只在注释里被引用"的 import ⇒ `AppPlayerView.kt`、`PlayerRenderView.kt` 的 `android.view.SurfaceHolder`、`VideoGestureLayerWiringTest.kt` 的 `awaitEachGesture`。按既有约定（注释精简后必跑 `prune_imports.py`）清掉这 3 行。**坑**：`prune_imports.py --apply` 会把**既有**的未使用 import 一并删（`AppPlayerView` 的 `AssetFileDescriptor`、`VideoGestureLayerWiringTest` 的 `awaitFirstDown`/`pointerInput`/`assertEquals`），按 M11 约定"既有只登记不改" ⇒ 已手工回退，只留本次新增的 3 行。
+
+**用户前提抽查（"文档已完整"是否成立）**：被删的警告类注释（含 ⚠️/坑/必须/否则/NPE）共 **453 行 / 149 文件**。抽查关键词在 `skill/` 的覆盖：`com.android.internal`、`IGNORABLE_FRAME_PREFIXES`、`trim { it <= ' ' }`、`QUICK_CRASH_MS`、`MAX_LOAD_ATTEMPTS`、`WAKE_LOCK`、`unitTests.isReturnDefaultValues`、`artworkView`、`audioOnlyConfirmed`、`恒真`、`代际`、`遮黑帧` 均**有命中**；**未见命中**的是 `恒真自比较`（"代际必须用发起时捕获值 vs 当前值比较，写成自比较即恒真"这条细节）与 `isSniffRequestOfCurrentRound`（方法名随重写消失）⇒ 用户前提基本成立，建议把这 1 处细节补进 `avbox-playback-service-spec.md`。
+
+**EOL 说明（需知悉）**：仓库 `core.autocrlf=input`，工作区 CRLF/LF 对 git **完全不可见**（提交恒存 LF），项目自有 `check_line_endings.py` 也只卡"MIXED"。本轮中途做过一次 `git checkout -- .` 复位，导致原本 CRLF 的约 111 个文件的工作区行尾被归一成 LF（**提交内容不受影响**）。当前：目标 606 文件中 31 CRLF / 575 LF，**无 MIXED**；工具本身已按文件保真 EOL。
+
+**规范同步**：`skill/SKILL.md`「注释」条目由"极简（单条 ≤2 行）"改写为**零注释 + 三类例外**（附工具用法）；`skill/avbox-code-review-spec.md` 的既定约定 2 条改写为"「存在解释性注释」才是问题"；`.codebuddy/skills/android/` 镜像已同步（同步前 diff 确认副本 = HEAD，可无损覆盖）。
+
+**未验证面**：真机走查未做（纯注释改动，无行为面）；`:app:assembleRelease` 未跑（需用户许可）。
+
+---
+
+## 画质开关关闭失效修复：重播改走内核重建（2026-10-07）
+
+**现象**：用户报"播放中关闭调色 + Anime4K 超分后 GPU 仍 ~34%，怀疑没关掉"。设备（vivo 10AF1J04JX0016G）证据链：MMKV `anime4k_enabled=false` / `picture_preset=Original`（开关确实关了）；`/sys/class/kgsl/kgsl-3d0/gpubusy` 采样 6 次 ≈ 34%（对照 10-01 实测：只挂调色 7~18%、调色+超分 44~46%）；日志里 04:24:53 是唯一一次建链（`echo-anime4k chain: tier=Standard passes=13 in=1280x720 out=2240x1260 ... deblur=0`），之后开去模糊/关超分的两次重播**无 `release player kernel`**、也**无** `draw: tier=off (passthrough)` ⇒ 旧链（已编译的 13 个 Standard pass）原样继续跑。
+
+**根因（三件事叠加，非 M7 迁移引入）**：① 2026-10-03 `7baeeb3`（D8"换线/换源/换片一律复用内核"）把 `PlayContainer.replayCurrentAddress()` 的无条件 `releasePlayerKernel()` 改成 `if (!scheduler.isCrossContentReuseAllowed())` ⇒ 同内容重播复用同一 ExoPlayer 实例；② `PictureEffects.onPrepare` 关闭态按"未启用不下发"规则**不调** `setVideoEffects`（10-01 `4bea60e` 修正，前提是"重播=新内核"）；③ media3 1.11.1 字节码实证：`MediaCodecVideoRenderer.videoEffects` 全类唯一写入点就是 `setVideoEffects` 的 putfield（reset/prepare/onEnabled 都不清空），复用实例 = 旧列表沿用；且 `Anime4kChainProgram.tier` 是构造时固化，关闭态置 `tier=null` 管不到已编译实例。10-01 修复时的真机验证（选回原始 → 重播 → 回直通）通过，是因为当时重播仍释放内核 ⇒ 本次是该前提被 10-03 改动破坏后的首次暴露。
+
+**修法（用户拍板 A）**：`PlayerConfigDelegate.restartForPictureIfNeeded()` 在 `replay(false)` 前 `host.videoView?.requireKernelRebuild()` + 日志 `echo-picture-effects: rebuild kernel on next start`（复用 §6.19 既有强重建通道：`startVideoPlayback` 消费 `consumeKernelRebuildRequired()` → REBUILD → `releasePlayerKernel()` + `view.start()`）。关闭态新内核不下发 = 回直通；开启态 = 新内核首次下发；按住对比/滑条不满足 `consumeRestartNeeded()`，不受影响。**否决的备选 B**：关闭态下发空列表摘链（违反"绝不下发空列表"硬口径，空列表仍建 VideoSink、反复切还会拆建 GL 链）。
+
+**验证**：`:app:assembleDebug` BUILD SUCCESSFUL；`:app:testDebugUnitTest` **678 / 0 失败 / 0 错误 / 85 套件**；装机 Success（vivo 10AF1J04JX0016G）。**真机走查未做**，要点：开→关开关应出现 `echo-picture-effects: rebuild kernel on next start` + `release player kernel`，随之 `echo-picture-size` 消失（回直通）、GPU 回落；开→关→开连续操作正常；按住对比与拖滑条不应触发重建。
+
+**文档同步**：`skill/avbox-mobile-ui-spec.md` §6.17 新增本约束条 + §6.19 强重建条件补点；`skill/avbox-playback-service-spec.md` §3.3 同补 + §8 修订记录一行；`.codebuddy` / `.trae` 两镜像已同步；本条为实施与定位记录。
+
+---
+
+## 复用内核会话标志复位（2026-10-07，三条）
+
+**来源**：用户问"还有没有类似照搬 java 逻辑导致的 bug"→ 三方向并行排查（player 栈陈旧状态 / 播放外圈复用假设 / Kotlin 语义差异）+ 主代理用 `git show` 对照旧 Java 闭环。确认 `PlayerEngine` 三处跨会话标志不复位：① `videoEffectsOpen`（关闭态重建内核后仍 true → `isPictureEffectsActive()` 假阳性，面板/日志误导、放行一次空操作 REDRAW）；② `pictureHdrSource`（HDR 片挂链后残留 true → `PictureEffects.consumeRestartNeeded()` 开头 `isPictureHdrSource()` 早退 → 后续直通会话里开超分不重播、不生效）；③ `lastErrorKindValue`（上集 `ERROR_KIND_DECODE` 残留 → 超时/换线类重试被 `PlaybackRetryDelegate` 误判 → 跳过"原样重播"直切软解 + 重建内核）。
+
+**修法**：新增 `PlayerEngine.resetSessionFlags()`（`retriedAsHls` / `videoEffectsOpen` / `pictureHdrSource` / `lastErrorKindValue` 四项），由 `setDataSource`（换内容）与 `reset()`（stop + clearMediaItems）两处调用；内核重建路径本就 `ExoPlayer.initPlayer()` 新建 `PlayerEngine` 实例，无需处理。
+
+**同轮证否（不要再查）**：`bean/LivePlayerManager` 的默认配置字段（旧 Java 即实例字段）、`PlayerUtils.safeTimeMs`（doikki 旧版就有 `Int.MAX_VALUE` 钳位）、`EpgUtil` 无 volatile/锁与 `PlaybackService` 实例静态位非 volatile（旧 Java 同形）——均非迁移回归。低风险残留（未修，已登记）与待闭环清单见排查记录。
+
+**验证**：`:app:assembleDebug` BUILD SUCCESSFUL；`:app:testDebugUnitTest` **678 / 0 失败 / 0 错误 / 85 套件**；装机 Success。**真机走查未做**，要点：HDR 片之后换 SDR 片开超分应正常重播生效；复用内核重播后 HDR 提示/`isPictureEffectsActive` 不误报；错误重试不再莫名切软解。
+
+**文档同步**：`skill/avbox-playback-service-spec.md` §3.3 新增"会话标志复位"条；`.codebuddy` / `.trae` 两镜像已同步；本条为实施与排查记录。
+
+---
+
+## 首页加载中切源竞态（2026-10-07，两批，均已装机）
+
+**来源**：用户报"首页正在加载中时立刻切换源会出问题，抓日志看看"。vivo 吞 logcat（`-b all` 里本 App 只剩 26 行），实读应用内文件日志 `files/preload_debug.log`，04:45–04:52 窗口完整还原：04:49:18 首页在 `Douban` 源加载（7 个分区只回来 1 个）→ 04:49:23.774 与 27.216 两次切源（`echo--sort-reload` + `sort-loadHome: key=null` + `sort-null-key`）→ 27.448 `sort-loadHome: key=js_douban srcCount=666` → 30.029 出 7 个分区 → **30.1–32.6 的 8 次请求解析键全是 `Douban`（`parse-empty-body:Douban`）而当前源是 `js_douban`**，对应 4 组 `list-retry/list-failed: sort=hotmovie`（用户连点分区"重试"）→ 04:52:07 手动下拉刷新才出现 `sort-loadHome: key=Douban srcCount=96`，即中途配置早已换回 96 站点那份、首页一直没跟着重载。
+
+**根因（日志闭环）**：① 两次快速切源 = 两个 `AppBootstrap.startInit` 并发，先完成的那份把 `_state` 置 `Boot.Ready` 并触发 `HomeViewModel.loadHome()`；② 后完成的那份配置在 `parseJson` 里静默 `setSourceBean` 覆盖 ApiConfig（站点表 + home 源），它再置 `Boot.Ready` 时**与当前值相等** → `MutableStateFlow` conflate 不发新值 → 首页不重载；③ 首页残留上一代源的 sort 分区、ApiConfig 已换新 ⇒ 请求按"新配置的 home 站点 + 旧 sort id"发出 → 秒回空响应 → 分区全失败、点重试也必失败。次要隐患：`startInit` 的对象级 `dataInitOk/jarInitOk` 会被并发 init 互相短路（第二个可能直接跳过配置加载）；`ListLoader.getList` 在请求执行时才读 `getHomeSourceBean()`，跨代请求无法自证归属。另有一条独立观察（非本竞态）：同窗口手动刷新时 Douban 源连续三次 `sortSize=0`（`empty-retry`→`empty-final`），疑源侧返回空 class 列表。
+
+**第一批（治本，`ui/page/AppBootstrap.kt` + 新增 `ui/page/BootGeneration.kt`）**：`startInit` 领代次、**只有最新代次**可写 `_state`（Ready/Error）；`Boot.Ready` 由 `data object` 改 `data class Ready(val epoch: Long)`（每次完成都是新值，StateFlow 不再吞）；`dataInitOk`/`jarInitOk` 改每次 init 的局部变量（`continueOffline` 走 `offline` 参数）。连带：`HistoryPage` 的 `boot == Boot.Ready` 改 `is`。新增 `BootGenerationTest` 4 例（只认最新代次 / Ready 值可区分 / 相同 Ready 会被 conflate / 过期 init 不发布 Ready）。
+
+**第二批（纵深防御）**：④ `ListLoader.getList(sourceKey, …)` 由 `ApiConfig.getSource(sourceKey)` 决定站点，缺失即丢弃并记 `echo--getList-source-missing`（`SourceViewModel.getList` 与两处调用点同步）；⑤ `HomeViewModel.PartitionLoader` 记 `sourceKey`，`requestPartition` 在既有代次检查处加 `loader.sourceKey != loadingSourceKey` 早退（跨代分区含用户点重试不再发请求）；⑥ `RefreshEvent.TYPE_API_URL_CHANGE` 置 `configReloading`，null-key 分支在重载窗口内保留 loading 不清空，新配置 `Ready` 到达时清标志。
+
+**未做（已登记）**：`ConfigLoader` 仍无"本次加载的 URL 是否仍是当前 URL"校验；本轮未命中（`retry()` 一律走网络 + `configLoadExecutor` 单线程 FIFO，解析顺序与切换顺序一致）。
+
+**验证**：`:app:assembleDebug` BUILD SUCCESSFUL；`:app:testDebugUnitTest` **682 / 0 失败 / 0 错误 / 1 跳过 / 86 套件**（+4 为本轮新增）；两批各装机 Success（vivo 10AF1J04JX0016G，lastUpdateTime 05:04:44）。**真机走查未做**，判据：切源后 `preload_debug.log` 必须出现 `sort-loadHome: key=<最终选中的源>`，`parse-empty-body:<非当前源>` 不再与 `list-retry` 成对出现，首页不闪空、分区不再全失败。
+
+**文档同步**：`skill/avbox-mobile-ui-spec.md` §6.11 新增两条约束 + 一条体验项；`.codebuddy` / `.trae` 两镜像已同步；本条为实施与定位记录。
+
+---
+
+## 切源 ANR（pyLoader 锁 + 主线程作废/解析，2026-10-07 第一批已修并装机）
+
+**来源**：用户报"快速切换订阅源时概率性界面卡死、偶尔闪退（通常能恢复）"，抓日志。**不是崩溃而是 ANR**：`am_anr 05:05:58.800`（`ConfigManageActivity` 输入派发超时 5001ms）→ 05:06:01.411 `am_kill [14460, com.github.avbox.osc, "user request after error"]`（用户点掉 ANR 弹窗）→ 进程重启（新 PID 16698，05:06:02.816 重新 jar-load + `loadHome: 豆瓣`）。
+
+**现场（`dumpsys dropbox` 的 `data_app_anr` + 设备 `/data/anr/anr_2026-10-07-05-05-58-814`）**：主线程 `"main" tid=1 Blocked` 栈 = `pyLoader.clear()` 等锁 → `SpiderLoader.clearLoader` → `clearSpiderCache` → `ApiConfig.resetConfigData` → `invalidateVodConfig` → `AppBootstrap.onApiUrlChanged` → `ConfigManageViewModel.requestSwitch`（用户点订阅源那一刻）；持锁线程 `"bounded-call" tid=47 TimedWaiting` 栈 = `pyLoader.getSpider()` **持有 pyLoader 实例锁**并在 `com.undcover.freedom.pyramid.PythonLoader.getSpider` 的 `FutureTask.get` 上等 Python 侧返回，调用方是 `SortLoader$2$1`（某个 py 源的首页分类请求，BoundedCall 上限 15s）。`clear()` 与 `getSpider()` 都在 `app/src/python/java/com/github/catvod/crawler/pyLoader.kt` 标了 `@Synchronized`。dropbox 里 **2026-10-05 23:07:47 已有同主题 ANR**，故非本轮引入。概率性成立条件：①在途 py 调用正卡在 Python 侧；②此刻正好在配置页点切源；③该调用耗时 > 5s。
+
+**同源第二入口**：`parseJson()` 第一行也是 `resetConfigData() → clearSpiderCache()`，而网络分支的 `parseJson` 原本跑在主线程（`fetchConfigAsync` 末尾 `mainHandler.post`）。
+
+**修法（第一批，不动契约层）**：① `AppBootstrap.onApiUrlChanged()` 主线程只 `bootGeneration.next()` + 置 `Boot.Loading`，「作废 → 广播 → retry」整段进后台协程按序执行（`startInit` 新增可选 `generation` 参数，避免作废窗口内旧 init 抢先发 Ready）；② `ConfigLoader` 的 `loadConfig`/`loadLiveConfig` 整段（缓存分支 + 网络分支解析）改到 `configLoadExecutor`，删掉 `mainHandler`，回调不再回主线程（四个实现方已自行 postToMain / 只 resume 协程）；③ 配套把跨线程共享的配置集合改成 **`@Volatile` + 整份换引用**：`sourceBeanList`（先在本地 LinkedHashMap 建好再赋值，保留站点顺序）、`liveChannelGroupList`（`loadLives` 本地列表聚合后发布、`loadLiveApi` 单元素列表发布）、`parseBeanList`（`addSuperParse(parses)` 挂到待发布列表）、`searchSourceBeanList`（构建完成后赋值）、`vipParseFlags`/`mDefaultParse`；清直播分组新增 `ApiConfig.clearLiveChannelGroups()` 并改掉 `LiveChannelSourceLoader` 的原地 `clear()`。
+
+**验证**：`:app:assembleDebug` BUILD SUCCESSFUL；`:app:testDebugUnitTest` **682 / 0 失败 / 0 错误 / 86 套件**；装机 Success（vivo 10AF1J04JX0016G，lastUpdateTime 05:16:09）。本轮为线程调度改动，无可行的纯 JVM 单测（依赖 KV/OkHttp/Android 单例）。**真机走查未做**，判据：配置页连点切源不再出现输入超时/ANR；`dumpsys dropbox` 无新增 `data_app_anr`；切源后首页仍能正常出内容（无回归）。
+
+**未做（留批 2）**：`ConfigManageViewModel` 删空点播列表后的 `clearVodConfig()`（主线程，与紧随的 `retry()` 有先后依赖）。另记独立缺陷：`echo--parse-fail-json:js_douban ex=java.lang.NullPointerException head={}`（解析失败路径自身 NPE）。
+
+**批 2 第 3 条（同日，已装机）**：用户报"切源偶发延迟二三十秒、换完首页还是旧源海报，抓日志看看"。文件日志空窗对上 `GAP 12.7s/13.1s/41.6s`（广播前无任何日志），且 05:16:46 的 6ms 内三条 `sort-reload` = 连点三次、第一次被卡十几秒。根因（代码级）：`PythonLoader.getSpider` 的 `future.get(30, TimeUnit.SECONDS)`（`app/src/python/java/com/undcover/freedom/pyramid/PythonLoader.kt`）决定 py 蜘蛛创建最长 30s，而 `pyLoader.getSpider()`/`clear()` 同为实例级 `@Synchronized` ⇒ 切源链路的 `clear()` 陪等整段创建 —— 批 1 只是把这段等待从主线程搬到了后台（冻结变延迟），等待本身仍在关键路径上。**修法**：`pyLoader.clear()` 改「`clearGeneration++` + `spiders.clear()` + `lastConfig`/`recentPyKey` 置空 + `PythonLoader.invalidate()`」立即返回；`PythonLoader.invalidate()` 递增代次 + 摘旧缓存引用 + 独立线程做 `spider.destroy()`；`PythonLoader.getSpider` 安装前（含超时迟到路径）校验代次；`pyLoader.getSpider()` 去 `@Synchronized`、创建改由独立 `creationLock` 串行化（防同 key 并发 init 撞 py 缓存文件）、安装前校验代次；`AppBootstrap.onApiUrlChanged` 加 `echo-switch: request / invalidate dt / broadcast dt` 三行计时日志。**验证**：`:app:assembleDebug` BUILD SUCCESSFUL；`:app:testDebugUnitTest` 682 / 0 失败 / 86 套件；装机 Success（lastUpdateTime 05:23:00）。**真机走查未做**，判据：切源后 `echo-switch: invalidate dt=` 应为个位数毫秒，首页立刻切到新源（不再出现十几秒空窗）。
+
+**批 2 第 3 条收尾（同日，js/jar 同病灶，已装机 05:28:16）**：装上 py 非阻塞 clear 后用户复现"还是不太ok"。新加的计时日志直接给出答案：多数切源 `invalidate dt=0~1ms`（py 那一刀生效），但偶发一次 `05:24:35.994 echo-switch: request → 05:24:56.326 invalidate dt=20331ms`，且这 20 秒窗口内文件日志一行都没有（说明不是请求层，而是 clear 自身在等锁）。逐个排查 crawler 层同步点后确认同病灶还在两处：`JsLoader.clear()` 与 `JsLoader.getSpider()` 同为 `@Synchronized`（JS 蜘蛛创建要加载 dex/jar + 建 QuickJS 上下文 + eval，可几十秒），`JarLoader.clear()` 会原地执行第三方 jar 的 `spider.destroy()`（不可控）。**修法**：`JsLoader.clear()` 去 `@Synchronized`、立即摘 `spiders`/`classes` + `clearGeneration++`、`cancelByTag()+destroy()` 交独立线程；`JsLoader.getSpider()` 去 `@Synchronized`、创建改私有 `creationLock` 串行化（保住"同一 key 不并发创建"的既有防御）、安装前校验代次（含失败回滚路径改用异步销毁）；`JarLoader.clear()` 先摘全部缓存（含 `loaders`/`proxyMethods`/`locks`/`siteJarKeys`/`aliases`）再异步销毁，`JarLoader.getSpider()` 安装前校验代次；`SpiderLoader.clearLoader()` 增加分段计时 `echo-switch: clear jar=…ms py=…ms js=…ms` 便于下次定位。**验证**：`:app:assembleDebug` BUILD SUCCESSFUL；`:app:testDebugUnitTest` 682 / 0 失败 / 86 套件；装机 Success（lastUpdateTime 05:28:16）。**真机走查未做**，判据：`echo-switch: invalidate dt=` 与 `echo-switch: clear` 的分段值都应是个位数毫秒。
+
+**真机验证（2026-10-07 当日回填）**：用户多轮复现后确认"应该是修好了" —— 切换订阅源不再卡死（无新增 `data_app_anr`）、不再有二三十秒延迟，首页随新源立即刷新。至此三刀（主线程作废/解析外移 → py 非阻塞 clear → js/jar 同口径）闭环。`echo-switch` 计时行按设计保留（debug-only 文件日志，每次切源 4 行，是这类"偶发等锁"问题的唯一随时可读仪表）。仍留残留：`ConfigManageViewModel` 删空点播列表后的 `clearVodConfig()` 仍在主线程；`echo--parse-fail-json:js_douban ex=java.lang.NullPointerException` 未查。
+
+---
+
+## 配置管理页切源不再弹 toast（2026-10-07）
+
+**来源**：用户反馈"配置管理页面切换订阅源时能不能不要弹出 toast 提示，好烦人"。移除 `ConfigManageViewModel.switchToVod` / `switchToLive` 里的 `toastEvent.value = str(R.string.config_switched_to, item.name)`（点播/直播两处），并删掉随之变死的 `config_switched_to` 文案（`values` / `values-b+zh+Hant` / `values-en` 三份）。同页另外两条提示保留：禁用源确认（`toast_source_in_use`）、直播跟随点播（`toast_live_follow_vod`），删除在用源时的提示也不动。确认手段仍是卡片开关态与「使用中」标记。
+
+**验证**：`.codebuddy/tools/i18n_check_keys.py` 无新增死键、无"引用未声明"（存量 `toast_permission_required` 死键与此无关，未动）；`:app:assembleDebug` BUILD SUCCESSFUL；装机 Success（lastUpdateTime 05:33:19）。**真机走查未做**（判据：配置页切点播/直播源均无 toast，开关态正常切换）。
+
+---
+
+## 当日改动自审轮（2026-10-07；1 条中已修，可收尾）
+
+**范围**：当日三刀（主线程作废/解析外移 → py 非阻塞 clear → js/jar 同口径）+ 集合换引用改造 + 切源去 toast，共 16 个源码/资源文件改动（另有 3 个文档）。
+
+**发现并已修（中 / 既有被放大）**：`ApiConfig.liveSettingGroupList` 当时漏进"整份换引用"名单 —— `initLiveSettings()` 原地 `clear()`+`add()`，而 `LivePlayActivity.initLiveSettingGroupList()` 是 `liveSettingGroupList = ApiConfig.get().liveSettingGroupList` 直接持引用、主线程遍历（`LiveSettingsRules.visibleGroups`）。解析搬到后台后，直播页可见期间撞上解析（含切直播源、换仓）即 CME 面（旧行为只在冷启动缓存分支有）。**修法**：`@Volatile var` + `initLiveSettings()` 本地建好再赋值。构建 + 单测 682 绿 + 装机（05:37:24）。
+
+**核对后判定无问题的点**：`parseBeanList.add(0, superPb)` 现在作用于待发布的局部表（`addSuperParse(parseBeans)` 传参）；`JsLoader.destroy()` 只在 `App.onTerminate()` 调用（进程退出、可阻塞）；`JarLoader.getSpider` 用 per-key 锁、`clear()` 本来就不持全局锁；`PythonLoader.getSpider` 的迟到 `putIfAbsent` 已带代次校验；`SourceViewModel.getList` 调用方 2 处且都带 key（编译期保证）。
+
+**遗留（既有，不阻塞收尾）**：①`ConfigManageViewModel` 删空点播列表后的 `clearVodConfig()` 仍在主线程（与紧随的 `retry()` 有先后依赖）；②`echo--parse-fail-json:js_douban ex=NPE`；③`PythonLoader.clear()` 因本次改造失去调用方（阻塞版入口，建议后续改为委托 `invalidate()`）；④`ApiConfig.clearConfig()` 无调用方（既有死代码）；⑤`HomeViewModel` 449→502 行，本次改动净增 7 行越过 500 阈值（度量类）。
+
+**文档同步**：`skill/avbox-mobile-ui-spec.md` §6.11 新增两条约束；`.codebuddy` / `.trae` 两镜像已同步；本条为定位与实施记录。
+
+---
+
+## 复用重播的位置回退与进度条回缩修复（2026-10-07，A+B 已实施）
+
+**来源**：用户报"开关调色 / 开关 Anime4K 超分时进度条往回缩（如 32 分钟→0 再回来），有概率从 0 开始播放"。
+
+**审查结论（真机日志对账）**：两层——①"回缩到 0 再回来" = 重建窗口 `ComposeVideoController.applyPlayState(IDLE)` 强置 `state.position`/`state.duration = 0`（每次重建必现，日志即 `echo-music session gate … state=IDLE pos=0` 那一行）；②"位置回退 / 从 0 起播" = 复用重播的恢复点取库内陈旧值：`PlaybackStarter.goPlayUrl` 先 `getSavedProgress` 读库（`setPlayTimeoutBasePosition`），而 `saveCurrentProgress` 在 `startVideoPlayback` 里才执行（读在前、存在后）⇒ 恢复的是"上次写库时的位置"。日志实锤（04:24 段复用重播，无 `release player kernel`）：04:24:38 恢复 75009 而当时真实位置 ≈105005（回退约 30 秒）；04:24:52 恢复 79021（再回退）；本集从未写过库时库内无值 ⇒ 恢复 0（从 0 开始播放）。修复前已装的"画面开关走重建"包（04:31–04:33 六次开关）逐次对账恢复位置全部正确，未受此问题影响。
+
+**实施（A+B，6 文件）**：A1 `PlayContainer.replayCurrentAddress()` 重播前先 `saveCurrentProgress()`；A2 三处复用起点（`PlayContainerViewBridge` / `PlaybackEngine.HeadlessView` / `MusicPlayerActivity`）恢复点改为 `sameContent（须在 markContentStarted 前捕获）? MyVideoView.resumePositionForReplay(库值) : 库值`；A3 `AppPlayerView` 新增 `captureLivePosition()`（`release()` 开头与 `saveProgress()` 内优先抓内核实时位置，抓不到才回落 UI 轮询缓存）与 `resumePositionForReplay(fallback)`；B `applyPlayState(IDLE)` 不再清零 `state.position`/`state.duration`，清零收口到 `onNewPlayStarted()`。
+
+**验证（第一轮）**：`:app:assembleDebug` BUILD SUCCESSFUL；`:app:testDebugUnitTest` 682 / 0 失败 / 0 错误；装机 Success（vivo 10AF1J04JX0016G，lastUpdateTime 05:49:15，versionName 1.2.2）。
+
+**真机复测与补刀（2026-10-07 05:49–05:50，同机）**：用户报"修复好像没有效果"。日志对账：**A 部分已生效** —— 05:49:33.047 / 05:49:39.910 / 05:49:42.177 三次画面开关均 `echo-picture-effects: rebuild kernel on next start` + `release player kernel`，恢复位置分别为 1924077 / 1930029 / 1931480 ms，与操作前位置（1920515 起）逐次吻合，无回退、无 0 起播。**B 部分有漏网**：`state.position`/`state.duration` 共两个写入点，首版只改了 `applyPlayState(IDLE)`,漏掉 `onProgressTick(duration, position)` —— 重建窗口里"已排队但尚未执行"的 tick 仍会读到内核已摘（时长/位置全 0）并无条件写回 UI ⇒ 进度条照旧回缩到 0。**补刀（B2）**：`onProgressTick` 改为 `durationMs > 0` 才写 duration、`positionMs > 0 || durationMs > 0` 才写 position（时长未知的流仍能推进位置）。
+
+**验证（第二轮）**：`assembleDebug` BUILD SUCCESSFUL + 单测 682 / 0 / 0（05:51:56）；装机被设备端拒（`INSTALL_FAILED_ABORTED: User rejected permissions`，未重试）。**待用户允许安装后走查**——判据：连续开关调色/超分时进度条不回 0；换集/切歌仍从目标集/曲的库内进度起播；时长未知的流进度条仍推进。
+
+**文档同步**：`skill/avbox-playback-service-spec.md` §3.4（落盘四处 + 复用重播恢复点）；`skill/avbox-mobile-ui-spec.md` §6.17 追加一条；`.codebuddy` / `.trae` 两镜像已同步。
+
+---
+
+## 搜索页站点栏改为「只列有结果的源」（2026-10-07，对齐 fongmi）
+
+**来源**：用户先问"搜索页面左侧的站源会全部出现吗，无论这个站源是否有我想要搜索的影片"（当时口径 = 参搜源全部预占 Pending + 转圈、没搜到也不消失），确认现状后给出只读参考 `示例文件/TV-fongmi`，指令"看看 fongmi 是怎么做的"→"改成一样的逻辑"。
+
+**fongmi 取证（只读，未改）**：移动端 `CollectFragment.setCollect` = `if (result == null || result.getList().isEmpty()) return;` 之后才 `mCollectAdapter.add(Collect.create(result.getList()))`，而 `Collect.create` 取的是 `list.get(0).getSite()` ⇒ **站点栏由结果反推**；进页只先 `mCollectAdapter.setItems(List.of(Collect.all()), …)`（即「全部」，且搜索由这次 diff 回调发起）；TV 端 `CollectActivity` 的 `getSearch` 观察者同款判据（空列表 return + `mAdapter.add(Collect.create(...))`，`Collect.all()` 先入）。两侧栏内**都没有** Pending/进度指示，栏序 = 结果到达顺序（追加，DiffUtil 按站点去重 ⇒ 已有项不跳位）。参搜源池 = `VodConfig.get().getSites().filter(Site::isSearchable)`、不过滤 `isHide`，单源超时 30s（`Constant.TIMEOUT_SEARCH`），与我们既有口径一致（左侧栏宽度 fongmi 是"最长站名文本宽 + 48dp"动态算，我们仍固定 140dp，未跟随）。
+
+**实施（4 个源码/测试文件）**：①新增纯规则 `ui/activity/SearchHits.kt`：`sources()` = 滤掉 `videos` 为空的源 + `sortedBy(arrivedAt)`，即"本次搜索的命中源，按到达顺序"；②`SearchScreen.SearchResultsContent` 用 `val hits = SearchHits.sources(results)` 统一派生这份清单，空态判定 / 竖排 / 横排三处共用；③`SearchScreens.kt` 的 `RailResults` 入参由 `results`（全参搜源）改为 `hits`，站点栏项与右侧行列表都从这一份派生（原先各自 filter/sort 一遍），`SearchRailItem` 去掉 `pending` 参数与 `CircularProgressIndicator`（连带清 import，项内 Row+weight 简化为单个 Text）；横排 `SearchListResults(done = hits)` 因此也由配置顺序变为到达顺序；④新增 `SearchHitsTest`（有命中保留 / 按到达排序 / Pending 无命中被滤 / 空入参）。
+
+**未动**：`SearchResultsContent` 的"全空 ⇒ `search_no_result` / `search_no_exact_result` 空态"分支（fongmi 那侧此时只剩「全部」+ 空白列表，我们的空态更明确）；右侧列表顶部波浪线保留 —— 左栏去掉转圈后，它是"求解中"的唯一指示；「全部」项仍恒为第 0 项且默认为选中态。
+
+**验证**：`.\gradlew.bat :app:assembleDebug :app:testDebugUnitTest` BUILD SUCCESSFUL（APK `app/build/outputs/apk/debug/AVBox_debug.apk` 已刷新，7:02:43）；单测 **686 用例 / 0 失败 / 0 错误 / 1 跳过**（新增 `SearchHitsTest` 4 条全绿）；构建产物里无残留的 `SearchRail*` 类。**装机 Success**：`adb install -r app/build/outputs/apk/debug/AVBox_debug.apk`（vivo V2425A / 10AF1J04JX0016G，`lastUpdateTime=2026-10-07 07:06:59`、versionName 1.2.2 / versionCode 23，覆盖安装故 `firstInstallTime` 仍是 04:21:24 的数据保留），装机前核对 APK 内 dex 已含 `Lcom/github/tvbox/osc/ui/activity/SearchHits;`、无 `SearchRail` 独立类。⚠️ 过程两坑：①中途强杀了一次上一轮 build，`app/build/test-results/testDebugUnitTest/binary/in-progress-results-generic.bin` 被留下半成品，下一轮 `testDebugUnitTest` 直接 `NoSuchFileException` 失败（其余任务全 UP-TO-DATE，看着像编译错）—— 删掉 `app/build/test-results/testDebugUnitTest` 重跑即恢复，与源码无关；②首次 `:app:installDebug` 在 push 阶段被中断，属同一类"半途打断"，改用 `adb install -r` 直装一次成功。**真机走查未做**，判据：①搜索中左栏 = 「全部」+ 陆续到达的命中源，无转圈、新源只往后加；②没搜到的源不进左栏、点不到；③全部源都无命中时仍是原空态文案；④竖排/横排切换后两侧的源集合与顺序一致。
+
+**文档同步**：`skill/avbox-mobile-ui-spec.md` §4.6 新增一条（只列有结果的源 + 与 fongmi 的对照）；`.codebuddy` / `.trae` 两镜像已同步。
+
+---
+
+## 首页「订阅源」sheet 搜索框加订阅源切换菜单（2026-10-07）
+
+**来源**：用户给了两张截图（首页「订阅源」sheet 的「搜索站点名称或地址」框 + 搜索页顶栏那枚「搜索片名、演员」框），要求"在首页订阅源[sheet]输入框的右边加上图二搜索页输入框[那枚 ⋮]控件，点击后出现弹出式菜单，里面的内容是配置管理页面的订阅源，点击即可切换"。开工前先核对了两个"订阅源"的所指：home sheet 的列表 = `ApiConfig.getSwitchSourceBeanList()`（**站点**，hide 过滤），配置管理页点播段的卡片 = `HawkConfig.SUBSCRIBE_LIST`（**订阅条目**），两者不是同一批数据 —— 菜单取后者（否则与 sheet 列表重复）。
+
+**做法（4 个源码文件）**：①`ui/page/ConfigManageViewModel.kt` 新增 `internal fun vodSubscribes()`，紧挨 `parseSubscribe` / `SUBSCRIBE_SPLIT`，保证订阅条目的解析口径只有一份；②`ui/page/HomeViewModel.kt` 新增 `subscribeItems` / `activeSubscribeIndex` 两个 StateFlow（`init` 与 `loadHome()` 都调 `refreshSubscribes()` ⇒ 启动就绪、切站点、任意 API 变更后同步）与 `isSubscribeDisabled()` / `switchSubscribe()` 两个入口（UI 层不直接碰 `BootGuard` / `AppBootstrap`）；③`ui/components/OptionMenu.kt` 新增 `AVBoxOptionMenuAction`（⋮ 触发器 + `AVBoxOptionMenu`，触发器规格 `ic_more_vert` / 22dp / `clip(RoundedCornerShape(50))` / `padding(4dp)`，与搜索页 `LayoutSwitchAction` 逐项一致），供后续"⋮ + 纯文本单选"复用；④`ui/page/HomePage.kt` 给 sheet 的 `SearchField` 补 `trailing` 槽。
+
+**口径与取舍**：对勾判据 = `url == API_URL || HistoryHelper.isApiLineSourceOf(url, API_URL)`（与配置管理页 `SubscribeCard` 的 inUse 同源，多仓/线路态也标得对）；点一条 = 先 `dismissAnimated()` 收 sheet 再 `AppBootstrap.switchVodSubscription(url)`（与配置管理页卡片开关同一条链路，不新增切换实现）；**禁用源（BootGuard 黑名单）不切、只 Toast `toast_source_auto_disabled`** —— 沿用 §4.7 直播页那条例外（菜单里没有二次确认的位置，文案已指路配置管理页），没有复制配置管理页的 `AVBoxAlertDialog`（那套还连着 `LocalSheetDismissThen` 的编排，抄一份等于把 sheet-dismiss 语义一起复制）；订阅源列表为空（直接手输地址的接口）时整颗 ⋮ 不渲染，免得点开是空菜单；**未新增任何文案**，故无 i18n 影响。
+
+**未动**：首页顶栏原有的 ⋮（搜索设置）与 🔍、sheet 内的站点列表与「配置管理」行。
+
+**验证**：`.\gradlew.bat :app:assembleDebug :app:testDebugUnitTest` BUILD SUCCESSFUL（52s，改动文件无新增编译告警）；单测 **686 / 0 失败 / 0 错误 / 1 跳过**（本轮是数据接线 + UI，未引入新规则，故未补单测）。**装机 Success**：`adb install -r app/build/outputs/apk/debug/AVBox_debug.apk`（vivo V2425A / 10AF1J04JX0016G，`lastUpdateTime=2026-10-07 07:14:27`，versionName 1.2.2）。**真机走查未做**，判据：①sheet 搜索框右侧出现 ⋮，点开是订阅源菜单、当前那一条带勾；②点另一条 → sheet 收起 + 顶部胶囊与内容流按新订阅源刷新；③订阅源为空时 ⋮ 不出现；④命中黑名单那条点了只弹 Toast、不切换。
+
+**文档同步**：`skill/avbox-mobile-ui-spec.md` §4.x 首页顶部区追加一条；`.codebuddy` / `.trae` 两镜像已同步。
+
+**补丁（同日，装机后用户报"我添加好了源后回首页一看没有更新，退出应用重新进入才显示"）**：根因 = `HomeViewModel.subscribeItems` 只在 `init` 与 `loadHome()`（启动就绪 / 切站点 / 任意 API 变更）刷新，而**新增一条非首个订阅源不会换源** —— `ConfigManageViewModel.commitAdd` 只在 `newItems.size == 1` 时 `switchToVod`，加了第二条及以后既不改 `API_URL` 也不发 `RefreshEvent`；配置管理页是独立 Activity，HomeViewModel 全程存活 ⇒ 缓存一直是旧的（⋮ 菜单里看不到新条目、删除/改名同理），重启才重读。**修法 = 拉模型**：`refreshSubscribes()` 转 public，首页胶囊点击、打开 sheet 之前先调一次（`HomePage` 的 `.clickable`），不依赖"配置页记得发信号"这条 push 路径（漏发一次就是同一类 bug 复发）；`init` / `loadHome()` 里的刷新保留。验证：`assembleDebug` + `testDebugUnitTest` BUILD SUCCESSFUL（34s，单测 686 / 0 / 0 / 1 跳过）；`adb install -r` Success（`lastUpdateTime=2026-10-07 07:18:15`）。**真机复测待用户**：配置管理页新增/改名/删除一条订阅源后回首页、打开订阅源 sheet，⋮ 菜单应立即是新的（无需重启）。
+## 历史 / 收藏合并为「记录」tab + 新增「追剧」占位 tab（2026-10-07）
+
+**需求（用户）**：①把历史与收藏合并到同一个 tab，像配置管理页那样用上方控件切换（左历史、右收藏）；②合并后导航栏图标换成「记录」（源 `.tubiao/记录.svg`）；③再新增一个名为「追剧」的 tab 页面（空白，待后续接入功能）。
+
+**结构**：`AppTab` 由 首页 / 历史 / 收藏 / 设置 改为 首页 / **记录** / **追剧** / 设置 —— 仍是 4 个页面，故 `NavMetrics.actionSlotFor(4) = 2` 与"直播动作钮居中（首页 记录 | 直播 | 追剧 设置）"、`NavMetricsTest` 全部不变。新文件 `ui/page/RecordsPage.kt` 持有**唯一**顶栏 + 分段控件 + 编辑态 + 三个删除对话框；`HistoryPage.kt` / `CollectPage.kt` 只留内容（`internal fun HistoryTab` / `CollectTab`，签名收 `listState` / `editMode` / `selected` / `onToggleSelected` / `onRequestDelete` / `navStart` / `navBottom`）；`CollectViewModel` 原样留在 `CollectPage.kt`。新文件 `ui/page/FollowingPage.kt` 为追剧占位页。
+
+**为什么顶栏必须上提**：合并前两个页面各自带一套 `AppTopBarScaffold` + `BackHandler(enabled = editMode)` + 各自的 `editMode` / `selected`（历史 `Set<String>`、收藏 `Set<Int>`）。放进同一个 destination 后，非活动分支的 `BackHandler` 也在组合里 ⇒ 会抢返回键。故按配置管理页的结构：顶栏与编辑态全部归 `RecordsPage`，**两套选中状态并行保留**（类型不同，不强行统一），`targetState = editing && canEdit`（`canEdit` 逐条对齐合并前：历史 `!incognito && items.isNotEmpty()`、收藏 `items.isNotEmpty()`）。切分段时 `exitEdit() + dialog = null`。
+
+**⚠️ 两个坑（已回写进 §4.2）**：①刷新后的置顶信号不能直接在 VM 的 `scrollSignal` 收集器里滚动 —— 列表随 `AnimatedContent` 只组合当前分段，对未组合的 `LazyListState` 调 `animateScrollToItem` 不可靠；改为 `scrollSignal.drop(1)` 先置 pending 标志，再在 `LaunchedEffect(mode, pending…)` 里、**该分段已组合**时才消费。②列表状态若不从 `AnimatedContent` 内部上提到 `RecordsPage`，切分段回来滚动位置会丢（`AnimatedContent` 不像 `SaveableStateProvider` 那样保存分支状态）。
+
+**顶栏行为变化**：`RecordsPage` 用 `collapseEnabled = false`（与配置管理页一致）⇒ 顶栏不再随滚动收起、分段控件位置稳定；代价是列表 `contentPadding` 不再叠 `topPad`（改为 `top = 8dp`）。
+
+**图标**：`.tubiao/记录.svg` → `res/drawable/ic_tab_records.xml`、`.tubiao/追剧.svg` → `res/drawable/ic_tab_following.xml`（沿用既有转换约定：`viewport 960×960` + `<group translateY="960">` + 单 path 白填充，**pathData 逐字取自 SVG，只加平移**）。`ic_tab_history.xml` 已无引用，一并删除；`ic_tab_collect(_filled)` **保留**（详情页 / 音乐页的收藏钮仍在用）。转换结果用 headless Chrome 按同一 viewport + `translate(0,960)` 渲染成 PNG 目视核对（书签星形、日历+时钟两颗的空心都正常，说明 nonzero 缠绕方向未被破坏）。
+
+**文案**：`tab_records`（记录 / Records / 記錄）、`tab_following`（追剧 / Following / 追劇）、`following_empty`（功能开发中，敬请期待 / Coming soon / 功能開發中，敬請期待）—— `values` / `values-en` / `values-b+zh+Hant` / `values-zh-rHK` 四语齐全（zh-rHK 是差异层，按约定落这三条）。
+
+**取舍**：①**保留 4 个 tab**（历史+收藏合并省下的位置给"追剧"）⇒ 动作槽仍是槽位 2、直播钮仍居中、`NavMetricsTest` 零改动；若只留 3 个 tab，`actionSlotFor(3) = 1` 会让直播钮从中场偏到左侧，且现有单测的 4/5 假设要重写。②**不动数据层**：`VodRecord` / `VodCollect` 两张表、`AppGraph`、`RefreshEvent` 三个类型（`TYPE_HISTORY_REFRESH` / `TYPE_COLLECT_REFRESH` / `TYPE_COLLECT_LAYOUT_CHANGE`）、设置页的 `HISTORY_NUM` / `COLLECT_COLUMNS` / 无痕开关全部原样 —— 合并只发生在 UI 层。③两个 VM 同时实例化不是新开销：`beyondViewportPageCount = 3` 下合并前 4 个 tab 页本来就全部常驻组合。
+
+**合规**：UI 层零注释（`strip_comments_all.py --dry` 只报 `directive` / `license`，本批 5 个 `.kt` 零命中）；i18n 硬闸门 `ui 层 0 处 / 0 文件`（新增文案全走 `stringResource`）；改动文件全 LF、无 BOM。
+
+**验证**：`.\gradlew.bat :app:assembleDebug :app:testDebugUnitTest` BUILD SUCCESSFUL（30s）；`app/build/test-results/testDebugUnitTest/*.xml` 汇总 **87 suite / 686 用例 / 0 失败 / 0 错误 / 1 跳过**（与上一轮基线持平 —— 本次是 UI 重组，无可测纯逻辑，未补单测）。**未真机走查**。
+
+**文档同步**：`skill/avbox-mobile-ui-spec.md` —— §2 文件布局、§3 tab 列表与图标、§4.2 改写（记录 tab 结构 / 编辑态上提 / pending 滚动）、新增 §4.12 追剧占位、§4.11 槽位示例与拖动吸附示例、§5 标题与内容留白差值；`.codebuddy` / `.trae` 两镜像已同步。
+
+**待走查**：①左历史 / 右收藏的切换方向与滑动动画；②切分段后滚动位置保留、编辑态退出、对话框关闭；③在详情页新增收藏后切回收藏页是否置顶；④追剧空页观感；⑤导航栏两颗新图标的选中/未选中着色与大小是否与另两颗一致。
+**补丁（同日，用户要求）：首页 / 设置两颗 tab 图标换新素材，「设置」tab 改名「我的」**
+
+**改动**：①`.tubiao/首页.svg` → 覆盖 `res/drawable/ic_tab_home.xml`；②`.tubiao/我的.svg` → 新增 `res/drawable/ic_tab_mine.xml`（`ic_tab_settings.xml` 就此无引用，已删）；③新增文案 `tab_mine`（我的 / Me / 我的），`AppTab.SETTINGS` 的 label 与 `SettingsPage` 页首大标题都改用它 —— 原 `settings_title` 只有这两处消费方，已随改名删除（避免留死资源）。⚠️ 活规范里其余处写的「设置 tab」仍指这一页，页内分组 / 入口行 / `SettingsIconBadge` 一概未动。
+
+**取舍**：`values-zh-rHK` 是差异层，`我的` 在简繁两种字形下一致 ⇒ 这条只在 `values` / `values-en` / `values-b+zh+Hant` 落（HK 回落繁体基础层）。英文取 **Me**（作底部导航标签的通行译法；`Mine` 在英文导航里不自然，`Profile` 会改掉"这一页装的是设置"的含义）。
+
+**验证**：`.\gradlew.bat :app:assembleDebug :app:testDebugUnitTest` BUILD SUCCESSFUL（29s）；单测 **87 suite / 686 用例 / 0 失败 / 0 错误 / 1 跳过**；i18n 硬闸门 `ui 层 0 处 / 0 文件`；注释扫描零新增（全库仍只有 61 directive + 20 license）。四颗 tab 图标按同一 `viewport 960×960` + `translate(0,960)` 渲染成 PNG 目视核对（房屋轮廓、书签星形、日历+时钟、人像+齿轮的空心都正常）。**未真机走查** —— 用户明确禁止操作其手机，本轮全程只用本地构建与离线渲染核对。
+
+**文档同步**：`skill/avbox-mobile-ui-spec.md` §3（tab 列表 / 图标文件名）、§4.3（标题改名 + 「设置 tab」指代说明）、§4.11 槽位示例、§5 标题与内容留白差值；`.codebuddy` / `.trae` 两镜像已同步。
+**补丁 2（同日，用户要求「给历史和收藏两个控件加上图标，看看项目里有没有合适」）**
+
+**选型（先盘点再选，不新造素材）**：全库 `res/drawable` 119 个图标里，语义与风格都合适的只有两颗 —— **历史** = `ic_tab_history`（时钟 + 回绕箭头，Material Symbols 描边，本来就是历史 tab 的图标；改 tab 时被我删掉，本次用 `git checkout --` 恢复，**那条删除记录随之撤销**），**收藏** = `ic_tab_collect`（描边星，详情页 / 音乐页的收藏钮同款）。落选说明：`ic_search_history`（放大镜 + 回绕 = 搜索历史，语义不符）、`ic_settings_history`（与 `ic_tab_history` 是同一颗图标、仅路径精度不同，且名字绑在设置页）、`ic_tab_collect_filled`（实心，与描边的历史图标并排时粗细不搭）、`ic_empty_record`（空态专用）。
+
+**实现**：两段各加 `iconPainter = painterResource(...)`，**不指定尺寸** —— 与主题设置页（深浅模式三颗）、播放参数面板（两颗分页胶囊）、搜索设置面板同一先例；`SegmentContent` 里的 `Icon(painter)` 取画笔**固有尺寸 24dp**（M3 `defaultSizeFor(painter)` 只在画笔无固有尺寸时才兜 24dp，我们的 VectorDrawable 自带 24dp）。
+
+**⚠️ 与上一轮那个高度问题的关系**：加图标**不会**改变控件高度 —— 内容高由 20dp(label) 变成 `max(24dp 图标, 20dp label)` = 24dp，叠加 `TrackContentPadding` 垂直 4dp 后仍远小于 `ToggleButtonDefaults.MinHeight`（= `ButtonSmallTokens.ContainerHeight` = 40dp）的夹持 ⇒ 总高仍是 4+40+4 = **48dp**，与配置管理页一致（配置管理页那两段带 badge，两行 36+4 = 40dp 正好顶在夹持线上）。两页之间"配置管理页零余量、系统字体一放大就变高"的差异与本次无关，仍按上一轮结论。
+
+**验证**：`.\gradlew.bat :app:assembleDebug :app:testDebugUnitTest` BUILD SUCCESSFUL（27s）；单测 **87 suite / 686 用例 / 0 失败 / 0 错误 / 1 跳过**；i18n 硬闸门 `ui 层 0 处 / 0 文件`；零注释；`ic_tab_history` 的消费方 = `RecordsPage` 一处。**未真机走查**（用户禁止操作其手机，本轮只用本地构建 + 离线渲染核对）。
+
+**文档同步**：`skill/avbox-mobile-ui-spec.md` §4.2 首条补图标选型与"不改高度"的算式；`.codebuddy` / `.trae` 两镜像已同步。
+**补丁 3（同日，用户要求）：详情页标题卡片的三个控件图标下移到简介下方，并追加「追剧」入口**
+
+**结构前提（先核实再动手）**：标题卡片本身就是**一个** `Column`（`surfaceBright` + 16dp 圆角），而**简介块本来就在它内部**（`surfaceContainer` + 12dp 的嵌套块）—— 所以"移到简介下方 / 仍在标题卡片内 / 不建新卡片"= 把动作行加成该 `Column` 的**直接子元素**、不带任何背景。
+
+**改动（单文件 `ui/activity/DetailContent.kt`）**：①标题行里那三颗 `IconButton` 整体移出，标题 `Text` 随之不再需要 `weight(1f)`（右侧已无控件）；②简介块之后新增一行，四颗 24dp `IconButton` 各挂 `Modifier.weight(1f)` ⇒ **均分整行**（用户在两版排布里选了"四颗均匀铺满"），顺序 = 音乐播放器 → 投屏 → 收藏 → **追剧**。三个既有 `onClick` 逐字未改（`activity.openMusicPlayer()` / `activity.playContainer?.showCast()` / `vm.toggleCollect()`），收藏那颗的缩放淡入 `AnimatedContent` 原样带过来。
+
+**追剧入口**：图标用 `ic_tab_following`（tab 那颗，`.tubiao/追剧.svg` 转换），`contentDescription` = `tab_following`（四语已有，未新增文案），**`onClick = { }` 暂不接入功能**。⚠️ 这是一颗**有意留白**的入口（用户要求"看得见、点了无反应"），接入时替换空 lambda 即可；保留活态与点击涟漪、没做成 `enabled = false` 的灰态，因为用户先要看版式。
+
+**未动**：简介块自身的展开/收起逻辑、来源胶囊、年份·地区·类型，以及 `LazyColumn` 的其余 item（选集 / 换源 / 相关推荐）。
+
+**验证**：`.\gradlew.bat :app:assembleDebug :app:testDebugUnitTest` BUILD SUCCESSFUL（26s）；单测 **87 suite / 686 用例 / 0 失败 / 0 错误 / 1 跳过**；i18n 硬闸门 `ui 层 0 处 / 0 文件`；零注释（`DetailContent.kt` 未命中）；未产生死 import（`weight` / `Alignment` / `AnimatedContent` / `scaleIn` / `scaleOut` 仍各有消费点）。**未真机走查**（用户禁止操作其手机）。
+
+**文档同步**：`skill/avbox-mobile-ui-spec.md` §4.4 竖屏布局那条改写（标题卡片 → 动作行）+ 新增一条动作行规范（顺序 / `weight(1f)` 均分 / 不带背景 / 追剧空实现）；`.codebuddy` / `.trae` 两镜像已同步。
+**补丁 4（同日，用户带截图要求）：详情页「年份·地区·类型」移到来源胶囊下方**
+
+**改动（单文件 `ui/activity/DetailContent.kt`）**：原来"来源胶囊 + 年份·地区·类型"是一行 `Row`,胶囊在左、元数据用 `weight(1f)` 吃右侧剩余宽度（截图里因此被挤成两行还截断）。现改为一个 `Column`（`padding(top = 4.dp)`）:**胶囊独占一行**（`Row` 默认包裹内容,胶囊仍是 `RoundedCornerShape(50)` 的窄胶囊,没有拉成整行），**元数据换到它下方**（`padding(top = 4.dp)`，仍 `maxLines = 2`）。元数据去掉了 `weight(1f)`（在 Column 里它会变成吃满垂直剩余空间,语义完全不同）与 `start = 8.dp`（已不需要让位给胶囊）。⚠️ 元数据现在**独占整列宽度** —— 同一条数据能显示得比改动前更全（截图里那串"2026 · 香港 · 喜剧/犯罪/…"不再被胶囊挤掉）。
+
+**未动**：标题 `Text`（仍是 `maxLines = 2`）、胶囊的底色/圆角/内边距、简介块、卡片底部四颗动作行。
+
+**验证**：`.\gradlew.bat :app:assembleDebug :app:testDebugUnitTest` BUILD SUCCESSFUL（25s）；单测 **87 suite / 686 用例 / 0 失败 / 0 错误 / 1 跳过**；i18n 硬闸门 `ui 层 0 处 / 0 文件`；零注释；`weight(` 仍有 6 处消费点（底部动作行四颗 + 海报右侧 `Column` + 简介块里的 `Spacer`），未产生死 import。**未真机走查**（用户禁止操作其手机）。
+
+**文档同步**：`skill/avbox-mobile-ui-spec.md` §4.4 标题卡片那条改写（来源胶囊 → 元数据换行）；`.codebuddy` / `.trae` 两镜像已同步。
+**补丁 5（同日，用户要求）：主题默认色卡由蓝改红（只改默认高亮，不动取色来源）**
+
+**改动（单文件 `ui/theme/ThemeConfig.kt`）**：`DefaultSeedArgb` 由 `0xFF1B6EF3`（蓝）改为红。**顺手把"默认值必须等于某张预设卡"这条不变量做成结构性的** —— 新增 `private val SeedRedArgb`,`DefaultSeedArgb` 与 `PresetSeeds` 的红项**都引用它**,不再各写一份字面量。依据:高亮判据是 `currentSeed == argb` 的**纯值比较**,两处字面量一旦漂移就会"8 张卡一张都不亮";本项目禁止写解释性注释,故按既有先例(把顺序/同步这类约束做成结构而非注释)处理。⚠️ 声明顺序有讲究:顶层属性按**文件内声明顺序**初始化,`SeedRedArgb` 必须写在 `DefaultSeedArgb` 与 `PresetSeeds` **之前**,否则读到 0。
+
+**未改（用户明确选了"改动最小"那版）**：取色来源的默认仍是 `ThemeSource.SYSTEM` ⇒ 装完**界面不会变红**,默认只体现为"红卡带选中描边";且色卡区在非自定义模式下整卡 alpha 0.45、不可点。要真正"开箱即红"得把来源默认也改成 `CUSTOM`（会与活规范 §3「默认跟随系统」相左），留待用户决定。
+
+**影响面核对**：`DefaultSeedArgb` 全仓 4 处消费方 —— `AppThemeState.load()` 的 KV 兜底默认（本次目标）、`Theme.kt` 两处 `@Preview`（浅色/深色预览会跟着变红，符合预期）；**无单测引用**；活规范原文未记载该值（本次已在 §4.8「能力」条补一句）。已有的存量用户若从未手动选过种子色，KV 无该键 ⇒ 新默认对他们同样生效。
+
+**验证**：`.\gradlew.bat :app:assembleDebug :app:testDebugUnitTest` BUILD SUCCESSFUL（26s）；单测 **87 suite / 686 用例 / 0 失败 / 0 错误 / 1 跳过**；i18n 硬闸门 `ui 层 0 处 / 0 文件`；零注释；改动文件 LF、无 BOM。**未真机走查**（用户禁止操作其手机）。
+
+**文档同步**：`skill/avbox-mobile-ui-spec.md` §4.8 补默认种子色与新不变量；`.codebuddy` / `.trae` 两镜像已同步。
+**补丁 6（同日，用户质疑「记录页面的顶栏不是和其他页面一样会折叠的吗」）：撤掉记录 tab 的 `collapseEnabled = false`，并纠正我上一轮写错的理由**
+
+**用户是对的。** 记录 tab 原本被我设成 `collapseEnabled = false`（钉住顶栏），复盘结论是这个决定的**依据不成立**。
+
+**事实核对**：全仓 `collapseEnabled = false` 共四页 —— **首页**、配置管理、搜索、记录。规律 = **顶栏或紧贴顶栏处放了常驻交互控件的页面钉住顶栏**（首页的源胶囊 + 搜索钮、配置管理的操作钮、搜索的搜索框）；顶栏只放标题的页面（我的 / 追剧 / 各二级页）走默认折叠。所以记录页并非"孤例"，但它的处境与那四页**不同**：分段控件不在顶栏槽里，而是内容区的第一个元素。
+
+**我上一轮的理由错在哪**：当时记的是"折叠后 `topPad → 0`，分段控件会被顶到屏幕最上、压在状态栏底下"。查 material3 1.5.0-alpha28 源码（`AppBar.kt` 的 `SingleRowTopAppBar`）：内层 `TopAppBarLayout` 的高度确实是 `(maxLayoutHeight + heightOffset).coerceAtLeast(0)`、折叠到底收到 **0**；但项目把 `Modifier.windowInsetsPadding(WindowInsets.statusBars)` 挂在**外层 `Box`** 上、同时把 M3 的 `windowInsets` 传成 `WindowInsets(0,0,0,0)`（`components/EdgeToEdgeTopBar.kt`）⇒ 顶栏槽位高度 = 状态栏 inset + 内层高度 ⇒ **折叠到底时 `topPad` 收敛到状态栏高度，不是 0**。分段控件因此停在状态栏下沿（`topPad + 8dp`），压根不会被压住。
+
+**改动**：`ui/page/RecordsPage.kt` 去掉 `collapseEnabled = false`（一行）。列表的 `contentPadding` 不动（仍 `top = 8dp`）—— 分段控件照旧吃 `topPad`，折叠时随顶栏上滑，其下的列表同步变高，两者不重叠。
+
+**验证**：`.\gradlew.bat :app:assembleDebug :app:testDebugUnitTest` BUILD SUCCESSFUL（25s）；单测 **87 suite / 686 用例 / 0 失败 / 0 错误 / 1 跳过**；i18n 硬闸门 `ui 层 0 处 / 0 文件`；零注释。**未真机走查**（用户禁止操作其手机）。
+
+**文档同步**：`skill/avbox-mobile-ui-spec.md` —— §4.2 首条改为"顶栏随滚动收起"；§5 与 §6.6 删掉"记录 tab 例外"的错误口径；**§6.6 新增一条 M3 折叠高度的结论**（含"不要以怕被状态栏盖住为由设 `collapseEnabled = false`"，以及"已知四页各有别的正当理由"），避免后来者重犯。`.codebuddy` / `.trae` 两镜像已同步。
+**补丁 7（同日，用户追问「配置管理页面呢」）：配置管理页也撤掉 `collapseEnabled = false`**
+
+**查到的原始依据**：`history/features.md` 2026-09-12「点播 / 直播配置拆分 + 配置管理页分段」第 3 条原文 —— "配置管理页顶栏改 `collapseEnabled = false`（pinned，`topPad` 恒定，分段行才能常驻 —— 与首页/搜索页同款模式）"。即**与我上一轮给记录页设 false 的理由逐字同源**（我当时正是照抄配置管理页的结构），而那条理由已被证伪：分段控件在内容区、折叠后 `topPad` 收敛到状态栏高度，它照样常驻、只是停在状态栏下沿。
+
+**判断与取舍**：配置管理页与记录页**同构**（顶栏 = 标题 + 操作钮，分段控件是内容区第一个元素），且 `topPad` 全页只有一处消费（分段控件的上边距），没有任何代码假设它恒定 ⇒ 改动安全。**唯一真实差异**是配置管理页的分段控件带 `badge`（两个角色各自当前源名），折叠后那两行会随标题一起滚走 —— 已向用户说明，用户选择"与其他页面一致"。换仓 / 添加订阅钮同在 `actions` 槽，同样会滚走（与记录页的管理钮处境一致）。
+
+**改动**：`ui/page/ConfigManagePage.kt` 去掉 `collapseEnabled = false`（一行）。分段控件的 `top = topPad + 8.dp` 与列表的 `contentPadding`（`top = 12.dp`，本就不含 `topPad`）均不动。
+
+**最终态**：全仓只剩两页 `collapseEnabled = false` —— **首页**（`titleContent` 槽本身就是源胶囊 + 搜索钮）与**搜索页**（槽里就是搜索框）。判据随之收紧为"**顶栏的 `titleContent` 槽本身就是那个必须常驻的控件**"，已写进 §6.6；"顶栏是「标题 + 操作钮」"的页面一律折叠。
+
+**验证**：`.\gradlew.bat :app:assembleDebug :app:testDebugUnitTest` BUILD SUCCESSFUL（25s）；单测 **87 suite / 686 用例 / 0 失败 / 0 错误 / 1 跳过**；i18n 硬闸门 `ui 层 0 处 / 0 文件`；零注释。**未真机走查**（用户禁止操作其手机）。
+
+**文档同步**：`skill/avbox-mobile-ui-spec.md` —— §4.7 顶栏条与分段条改写；§6.6 那条判据收紧并列出"只剩两页"。`.codebuddy` / `.trae` 两镜像已同步。
+**补丁 8（同日，用户看截图后问「来源胶囊和下方的 2026… 是否应该调换一下位置」）：对调二者**
+
+**判断依据（把两个元素按语义重新归类）**：「年份 · 地区 · 类型」是**作品本身的属性**，紧跟片名读起来是副标题，与片名同属一个语义簇；「来源」是**这份片源**的技术属性，且它本身是个实心容器（在别处是可点可切的胶囊）⇒ 放末尾当"卡片底部的一个标签"更合语法。视觉上，上一版的顺序是「粗标题 → 实心胶囊 → 两行浅色文字」，胶囊夹在中间把片名和它自己的元数据切断了；对调后是「粗标题 → 浅色元数据 → 一个实心块」，文字聚在一起、色块只出现一次。
+
+**改动（单文件 `ui/activity/DetailContent.kt`）**：同一个 `Column` 内两个子元素对调 —— 元数据 `Text` 提到前、来源胶囊 `Row` 落到后。胶囊的 `padding(top = 4.dp)` 排在 `.background(...)` **之前**（否则那 4dp 间隙会被胶囊底色填上、变成一块 4dp 的色条）；元数据不再需要自己的 `padding(top = 4.dp)`（`Column` 本身已有）。`maxLines`、圆角、内边距一律未动。
+
+**待走查的风险（已向用户说明）**：胶囊与紧接其后的简介块**同为 `surfaceContainer` 实心底**，对调后两者直接相邻（中间只隔 8dp），可能出现"两个同色块叠在一起"的观感。若真糊，两条低成本改法：给胶囊那行加底部呼吸空间，或把简介块底色降到 `surfaceContainerLow`。
+
+**验证**：`.\gradlew.bat :app:assembleDebug :app:testDebugUnitTest` BUILD SUCCESSFUL（25s）；单测 **87 suite / 686 用例 / 0 失败 / 0 错误 / 1 跳过**；i18n 硬闸门 `ui 层 0 处 / 0 文件`；零注释；改动文件 LF、无 BOM。**未真机走查**（用户禁止操作其手机）。
+
+**文档同步**：`skill/avbox-mobile-ui-spec.md` §4.4 标题卡片那条改写（含两次调整的顺序与"胶囊 padding 必须排在 background 前"这个坑）；`.codebuddy` / `.trae` 两镜像已同步。
+**补丁 9（同日，用户要求「将影视详情页面简介卡片的海报卡片删除吧」）：详情页标题卡片移除海报**
+
+**改动（单文件 `ui/activity/DetailContent.kt`，339 → 317 行）**：删掉卡片左侧那颗 72dp `VodPoster`（连同它的 `width(72.dp).aspectRatio(2f/3f).clip(RoundedCornerShape(12.dp))`）。海报一去，原来那层两子元素的 `Row(verticalAlignment = Top)` 与右侧 `Column(weight(1f).padding(start = 12.dp))` 就成了多余嵌套 —— **一并撤掉**，文字块（标题 / 元数据 / 来源胶囊）直接作为卡片的子元素并**占满整卡宽**，缩进整体回退 4 空格。**同步删除因此变成死引用的三个 import**：`ui.components.VodPoster`、`layout.aspectRatio`、`layout.width`（按项目惯例，避免留死 import；`clip` 仍被简介块的 `RoundedCornerShape(8.dp)` 使用，未动）。
+
+**未动**：卡片的底色/圆角/内外边距、标题 `maxLines = 2`、元数据 `maxLines = 2`、来源胶囊的样式与 `padding(top = 4dp)` 必须排在 `background` 之前这个口径、简介块、卡片底部四颗动作行。
+
+**收益**：标题块现在独占整卡宽 ⇒ 长片名与长类型串（截图里那串"动画,喜剧,冒险,动物冒险,动画电影,电影"）都能多显示内容；卡片高度也少了一行海报的 108dp 占用。**代价**：卡片左上角不再有视觉锚点，整张卡变成纯文字块 —— 属于用户明确要求的效果。
+
+**验证**：`.\gradlew.bat :app:assembleDebug :app:testDebugUnitTest` BUILD SUCCESSFUL（25s，无 Kotlin 编译告警）；单测 **87 suite / 686 用例 / 0 失败 / 0 错误 / 1 跳过**；i18n 硬闸门 `ui 层 0 处 / 0 文件`；零注释；`VodPoster` / `aspectRatio` / `.width(` 在本文件均 0 处引用（死 import 已清）。**未真机走查**（用户禁止操作其手机）。
+
+**文档同步**：`skill/avbox-mobile-ui-spec.md` §4.4 标题卡片那条改写（记明海报移除与"外层 Row/Column 一并撤掉"的连带面）；`.codebuddy` / `.trae` 两镜像已同步。
+**补丁 10（同日，用户看截图后要求「将四个图标放到右上角」）：四颗动作图标移回标题行右侧**
+
+**这是对补丁 3 的部分回退**：补丁 3 把三颗图标从"标题行右上角"下移到"卡片底部、四颗均分整行"；本轮按用户要求移回标题行右上角，并保留新加的追剧入口（共四颗）。
+
+**改动（单文件 `ui/activity/DetailContent.kt`，317 → 304 行）**：①标题 `Text` 重新包进 `Row(verticalAlignment = CenterVertically, fillMaxWidth())`，`Text` 挂回 `Modifier.weight(1f)`，四颗 `IconButton` 紧凑排在右侧；②删掉卡片底部那一行（`Row` + 四颗均分版 `IconButton`）。四颗的 `onClick` / 图标 / `contentDescription` / 收藏的 `AnimatedContent` **逐字未改**，只是**去掉了 `Modifier.weight(1f)`**（那是"均分整行"版本的写法；留着会把每颗拉到整卡 1/4 宽、把标题挤没）。
+
+**宽度代价（已向用户说明）**：四颗 `IconButton` 默认 48dp ⇒ 192dp；卡片内容宽约 316dp（360dp 屏：屏宽 − 卡外 6×2 − 卡内 16×2）⇒ **标题只剩约 124dp**，长片名会比"全宽"版更早折行/省略。若要缓解，可把四颗改成 40dp（项目里 `TopBarActionBox`/`ManageActionIcon` 已有 40dp 先例），代价是低于 48dp 的推荐触摸目标 —— 留给用户拍板。
+
+**未动**：卡片底色/圆角/内外边距、标题 `maxLines = 2`、元数据 `maxLines = 2`、来源胶囊样式与 `padding(top)` 必须排在 `background` 之前的顺序、简介块。
+
+**验证**：`.\gradlew.bat :app:assembleDebug :app:testDebugUnitTest` BUILD SUCCESSFUL（25s，无 Kotlin 编译告警）；单测 **87 suite / 686 用例 / 0 失败 / 0 错误 / 1 跳过**；i18n 硬闸门 `ui 层 0 处 / 0 文件`；零注释。**未真机走查**（用户禁止操作其手机）。
+
+**文档同步**：`skill/avbox-mobile-ui-spec.md` §4.4 —— §4.4 首条（标题卡片结构）与那条动作行规范均改写（后者由"卡片底部动作行"改为"标题行的四颗动作图标"，含四条约束与宽度代价）。`.codebuddy` / `.trae` 两镜像已同步。
+**补丁 11（同日，用户要求「给追剧控件加上效果，点击后出现弹出式菜单，左边是周一到周日、右边是时间 24 小时制、右上角是保存」）：追剧入口接上时间选择面板**
+
+**动手前先问的两件事（都已确认）**：①**保存不落库** —— 用户明确选"只关面板"，故**没有新增 KV 键、`KVKeySpec` 未动**，面板状态仅为本地 `rememberSaveable`，重启无痕；②时间粒度 = **整点 00–23**，另按用户"在合适位置可以加上手动输入时间"补了一行手动输入。
+
+**形态选型**：项目已有统一弹层 `AVBoxBottomSheet`（`DetailActivity` 已包 `SheetHostScaffold` ⇒ 会经 `LocalSheetHost` 路由到窗口根），**没有新造弹窗组件**。用 `title = null` + `headerContent` 自定义 `Row` 承载"左标题 + 右上角保存"（`AVBoxBottomSheet` 的 `headerContent` 与 `title` 是**上下堆叠**而非左右并排，所以要自己排这一行）；`isScrollable = false`，两列各自滚动。
+
+**新增文件** `ui/components/FollowScheduleSheet.kt`（~180 行）：左列 7 个星期（`weekday_mon`…`weekday_sun`）、右列 `00`–`23` 整点，等宽两列、各 `height(296dp)` + `verticalScroll`；选中态 = `primaryContainer` 圆角底；底部整行 = 「时间」标签 + `OutlinedTextField` 手动输入（过滤为数字/冒号、≤5 字符，解析出的小时在 `0..23` 时反向点亮右列；点右列则清空手动输入 —— 手动输入是"覆盖值"，两者**单向同步**）。
+
+**改动文件** `ui/activity/DetailContent.kt`：追剧那颗 `IconButton` 的 `onClick = { }` 换成 `{ followScheduleOpen = true }`，新增 `followScheduleOpen` 状态与函数尾部的 `if (followScheduleOpen) FollowScheduleSheet(...)`，加一行 import。
+
+**新增文案 9 条 × 3 语**：`weekday_mon`…`weekday_sun`（周一…/Mon…/週一…）、`follow_schedule_time`（时间/Time/時間）、`follow_schedule_time_hint`（如 21:30 / e.g. 21:30 / 如 21:30）。`values-zh-rHK` 是**差异层**，`週一` 等与繁体基础层同形，按约定不落（回落 `values-b+zh+Hant`）。
+
+**验证**：`.\gradlew.bat :app:assembleDebug :app:testDebugUnitTest` BUILD SUCCESSFUL（30s）；单测 **87 suite / 686 用例 / 0 失败 / 0 错误 / 1 跳过**；i18n 硬闸门 `ui 层 0 处 / 0 文件`（新组件零中文字面量，全部走 `stringResource`）；零注释；新增 4 个抽查键在 `values`/`values-en`/`values-b+zh+Hant` 均 4/4。**未真机走查**（用户禁止操作其手机）。
+
+**文档同步**：`skill/avbox-mobile-ui-spec.md` §4.4 —— 动作行那条的第 ④ 点由"追剧暂不接入功能"改为"已接入面板"，并新增一条「追剧时间面板」规范（含形态选型、两列/手动输入的交互口径、"刻意不落库"的边界）。`.codebuddy` / `.trae` 两镜像已同步。
+**补丁 12（同日，用户澄清「我指的是设置页面那种弹出式菜单。没办法做到吗」）：追剧面板由 bottom sheet 改为锚在图标上的下拉菜单**
+
+**用户指的是设置页 / 搜索页那套 `AVBoxOptionMenu`（锚在控件旁的 `DropdownMenu`），不是从底部升上来的 sheet**。能做到 —— 上一轮我按"弹出式菜单"字面选了 `AVBoxBottomSheet`，是理解偏差。
+
+**关键障碍与解法（本补丁的核心）**：`AVBoxOptionMenu` 只吃 `List<String>`，装不下"两列选择器 + 保存钮"，所以直接用 `DropdownMenu` 承载自定义内容、只沿用它的容器样式（`surfaceContainer` + `shapes.medium` + 4dp 阴影）。但 M3 的 `DropdownMenuContent` 挂着 **`.width(IntrinsicSize.Max)`**（material3 1.5.0-alpha28 `Menu.kt:1849`，已从 Gradle 缓存的 sources jar 核实）—— 而菜单里要放**可滚动的列**。若给滚动列用 `weight(1f)`，宽度 intrinsic 查询会下探到 `Modifier.verticalScroll` 上（该版本不支持），是崩溃隐患；改成 **`Modifier.width(124.dp)`** 后，`SizeNode` 会**就地回答** intrinsic 查询、不再下探 ⇒ 安全。这条是本轮最值钱的结论，已写进 §4.4。
+
+**改动**：删 `ui/components/FollowScheduleSheet.kt`，新增 `ui/components/FollowScheduleMenu.kt`（`FollowScheduleMenu(expanded, onDismissRequest, modifier)`）；`ui/activity/DetailContent.kt` 把追剧那颗 `IconButton` 包进 `Box`，菜单放在 `Box(Modifier.align(Alignment.BottomEnd))` 里（沿用 `SettingsOptionMenuRow` 的锚点口径 —— 锚点用整个 `IconButton` 会让菜单贴图标**左缘**，落右下角才右缘对齐、向左展开），并删掉函数尾部那段 `if (followScheduleOpen) FollowScheduleSheet(...)`，补 `Box` 与 `FollowScheduleMenu` 两个 import。
+
+**三处设计调整（都是被"菜单"这个形态逼出来的）**：①**手动输入从菜单底部挪到首行下方** —— `DropdownMenu` 是独立 Popup、不吃 `imePadding`（只有项目自己的 `AVBoxBottomSheet` 做了键盘避让），放底部会被键盘盖住；②**状态声明必须写在 `DropdownMenu` 之外**（放在 `FollowScheduleMenu` 函数体而非 content lambda 里），否则菜单收起时随内容离开组合、再开选择被重置；③两列尺寸定为 `124dp × 244dp`、菜单内容宽 `264dp`。
+
+**交互与文案未变**：左列 7 个星期、右列 `00`–`23` 整点、首行右上「保存」、手动输入单向同步（输入反向点亮右列；点右列清空输入）；**依然刻意不落库**（保存 = 关菜单，KV / `KVKeySpec` 未动）。
+
+**验证**：`.\gradlew.bat :app:assembleDebug :app:testDebugUnitTest` BUILD SUCCESSFUL（27s）；单测 **87 suite / 686 用例 / 0 失败 / 0 错误 / 1 跳过**；i18n 硬闸门 `ui 层 0 处 / 0 文件`；零注释；`FollowScheduleSheet` 全仓零残留。**未真机走查**（用户禁止操作其手机）。
+
+**文档同步**：`skill/avbox-mobile-ui-spec.md` §4.4 —— 动作行第 ④ 点与「追剧时间面板」条改写为「追剧时间菜单」，含三条 ⚠️（intrinsic 宽度、IME 不吃、状态位置）。`.codebuddy` / `.trae` 两镜像已同步。
+**补丁 13（同日，用户带截图报「记录页面的无状态图标好像没有在屏幕居中」）：全屏空态/加载态补扣底部导航预留**
+
+**根因（不是记录页独有，是全项目性的）**：开液态玻璃时底栏是**悬浮覆盖层**，`MainScreen` 会给页面下发 `pageContentPadding`（`NavMetrics.reserveDp`）。但 `navBottom` **只被加进 `LazyColumn`/`LazyVerticalGrid` 的 `contentPadding.bottom`**（`HistoryPage.kt:109`、`CollectPage.kt:222`、`HomePage.kt:293`、`SettingsPage.kt:229`），**全屏居中的 `Box` / `LoadStateBox` 一处都没扣**。于是空态/加载态的居中基准变成"分段控件下方 → 屏幕最底"，而视觉可用区其实到悬浮底栏上沿为止 ⇒ 内容整体**偏低约 `navBottom/2`**。按截图反推 ≈50dp，与 `FLOATING_OVERLAY_DP`(76dp) + 手势条 ÷2 吻合。
+
+**修法**：全屏态统一 `Modifier.fillMaxSize().padding(bottom = navBottom)`，与顶部的 `padding(top = topPad)` 成对。**已修 8 处**：`HistoryTab` 的无痕 / 加载 / 空态 3 处、`CollectTab` 的加载 / 空态 2 处、`FollowingPage` 的占位空态 1 处、`HomePage` 的 `pageLoading` 与「尚未配置订阅接口」引导态 2 处。`HistoryPage.kt` 顺带补回 `layout.padding` import（拆 tab 时被移除过）。
+
+**为什么可以无脑照抄**：`navBottom` 在**非玻璃档恒为 0**（那时底栏走 Scaffold 的 `bottomBar` 占真实空间、`pageContentPadding` 也是 `PaddingValues(0)`）⇒ 这一句对旧形态零影响。
+
+**范围说明**：用户只报了记录页，但 `HomePage` 的引导态是**同一个缺陷**（`HomePage.kt:246` 原本只有 `padding(top = topPad)`），一并修了；`FollowingPage` 是自己新加的页面、同病。**未动**：配置管理 / 搜索 / 主题 / 播放 / 偏好 / 栏目等页的无该缺陷处（它们的全屏态或不存在、或本就有别的容器约束）。
+
+**验证**：`.\gradlew.bat :app:assembleDebug :app:testDebugUnitTest` BUILD SUCCESSFUL（27s）；单测 **87 suite / 686 用例 / 0 失败 / 0 错误 / 1 跳过**；i18n 硬闸门 `ui 层 0 处 / 0 文件`；零注释；已核对 8 处 `bottom = navBottom` 全部到位。**未真机走查**（用户禁止操作其手机）。
+
+**文档同步**：`skill/avbox-mobile-ui-spec.md` §5「内容留白」条新增一条「底部同理」的 ⚠️ 规范（含根因、修法、8 处清单与"非玻璃档为 0 可无脑照抄"）。`.codebuddy` / `.trae` 两镜像已同步。
+**补丁 14（同日，用户给参考图要求「将追剧控件点击后的弹窗改为 bottomsheet，左上角是图标，旁边是追剧提醒…面板背景色 surfaceContainer、卡片色 surfaceBright」）：追剧提醒面板按参考图重做**
+
+**一天内第三次换形态**（bottom sheet → 设置页那种下拉菜单 → 按参考图重做的 bottom sheet）。用户给了一张「追剧提醒」参考图并指明配色，故按图重排。
+
+**改动**：删 `ui/components/FollowScheduleMenu.kt`，新增 `ui/components/FollowReminderSheet.kt`；`ui/activity/DetailContent.kt` 把追剧那颗 `IconButton` 的 `Box` 锚点包裹撤掉（回退成裸 `IconButton`）、改回函数尾部 `if (followScheduleOpen) FollowReminderSheet(...)`，并清掉不再使用的 `layout.Box` import。
+
+**结构（照参考图）**：头部（28dp `ic_tab_following` + 「追剧提醒」`titleLarge` + 右上 `IconButton(✕)`）→ 副标题 → 「更新日」区（标题 `titleMedium` + 提示 `bodySmall` + **7 个星期 chip 一行等宽**）→ 「提醒时间」区 + **时间卡行**（`Icons.Filled.Schedule` + `21:30` + `ChevronRight`，点一下**内联展开** 24 小时整点列表 + 手动输入）→ 摘要卡（`Icons.Filled.Notifications` + `follow_summary`）→ 全宽 `Button`「保存设置」。**配色按用户指定**：面板 `containerColor = surfaceContainer`，所有卡片/未选 chip 一律 `MaterialTheme.colorScheme.cardContainer`（= `surfaceBright`，项目既有别名，见 `ui/theme/Color.kt`）。
+
+**两个设计决定（参考图上没有、我做的取舍，已向用户说明）**：①**星期为多选、但至少留一天**（点最后一个已选 chip 不取消）——否则摘要「每%1$s %2$s 提醒我更新」会落成空话；②**参考图摘要卡上的「编辑」链接没做**——编辑区就在它正上方，点了无处可去。默认值取 **周一 + 21:30**，与参考图一致。
+
+**新增/删除文案**：新增 10 条 × 三语（`common_close`、`follow_reminder_title`、`follow_reminder_subtitle`、`follow_update_day`、`follow_update_day_hint`、`follow_reminder_time`、`follow_reminder_time_hint`、`follow_summary`、`follow_days_separator`、`follow_save_settings`），删除已无引用的 `follow_schedule_time`（`follow_schedule_time_hint` 保留、手动输入仍在用）。星期名沿用上一轮的 `weekday_*`，不新增单字文案。
+
+**⚠️ 本轮踩的编译坑（已写进 §4.4）**：`joinToString` **不是 inline 函数**，其 transform lambda 里不能调 `stringResource` ⇒ 报 `@Composable invocations can only happen from the context of a @Composable function`。修法 = 先把星期文案 `map { stringResource(it) }` 成 `List<String>`（`map` 是 inline、可以在里面调），再 `filterIndexed` + `joinToString(separator)`。
+
+**关闭/保存路径**：都走 `LocalSheetDismiss.current()`（动画收弹，与 `ThemeColorPickerSheet` / `RepoSwitchSheet` 同款），不再用裸 `onDismissRequest`。**依然刻意不落库**（KV / `KVKeySpec` 未动）。
+
+**验证**：`.\gradlew.bat :app:assembleDebug :app:testDebugUnitTest` BUILD SUCCESSFUL（1m16s，首跑因上述 inline 坑失败一次、已修）；单测 **87 suite / 686 用例 / 0 失败 / 0 错误 / 1 跳过**；i18n 硬闸门 `ui 层 0 处 / 0 文件`；零注释；新增 10 条键在三语文件里均 10/10；`FollowScheduleMenu` / `FollowScheduleSheet` 全仓零残留。**未真机走查**（用户禁止操作其手机）。
+
+**文档同步**：`skill/avbox-mobile-ui-spec.md` §4.4 —— 「追剧时间菜单」整条改写为「追剧提醒面板」（形态/结构/四条 ⚠️），动作行第 ④ 点同步。`.codebuddy` / `.trae` 两镜像已同步。
+**补丁 15（同日，用户看装机截图后要求「改一下激活反馈颜色…周一周二这些改成和硬解码这些一样，保存设置控件不变，右上角的 x 删掉」）：星期 chip 配色对齐播放器面板 + 删掉关闭钮**
+
+**改动（单文件 `ui/components/FollowReminderSheet.kt` + 三语 strings）**：
+①**星期 chip 的选中色由 `primary`/`onPrimary` 改为 `primaryContainer`/`onPrimaryContainer`**，未选文字由 `onSurfaceVariant` 改为 `onSurface`，圆角由 14dp 改为 **12dp** —— 逐条对齐用户指的那颗参考控件：播放器面板的「硬解码」= `player/ui/PlayerSheets.kt` 的 `SheetButton`（选中 `primaryContainer`/`onPrimaryContainer`、未选 `surfaceBright`/`onSurface`、`ItemShape = RoundedCornerShape(12.dp)`）。用户说的"激活反馈颜色"就是指这个：亮色 `primary` 放在这排 chip 上过亮，而参考图里「播放参数」胶囊才是 `primary`，两者本就不同档。
+②**删掉头部右上角的 ✕**（含 `Icons.Filled.Close`、`IconButton` 两个 import 与新增的 `common_close` 文案 —— 三语一并删，避免留死资源），标题不再需要 `weight(1f)`。关闭途径剩：保存设置 / 点遮罩 / 下滑 / 系统返回。
+③**「保存设置」按钮按要求不动**（仍是 M3 `Button`、全宽、默认 primary 配色）。
+
+**核对过没动的**：面板 `surfaceContainer`、卡片 `cardContainer`(=surfaceBright)、时间卡行、摘要卡、24 小时列表的选中态（本来就是 `primaryContainer`/`onPrimaryContainer`，与新 chip 同档，无需改）、`LocalSheetDismiss` 收弹路径、依然不落库。
+
+**验证**：`.\gradlew.bat :app:assembleDebug :app:testDebugUnitTest` BUILD SUCCESSFUL（26s）；单测 **87 suite / 686 用例 / 0 失败 / 0 错误 / 1 跳过**；i18n 硬闸门 `ui 层 0 处 / 0 文件`；零注释；`common_close` 三语已无声明；`Icons.Filled.Close` / `IconButton` 在该文件各 0 处。**未真机走查**（用户禁止操作其手机）。
+
+**文档同步**：`skill/avbox-mobile-ui-spec.md` §4.4「追剧提醒面板」条 —— 头部件记明 ✕ 已删与关闭途径、星期 chip 记明对齐 `SheetButton` 的四项（含"不要用 `primary`/`onPrimary`"的反例）。`.codebuddy` / `.trae` 两镜像已同步。
+**补丁 16（同日，用户看光主题装机截图后要求「追剧提醒弹窗面板将副标题比如选择每周哪些天提醒这些删掉，然后在各自项之间加上分隔线」）：去掉区提示 + 组间加分隔线**
+
+**改动（单文件 `ui/components/FollowReminderSheet.kt` + 三语 strings）**：
+①**删掉两条"选择…"区提示**（`follow_update_day_hint`「选择每周哪些天提醒」/ `follow_reminder_time_hint`「选择提醒的具体时间」，三语声明一并删除）——它们与区标题重复。`ReminderSectionTitle` 随之从"标题 + 提示"的 `Column` 收成单行 `Text`（`titleMedium`，`top = 16.dp`）。⚠️ **头部那条 `follow_reminder_subtitle`（「设置后，会在指定时间提醒你更新」）保留** —— 用户举的例子是"选择每周哪些天提醒"这类**与区标题重复**的提示，而头部那条是面板作用说明、删了会丢信息；已向用户说明，要删也是一行。
+②**组间加分隔线**：新增 `ReminderGroupDivider` = `HorizontalDivider`（`thickness = 1.dp`、`color = outlineVariant`）+ 左右 20dp / 上下 6dp 内边距，放在 **「更新日」chips 之后**与**「提醒时间」块之后**（3 个组〔更新日 / 提醒时间 / 摘要卡〕之间 2 条）。这是沿用项目既有的"组间分隔线"范式——播放器参数面板的 `ParamsGroupDivider`（那边 `vs_15` + 线 + `vs_15`）；这里因为区标题自带 `top = 16.dp`，线本身只留 6dp。**顺带**：摘要卡上方原来的 `top = 20.dp` 撤掉（改由线的下内边距承担），避免两处都留。
+
+**未动**：面板 `surfaceContainer`、卡片 `cardContainer`、星期 chip 配色（上一轮刚对齐「硬解码」）、时间卡行与展开逻辑、24 小时列表、摘要卡、保存按钮、`LocalSheetDismiss` 收弹、不落库。
+
+**验证**：`.\gradlew.bat :app:assembleDebug :app:testDebugUnitTest` BUILD SUCCESSFUL（26s）；单测 **87 suite / 686 用例 / 0 失败 / 0 错误 / 1 跳过**；i18n 硬闸门 `ui 层 0 处 / 0 文件`；零注释；两个被删的键在 strings 与代码里均 0 命中。**未真机走查**（用户禁止操作其手机）。
+
+**文档同步**：`skill/avbox-mobile-ui-spec.md` §4.4「追剧提醒面板」条 —— ②改写（记明删了哪两条、头部副标题为何保留），并新增一条「组间分隔线」规范（位置、尺寸来源、摘要卡 padding 的连带调整）。`.codebuddy` / `.trae` 两镜像已同步。
+**补丁 17（同日，用户要求「设置后，会在指定时间提醒你更新这一行也删除」）：删掉追剧提醒面板的头部副标题**
+
+上一轮我判断那条头部副标题不属于"与区标题重复的提示"、把它留下了，用户明确要求一并删除。
+
+**改动（单文件 `ui/components/FollowReminderSheet.kt` + 三语 strings）**：`headerContent` 从「`Row`(图标+标题) + 副标题 `Text`」的 `Column` 收成**只有一行 `Row`**（28dp `ic_tab_following` + 「追剧提醒」`titleLarge`），内边距由 `start = 20.dp, end = 8.dp`（原为给 ✕ 留位）改为**左右各 20dp**；`follow_reminder_subtitle` 三语声明一并删除。**结果：本面板现在只有区标题、没有任何说明性小字。**
+
+**未动**：面板与卡片配色、星期 chip 配色、时间卡行与展开逻辑、24 小时列表、摘要卡、保存按钮、上一轮加的组间分隔线、`LocalSheetDismiss` 收弹、不落库。
+
+**验证**：`.\gradlew.bat :app:assembleDebug :app:testDebugUnitTest` BUILD SUCCESSFUL（26s）；单测 **87 suite / 686 用例 / 0 失败 / 0 错误 / 1 跳过**；i18n 硬闸门 `ui 层 0 处 / 0 文件`；零注释；`follow_reminder_subtitle` 在 strings 与代码里均 0 命中。**未真机走查**（用户禁止操作其手机）。
+
+**文档同步**：`skill/avbox-mobile-ui-spec.md` §4.4「追剧提醒面板」条 —— ①改写（头部两轮删减的完整记录 + 关闭途径）与②那句"头部副标题刻意保留"改为"也已在同日后一轮删除 ⇒ 本面板现在只有区标题、没有任何说明性小字"。`.codebuddy` / `.trae` 两镜像已同步。

@@ -1,5 +1,4 @@
 <resources>
-    <!-- 香港差異層:只放港台用詞不同的條目,其餘回落 values-b+zh+Hant(台灣基礎層) -->
     <string name="subtitle_local">選擇本地字幕</string>
     <string name="common_vod">點播</string>
     <string name="common_load_failed_network">載入失敗，請檢查網絡</string>
@@ -71,4 +70,8 @@
     <string name="toast_source_auto_disabled">該源無法使用，會導致死機，已自動停用（可在設定管理中重新啟用）</string>
     <string name="dialog_source_disabled_message">「%1$s」先前導致應用程式死機，已被自動停用。\n\n若該源已經修好，可以重新啟用；否則切換後很可能再次閃退。</string>
     <string name="settings_group_preload_cache">預載與緩存</string>
+    <string name="tab_records">記錄</string>
+    <string name="tab_following">追劇</string>
+    <string name="tab_mine">我的</string>
+    <string name="following_empty">功能開發中，敬請期待</string>
 </resources>

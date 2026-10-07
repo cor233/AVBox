@@ -2,11 +2,11 @@ package com.github.tvbox.osc.ui.page
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.github.tvbox.osc.api.ApiConfig
 import com.github.tvbox.osc.bean.AbsXml
 import com.github.tvbox.osc.bean.Movie
 import com.github.tvbox.osc.bean.MovieSort
 import com.github.tvbox.osc.sourcedata.SourceViewModel
-import com.github.tvbox.osc.sourcedata.observeAsFlow
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -44,6 +44,7 @@ class PartitionListVM : ViewModel() {
     var sort: MovieSort.SortData? = null
         private set
 
+    private var sourceKey: String? = null
     private val scope = viewModelScope
     private var initialized = false
 
@@ -56,7 +57,7 @@ class PartitionListVM : ViewModel() {
 
     init {
         scope.launch {
-            actionViewModel.actionResult.observeAsFlow().collect { json ->
+            actionViewModel.actionResult.flow.collect { json ->
                 val msg = json?.optString("msg").orEmpty()
                 if (msg.isNotEmpty()) actionMessages.tryEmit(msg)
                 refresh()
@@ -66,11 +67,6 @@ class PartitionListVM : ViewModel() {
 
     private class LoaderResult(val stale: Boolean, val absXml: AbsXml?)
 
-    /**
-     * 收集作用域随 loader 生命周期:release() 取消它即摘掉观察者(等价旧 removeObserver)。
-     * ⚠️ 必须在下面 `loader` 之前初始化(匿名对象的 init 用它);`SupervisorJob(parent)` 是为了
-     * `cancel()` 只杀这个子 Job 而不带上 viewModelScope,`Main.immediate` 是因为 `observeForever` 有主线程断言。
-     */
     private val loaderScope = CoroutineScope(
         SupervisorJob(scope.coroutineContext[Job]) + Dispatchers.Main.immediate
     )
@@ -87,7 +83,7 @@ class PartitionListVM : ViewModel() {
 
         init {
             loaderScope.launch {
-                svm.listResult.observeAsFlow().collect { abs ->
+                svm.listResult.flow.collect { abs ->
                     val current = pending
                     pending = null
                     busy = false
@@ -103,16 +99,15 @@ class PartitionListVM : ViewModel() {
             loaderScope.cancel()
         }
 
-        fun request(page: Int, data: MovieSort.SortData, onDone: (LoaderResult) -> Unit) {
+        fun request(page: Int, data: MovieSort.SortData, sourceKey: String?, onDone: (LoaderResult) -> Unit) {
             pending?.invoke(LoaderResult(true, null))
             pending = onDone
             busy = true
-            svm.getList(data, page)
+            svm.getList(sourceKey, data, page)
         }
     }
 
     override fun onCleared() {
-        // 两个收集器都不用手工摘:loaderScope 在这里取消,actionViewModel 的随 viewModelScope 取消(onCleared 返回后)
         loader.release()
     }
 
@@ -130,6 +125,7 @@ class PartitionListVM : ViewModel() {
         if (initialized) return
         initialized = true
         this.sort = sort
+        sourceKey = ApiConfig.get().getHomeSourceBean().key
         request(FIRST_PAGE)
     }
 
@@ -151,7 +147,7 @@ class PartitionListVM : ViewModel() {
         val data = sort ?: return
         scope.launch {
             val result = suspendCancellableCoroutine<LoaderResult> { cont ->
-                loader.request(page, data) { r -> if (cont.isActive) cont.resume(r) }
+                loader.request(page, data, sourceKey) { r -> if (cont.isActive) cont.resume(r) }
             }
             if (!result.stale) applyResult(page, result.absXml)
         }

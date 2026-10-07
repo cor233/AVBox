@@ -11,19 +11,17 @@ import com.github.tvbox.osc.R
 import com.github.tvbox.osc.api.ApiConfig
 import com.github.tvbox.osc.base.App
 import com.github.tvbox.osc.bean.LiveChannelItem
+import com.github.tvbox.osc.player.state.PlayState
 import com.github.tvbox.osc.util.BootGuard
 import com.github.tvbox.osc.util.HawkConfig
 import com.github.tvbox.osc.util.HistoryHelper
 import com.github.tvbox.osc.util.KV
 import com.github.tvbox.osc.util.LanguageManager
 import com.google.gson.JsonArray
-import xyz.doikki.videoplayer.player.VideoView
 import java.util.ArrayList
 
-/** 直播页三态:加载中 / 空 / 就绪 */
 internal enum class PageState { LOADING, EMPTY, READY }
 
-/** 频道信息条的数据 */
 internal data class ChannelInfoUi(
     val name: String = "",
     val num: Int = 0,
@@ -34,33 +32,24 @@ internal data class ChannelInfoUi(
     val nextEpgTitle: String = "",
 )
 
-/**
- * 直播页的界面状态与设置项分发。需要动播放器/频道列表的动作一律经 [Host] 回调宿主,
- * 本类不持有 Activity/Context,只持有可观察状态与 KV 配置。
- */
 internal class LivePlayViewModel : ViewModel() {
 
-    /** 资源文案:ViewModel 无 Context,走 LanguageManager(Application 的 base 切语言不会重挂) */
     private fun str(resId: Int, vararg args: Any): String {
         val app = App.getInstance() ?: return ""
         return LanguageManager.localized(app).getString(resId, *args)
     }
 
-    /** 设置项分发需要宿主配合的动作(播放器、频道列表都在宿主手里) */
     internal interface Host {
-        /** 当前频道;无频道返回 null */
         fun currentChannelItem(): LiveChannelItem?
 
         fun currentPlayerScale(): Int
 
         fun currentPlayerType(): Int
 
-        /** 切线路后按新线路重播当前频道 */
         fun replayCurrentChannel()
 
         fun applyPlayerScale(position: Int)
 
-        /** 切换播放内核并重播 */
         fun applyPlayerType(position: Int)
 
         fun releasePlayerKernel()
@@ -69,7 +58,6 @@ internal class LivePlayViewModel : ViewModel() {
 
         fun refreshNetSpeedOverlay()
 
-        /** 切组/切配置后重建频道列表并起播 */
         fun refreshChannelListAndPlay(channelName: String?, sourceIndex: Int)
 
         fun setEmptyChannelList(releasePlayer: Boolean)
@@ -81,10 +69,8 @@ internal class LivePlayViewModel : ViewModel() {
         fun postToMain(action: Runnable)
     }
 
-    // ---------- 界面状态 ----------
-
     var pageState by mutableStateOf(PageState.LOADING)
-    var playState by mutableStateOf(VideoView.STATE_IDLE)
+    var playState by mutableStateOf(PlayState.IDLE)
     var snapshotVisible by mutableStateOf(false)
     var snapshotBitmap by mutableStateOf<Bitmap?>(null)
     var fullScreen by mutableStateOf(false)
@@ -112,10 +98,7 @@ internal class LivePlayViewModel : ViewModel() {
     var currentChannelGroupIndex by mutableIntStateOf(0)
     var currentLiveChannelIndex by mutableIntStateOf(-1)
 
-    /** 切组/切配置的请求代号:响应回来时对不上就作废(用户可能连点了好几次) */
     private var liveConfigRequestId = 0
-
-    // ---------- 设置项分发 ----------
 
     fun onSettingClicked(groupIndex: Int, position: Int, host: Host) {
         if (groupIndex in 0..2 && host.currentChannelItem() == null) {
@@ -172,14 +155,12 @@ internal class LivePlayViewModel : ViewModel() {
                     if (ApiConfig.isLiveFollowVod()) return
                     target = ""
                 } else {
-                    // 仓模式下这一组列的是仓里的子源,否则列配置历史;取值统一走 ApiConfig,不在 UI 里判断偏移
                     target = ApiConfig.get().getLiveApiHistoryUrl(position)
                     if (target.isEmpty() || target == KV.get(HawkConfig.LIVE_API_URL, "")) return
                 }
                 val configChannelName = preferredRefreshChannelName(host)
                 val configSourceIndex = preferredRefreshSourceIndex(host)
                 val requestId = ++liveConfigRequestId
-                // 黑名单里的坏源选了就崩;这一组只是个切换列表(没有二次确认的位置),直接拒掉并指路
                 if (target.isNotEmpty() && BootGuard.isDisabledSource(target)) {
                     host.toast(str(R.string.live_source_auto_disabled))
                     return
@@ -189,10 +170,8 @@ internal class LivePlayViewModel : ViewModel() {
                     HistoryHelper.clearLiveApiLineList()
                 } else {
                     HistoryHelper.setLiveApiHistory(target)
-                    // 换到仓列表之外的地址 ⇒ 退出仓模式
                     if (!HistoryHelper.isLiveApiLineUrl(target)) HistoryHelper.clearLiveApiLineList()
                 }
-                // 切直播源:旧源的 hosts 映射立即失效,不等这次加载的结果
                 ApiConfig.get().clearLiveHosts()
                 ApiConfig.get().invalidateLiveConfig()
                 ApiConfig.get().refreshLiveApiHistoryItems()
@@ -204,20 +183,20 @@ internal class LivePlayViewModel : ViewModel() {
                         })
                     }
 
-                    override fun error(msg: String) {
+                    override fun error(msg: String?) {
                         host.postToMain(Runnable {
                             if (requestId != liveConfigRequestId || host.isFinishing()) return@Runnable
                             host.releasePlayerKernel()
                             ApiConfig.get().refreshLiveApiHistoryItems()
                             host.setEmptyChannelList(false)
-                            host.toast(msg)
+                            host.toast(msg ?: "")
                         })
                     }
 
-                    override fun notice(msg: String) {
+                    override fun notice(msg: String?) {
                         host.postToMain(Runnable {
                             if (requestId != liveConfigRequestId || host.isFinishing()) return@Runnable
-                            host.toast(msg)
+                            host.toast(msg ?: "")
                         })
                     }
                 })
@@ -226,7 +205,6 @@ internal class LivePlayViewModel : ViewModel() {
         settingsVersion++
     }
 
-    /** 切换前记录"用户当前在看哪个频道/哪条线路",切完要回到同一个 */
     private fun preferredRefreshChannelName(host: Host): String? {
         host.currentChannelItem()?.let { return it.channelName }
         return KV.get(HawkConfig.LIVE_CHANNEL, "")
