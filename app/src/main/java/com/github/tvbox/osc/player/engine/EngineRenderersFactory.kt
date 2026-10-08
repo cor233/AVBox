@@ -22,6 +22,7 @@ class EngineRenderersFactory(
     context: Context,
     private val subtitleDelayUsProvider: () -> Long,
     private val videoRendererSink: MutableList<Renderer>,
+    private val videoRendererIndices: MutableList<Int>,
     private val dynamicScheduling: Boolean,
 ) : DefaultRenderersFactory(context) {
 
@@ -72,6 +73,7 @@ class EngineRenderersFactory(
             out,
         )
         for (i in firstRendererIndex until out.size) {
+            videoRendererIndices.add(i)
             videoRendererSink.add(out[i])
         }
     }

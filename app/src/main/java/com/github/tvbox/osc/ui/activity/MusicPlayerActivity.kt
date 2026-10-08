@@ -135,6 +135,7 @@ class MusicPlayerActivity : BaseActivity(), PlaybackPage {
         ui.collected = AppGraph.collectRepository.isVodCollect(sourceKey, vod.id)
         refreshMeta()
         syncLyric()
+        controller.setMusicAudioOnly(true)
         ready = true
         main.post(positionTick)
     }
@@ -142,6 +143,8 @@ class MusicPlayerActivity : BaseActivity(), PlaybackPage {
     override fun renderSlot(): ViewGroup = renderSlot
 
     override fun viewBridge(): PlaybackViewBridge = bridge
+
+    override fun isAudioOnlyPage(): Boolean = true
 
     override fun onServiceStopped() {
         main.removeCallbacksAndMessages(null)
@@ -152,6 +155,7 @@ class MusicPlayerActivity : BaseActivity(), PlaybackPage {
         super.onResume()
         if (!ready) return
         LOG.i("echo-music page onResume lifecyclePaused=$lifecyclePaused playing=${player.isPlaying} audioOnly=${controller.isConfirmedAudioOnly()}")
+        controller.setMusicAudioOnly(true)
         host.hostResume()
         main.removeCallbacks(positionTick)
         main.post(positionTick)
@@ -173,6 +177,7 @@ class MusicPlayerActivity : BaseActivity(), PlaybackPage {
         if (ready) {
             PlayerTipBridge.hide()
             syncHistory()
+            controller.setMusicAudioOnly(false)
             engine.detach(this)
         }
         super.onDestroy()

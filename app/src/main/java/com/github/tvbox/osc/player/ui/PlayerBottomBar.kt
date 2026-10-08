@@ -44,9 +44,13 @@ import com.github.tvbox.osc.R
 import com.github.tvbox.osc.api.ApiConfig
 import com.github.tvbox.osc.player.state.PlayerActions
 import com.github.tvbox.osc.player.state.PlayerUiState
+import com.github.tvbox.osc.util.LOG
 import com.github.tvbox.osc.util.PlayerUtils.stringForTime
 
 private const val SEEK_MAX = 1000
+
+// 诊断用：上一次实际绘制的进度比例，仅用于避免重复打印
+private var lastDrawnProgress = Float.NaN
 
 private val PreviewPlayPauseBox = 40.dp
 
@@ -399,6 +403,14 @@ private fun PlayerSeekRow(
                 state.seekPreviewPositionMs.toFloat() / state.duration * SEEK_MAX
             state.duration > 0 -> state.position.toFloat() / state.duration * SEEK_MAX
             else -> 0f
+        }
+        // 诊断：记录进度条实际绘制的比例。拖动时 seekPreview 每帧变化，跳过以免刷屏。
+        if (!state.dragging && lastDrawnProgress != progress) {
+            lastDrawnProgress = progress
+            LOG.i(
+                "echo-bar-draw: progress=$progress uiPosition=${state.position}"
+                    + " uiDuration=${state.duration} dragging=${state.dragging}",
+            )
         }
         val buffered: Float =
             if (state.duration > 0) state.bufferedPercent / 100f * SEEK_MAX else 0f

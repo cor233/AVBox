@@ -3,6 +3,7 @@ package com.github.tvbox.osc.ui.page
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -44,7 +45,7 @@ import com.github.tvbox.osc.ui.components.VodPoster
 import com.github.tvbox.osc.ui.theme.cardContainer
 import kotlin.math.roundToInt
 
-private const val PROGRESS_ENTER_DURATION_MS = 600
+internal const val PROGRESS_ENTER_DURATION_MS = 600
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -118,7 +119,7 @@ internal fun HistoryRow(
                             } else {
                                 item.sourceName
                             },
-                            style = MaterialTheme.typography.bodySmall,
+                            style = MaterialTheme.typography.bodyMedium,
                             color = if (unavailable) {
                                 MaterialTheme.colorScheme.error
                             } else {
@@ -126,7 +127,10 @@ internal fun HistoryRow(
                             },
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.widthIn(max = 160.dp),
+                            modifier = Modifier
+                                .widthIn(max = 160.dp)
+                                .background(MaterialTheme.colorScheme.surfaceContainer, RoundedCornerShape(50))
+                                .padding(horizontal = 10.dp, vertical = 4.dp),
                         )
                     }
                 }
@@ -201,7 +205,7 @@ internal fun HistoryRow(
 // i18n: keep —— 匹配源数据(片名/备注)里的"第N集/期",不能翻
 private val EpisodeTotalRegex = Regex("(\\d+)\\s*[集期]")
 
-private fun parseEpisodeTotal(note: String?): Int? {
+internal fun parseEpisodeTotal(note: String?): Int? {
     val total = note?.let { EpisodeTotalRegex.find(it)?.groupValues?.get(1)?.toIntOrNull() } ?: return null
     return total.takeIf { it in 2..1000 }
 }

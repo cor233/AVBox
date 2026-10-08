@@ -18,7 +18,7 @@ object HomeSettings {
     val layoutFlow: StateFlow<HomeLayout> = mutableLayout
 
     fun current(): HomeLayout =
-        if (KV.get(KEY_LAYOUT, VALUE_LAYOUT_VERTICAL) == VALUE_LAYOUT_HORIZONTAL) {
+        if (KV.get(KEY_LAYOUT, VALUE_LAYOUT_HORIZONTAL) == VALUE_LAYOUT_HORIZONTAL) {
             HomeLayout.Horizontal
         } else {
             HomeLayout.Vertical

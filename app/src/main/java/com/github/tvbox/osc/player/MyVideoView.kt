@@ -10,10 +10,12 @@ import android.view.View
 import android.widget.FrameLayout
 import android.widget.ImageView
 import coil3.request.Disposable
+import com.github.tvbox.osc.player.host.EngineSurfaceRenderViewFactory
 import com.github.tvbox.osc.player.host.EngineTextureRenderViewFactory
 import com.github.tvbox.osc.player.host.TextureRenderHost
 import com.github.tvbox.osc.player.state.PlayState
 import com.github.tvbox.osc.util.ImgUtil
+import com.github.tvbox.osc.util.LOG
 import master.flame.danmaku.controller.DrawHandler
 import master.flame.danmaku.danmaku.model.BaseDanmaku
 import master.flame.danmaku.danmaku.model.DanmakuTimer
@@ -87,13 +89,56 @@ class MyVideoView : AppPlayerView, DrawHandler.Callback {
     override fun factoryRenderType(): Int =
         if (renderViewFactory() is EngineTextureRenderViewFactory) 0 else 1
 
+    /**
+     * 当前渲染视图与「配置期望的渲染类型」是否不符。
+     * 与 [needsRenderRebuild] 的区别：基准是配置值而非渲染视图工厂——音乐页会把工厂改成
+     * Texture，用工厂作基准会在退出音乐页时误判为渲染类型变更。
+     */
+    fun isSurfaceRenderMismatch(configRenderType: Int): Boolean {
+        val render = renderView() ?: return false
+        return (configRenderType == 1) != (render.getView() is SurfaceView)
+    }
+
+    /**
+     * 把渲染视图还原成「配置期望的渲染类型」。
+     *
+     * 与 [ensureRenderViewMatchesConfig] 的区别：[ensureRenderViewMatchesConfig] 以渲染视图工厂为
+     * 基准，而音乐页的 [switchRenderToTexture] 会把工厂改成 Texture，退出音乐页时按工厂还原等于
+     * 又建一个 TextureView，随后 `alignInstanceConfigOnTakeover` 会据此误判成渲染类型变更并重建内核。
+     */
+    fun alignRenderViewToConfig(configRenderType: Int) {
+        val mismatch = isSurfaceRenderMismatch(configRenderType)
+        LOG.i(
+            "echo-render-align: config=$configRenderType"
+                + " view=" + (if (renderView() == null) "null" else if (renderIsSurface) "surface" else "texture")
+                + " mismatch=$mismatch kernel=" + (mMediaPlayer != null),
+        )
+        if (renderView() == null || mMediaPlayer == null) {
+            addDisplay()
+            return
+        }
+        if (!mismatch) return
+        setRenderViewFactory(
+            if (configRenderType == 1) {
+                EngineSurfaceRenderViewFactory.create()
+            } else {
+                EngineTextureRenderViewFactory.create()
+            },
+        )
+        addDisplay()
+    }
+
     fun switchRenderToTexture() {
         setRenderViewFactory(EngineTextureRenderViewFactory.create())
         addDisplay()
     }
 
     fun ensureRenderViewMatchesConfig() {
-        if (renderView() == null || mMediaPlayer == null) return
+        // 内核已释放时渲染视图为 null，此时正是需要按配置重建视图的时机，不能因为没内核就跳过。
+        if (renderView() == null || mMediaPlayer == null) {
+            addDisplay()
+            return
+        }
         val expectedSurface = renderViewFactory() !is EngineTextureRenderViewFactory
         if (expectedSurface == renderIsSurface) return
         addDisplay()

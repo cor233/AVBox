@@ -167,6 +167,7 @@ open class AppPlayerView @JvmOverloads constructor(
     protected open fun addDisplay() {
         mRenderView?.let { render ->
             mPlayerContainer.removeView(render.getView())
+            mMediaPlayer?.clearDisplay()
             render.release()
         }
         val render = mRenderViewFactory.createRenderView(context)
@@ -417,6 +418,15 @@ open class AppPlayerView @JvmOverloads constructor(
         mVideoController?.onVideoSizeCleared()
     }
 
+    /** 当前已下发给播放器的地址，用于判断播放器是否已完成内容切换。 */
+    val currentUrl: String?
+        get() = mUrl
+
+    open fun forgetVideoSize() {
+        mVideoSize[0] = 0
+        mVideoSize[1] = 0
+    }
+
     open fun setProgressKey(key: String?) {
         mProgressKey = key
     }
@@ -556,6 +566,7 @@ open class AppPlayerView @JvmOverloads constructor(
         if (host == null) return
         val parent = mPlayerContainer.parent as? ViewGroup
         if (parent === host) return
+        mMediaPlayer?.detachVideoSurface()
         parent?.removeView(mPlayerContainer)
         val lp = mPlayerContainer.layoutParams ?: LayoutParams(
             LayoutParams.MATCH_PARENT,
@@ -567,6 +578,7 @@ open class AppPlayerView @JvmOverloads constructor(
     open fun detachContainerFromHost() {
         val parent = mPlayerContainer.parent as? ViewGroup
         if (parent == null || parent === this) return
+        mMediaPlayer?.detachVideoSurface()
         parent.removeView(mPlayerContainer)
         addView(
             mPlayerContainer,

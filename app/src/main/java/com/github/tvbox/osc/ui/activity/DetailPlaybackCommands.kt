@@ -27,3 +27,11 @@ internal object DetailPlaybackCommands {
         val landscapeTarget = requested && !facts.portraitVideo
         return requested to (landscapeTarget != facts.landscape)
     }}
+
+internal object DetailPlaybackOrientation {
+
+    enum class Target { Portrait, Landscape }
+
+    fun target(sizeReady: Boolean, portraitVideo: Boolean): Target =
+        if (sizeReady && !portraitVideo) Target.Landscape else Target.Portrait
+}

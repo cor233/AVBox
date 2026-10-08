@@ -38,6 +38,12 @@ interface PlaybackViewBridge {
 
     fun isKernelErrored(): Boolean
 
+    /** 已下发给播放器的地址；与 webPlayUrl 不一致说明内容还在切换途中。 */
+    fun currentUrl(): String?
+
+    /** 通知控制器本轮内容地址，用于识别切换途中的陈旧进度。 */
+    fun onContentUrlSet(url: String?)
+
     fun releasePlayer()
 
     fun setTitle(title: String)
@@ -65,6 +71,10 @@ interface PlaybackViewBridge {
     fun switchRenderToTexture()
 
     fun ensureRenderViewMatchesConfig()
+
+    fun setAudioOnlyMode(audioOnly: Boolean)
+
+    fun isAudioOnlyMode(): Boolean
 
     fun playExternalPlayer(
         playerType: Int,

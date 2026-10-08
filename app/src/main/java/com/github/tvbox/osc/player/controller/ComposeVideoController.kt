@@ -23,6 +23,7 @@ import com.github.tvbox.osc.player.MyVideoView
 import com.github.tvbox.osc.player.state.LockVisibility
 import com.github.tvbox.osc.player.state.PlayerUiState
 import com.github.tvbox.osc.player.state.PlayState
+import com.github.tvbox.osc.util.LOG
 import com.github.tvbox.osc.player.state.VideoSizeGate
 import com.github.tvbox.osc.player.ui.PlayerOverlay
 import com.github.tvbox.osc.player.ui.VideoGestureHandler
@@ -158,6 +159,14 @@ class ComposeVideoController @JvmOverloads constructor(
 
     private var progressTicking = false
     private val progressRunnable by lazy { Runnable { onProgressTick() } }
+
+    /** 本轮内容已下发给播放器的地址，用于识别切换途中的陈旧进度数据。 */
+    private var contentUrl: String? = null
+
+    /** 内容地址下发到播放器时记录，供进度回调判断数据是否已属于新内容。 */
+    override fun onContentUrlSet(url: String?) {
+        if (!url.isNullOrEmpty()) contentUrl = url
+    }
     internal val idleHideRunnable by lazy {
         Runnable {
             if (state.overlayPanelOpen) actions.keepControlsAlive() else actions.hideBottom()
@@ -277,6 +286,7 @@ class ComposeVideoController @JvmOverloads constructor(
             state.locked = false
         }
         PlayState.PLAYING -> {
+            state.exitPaused = false
             initOrientationState()
             startProgress()
         }
@@ -304,7 +314,10 @@ class ComposeVideoController @JvmOverloads constructor(
 
     override fun onVideoSizeChanged(width: Int, height: Int) {
         state.videoSize = videoSizeGate.textFor(width, height)
+        onVideoSizeReady?.invoke(width, height)
     }
+
+    internal var onVideoSizeReady: ((Int, Int) -> Unit)? = null
 
     override fun onVideoSizeCleared() {
         videoSizeGate.onKernelContentReplaced()
@@ -327,8 +340,20 @@ class ComposeVideoController @JvmOverloads constructor(
     private fun onProgressTick(duration: Long, position: Long) {
         val durationMs = PlayerUtils.safeTimeMs(duration)
         val positionMs = PlayerUtils.safeTimeMs(position)
-        if (durationMs > 0) state.duration = durationMs
-        if (positionMs > 0 || durationMs > 0) state.position = positionMs
+        // 内容切换途中播放器仍装着上一部影片的媒体项，此时 duration/currentPosition 会如实
+        // 返回旧值。若直接写进 UI，进度条会闪回上一部影片的位置。
+        // setUrl 已在内容替换时把新地址记入 contentUrl，因此与播放器当前地址不一致即为陈旧数据。
+        val staleContent = contentUrl == null || !contentUrl.contentEquals(videoView?.currentUrl)
+        LOG.i(
+            "echo-progress-tick: rawDuration=$durationMs rawPosition=$positionMs"
+                + " uiPosition=${state.position} uiDuration=${state.duration}"
+                + " stale=$staleContent playing=${videoView?.isPlaying}"
+                + " state=${videoView?.playState}",
+        )
+        if (!staleContent) {
+            if (durationMs > 0) state.duration = durationMs
+            if (positionMs > 0 || durationMs > 0) state.position = positionMs
+        }
         PlaybackProgress.onProgress(positionMs, durationMs)
         if (skipEnd && positionMs != 0 && durationMs != 0) {
             val et = playerConfig?.optInt("et", 0) ?: 0
@@ -355,12 +380,23 @@ class ComposeVideoController @JvmOverloads constructor(
     internal fun savePlaybackProgress(notifyHistory: Boolean, seekTargetMs: Int = -1) {
         val viewDuration = runCatching { videoView?.duration ?: 0L }.getOrDefault(0L).toInt()
         val viewPosition = runCatching { videoView?.currentPosition ?: 0L }.getOrDefault(0L).toInt()
+        // viewDuration 为 0 说明换内容后还没就绪：此时 viewPosition 与 state.* 都可能属于上一部
+        // 影片，落库等于把旧进度写成新影片的进度。仅显式 seek 目标可以放行。
+        if (viewDuration <= 0 && seekTargetMs < 0) {
+            LOG.i("echo-progress-save: skip unresolved content viewDuration=$viewDuration")
+            return
+        }
         val duration = if (viewDuration > 0) viewDuration else state.duration
         val position = when {
             seekTargetMs >= 0 -> seekTargetMs
             viewDuration > 0 -> viewPosition
             else -> state.position
         }
+        LOG.i(
+            "echo-progress-save: viewDuration=$viewDuration viewPosition=$viewPosition"
+                + " uiPosition=${state.position} uiDuration=${state.duration}"
+                + " usedDuration=$duration usedPosition=$position",
+        )
         if (duration <= 0) return
         PlaybackProgress.flush(position, duration)
         if (notifyHistory) EventBus.getDefault().post(RefreshEvent(RefreshEvent.TYPE_HISTORY_REFRESH))
@@ -478,15 +514,23 @@ class ComposeVideoController @JvmOverloads constructor(
     override fun hidePauseRoot() = Unit
 
     override fun onNewPlayStarted() {
+        state.exitPaused = false
         val size = runCatching { videoView?.videoSize }.getOrNull() ?: intArrayOf(0, 0)
+        LOG.i(
+            "echo-progress-reset: onNewPlayStarted cleared uiPosition=${state.position}"
+                + " uiDuration=${state.duration}",
+        )
         state.videoSize = videoSizeGate.onNewSession(size[0], size[1])
         state.position = 0
         state.duration = 0
     }
-
     override fun setLifecyclePaused(paused: Boolean) {
         state.lifecyclePaused = paused
         if (paused) uiHandler.removeCallbacks(idleHideRunnable) else actions.keepControlsAlive()
+    }
+
+    override fun setExitPaused(paused: Boolean) {
+        state.exitPaused = paused
     }
 
     override fun resetSpeed() {

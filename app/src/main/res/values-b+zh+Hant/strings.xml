@@ -93,6 +93,7 @@
     <string name="home_no_source">尚未設定訂閱介面</string>
     <string name="home_load_timeout">首頁載入逾時，請檢查網路後重試</string>
     <string name="home_recommend">推薦</string>
+    <string name="home_all_categories">全部分類</string>
 
     <string name="search_settings">搜尋設定</string>
     <string name="search_no_site">未選擇搜尋站點，請到首頁「搜尋設定」裡勾選</string>
@@ -208,11 +209,10 @@
     <string name="weekday_fri">週五</string>
     <string name="weekday_sat">週六</string>
     <string name="weekday_sun">週日</string>
-    <string name="follow_schedule_time_hint">如 21:30</string>
-    <string name="follow_reminder_title">追劇提醒</string>
+    <string name="follow_reminder_title">追更記錄</string>
     <string name="follow_update_day">更新日</string>
-    <string name="follow_reminder_time">提醒時間</string>
-    <string name="follow_summary">每%1$s %2$s 提醒我更新</string>
+    <string name="follow_reminder_time">更新時間</string>
+    <string name="follow_summary">每%1$s %2$s 更新</string>
     <string name="follow_days_separator">、</string>
     <string name="follow_save_settings">儲存設定</string>
     <string name="common_collect">收藏</string>
@@ -245,7 +245,19 @@
 
     <string name="collect_clear">清空收藏</string>
     <string name="collect_empty">暫無收藏</string>
-    <string name="following_empty">功能開發中，敬請期待</string>
+    <string name="following_empty">暫無追劇</string>
+    <string name="following_week">本週</string>
+    <string name="following_section_week">本週 · %1$d 部要追更</string>
+    <string name="following_section_day">%1$s · %2$d 部要追更</string>
+    <string name="following_day_empty">這天沒有要追更的劇</string>
+    <string name="following_view_week">看本週</string>
+    <string name="following_no_schedule">未設定更新日</string>
+    <string name="following_update_days">每%1$s</string>
+    <string name="following_update_time">%1$s 更新</string>
+    <string name="following_not_watched">還沒有看</string>
+    <string name="following_watched">已經看了</string>
+    <string name="following_delete_selected_message">確定刪除選中的 %1$d 部追劇嗎？</string>
+    <string name="toast_follow_saved">已加入追劇</string>
     <string name="collect_clear_message">將刪除全部收藏，此操作無法復原</string>
     <string name="collect_uncollect_message">取消收藏「%1$s」？</string>
     <string name="collect_delete_selected_message">確定取消收藏選中的 %1$d 部影片嗎？</string>
@@ -258,8 +270,8 @@
     <string name="music_next">下一首</string>
 
     <string name="search_home_poster">首頁海報</string>
-    <string name="search_layout_horizontal">橫向展示</string>
-    <string name="search_layout_vertical">縱向展示</string>
+    <string name="search_layout_horizontal">沉浸</string>
+    <string name="search_layout_vertical">普通</string>
     <string name="search_exact">精準搜尋</string>
     <string name="search_sites">搜尋站點</string>
     <string name="search_sites_none_hint">未選擇站點，將搜尋不到結果</string>
@@ -306,7 +318,6 @@
     <string name="player_scale_crop">裁切</string>
     <string name="player_parse_failed_prefix">解析失敗 >>> %1$s</string>
 
-    <string name="detail_fullscreen_play">全螢幕播放</string>
     <string name="detail_empty_source">暫無片源，可嘗試換源或搜尋</string>
     <string name="detail_music_player">進入音樂播放器</string>
     <string name="detail_uncollect">取消收藏</string>
@@ -316,6 +327,7 @@
     <string name="detail_expand">展開</string>
     <string name="detail_quality">畫質</string>
     <string name="detail_line">線路</string>
+    <string name="detail_line_video_count">共 %1$d 個視頻</string>
     <string name="detail_episodes">選集</string>
     <string name="detail_episodes_of">%1$s 選集</string>
     <string name="detail_order_asc">正序</string>
@@ -511,7 +523,6 @@
     <string name="music_mode_order">順序播放</string>
     <string name="live_source_auto_disabled">該源已被自動停用，可在設定管理中重新啟用</string>
     <string name="toast_file_picker_unavailable">無法開啟檔案選擇器</string>
-    <string name="toast_permission_required">請授予權限</string>
     <string name="toast_folder_data_missing">目錄資料缺失，無法開啟</string>
 
     <string name="player_sniffing_url">正在嗅探播放位址</string>

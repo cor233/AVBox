@@ -54,8 +54,10 @@ class PlaybackController {
         resolver.resetGen()
         if (currentSession == null || !TextUtils.equals(currentSession!!.playbackKey(), session.playbackKey())) {
             music.clearArtworks()
-            st.audioOnlyConfirmed = false
         }
+        // 纯音频确认必须绑定当前内容：否则「先播纯音频、再播带视频轨的内容」时这个标记会残留，
+        // 使视频内容被 isConfirmedAudioOnly() 误判为音频并自动跳进音乐页。
+        st.audioOnlyConfirmed = false
         currentSession = session
         progress.clearStartedPlaybackKey()
         st.beginSession()
@@ -284,6 +286,10 @@ class PlaybackController {
             music.stopMusicSessionForFailedPlayback()
         }
 
+        override fun closeCastPrepare() {
+            this@PlaybackController.closeCastPrepare()
+        }
+
         override fun isCrossContentReuseAllowed(): Boolean = this@PlaybackController.isCrossContentReuseAllowed()
     })
 
@@ -327,6 +333,18 @@ class PlaybackController {
         st.beginNewPlay()
         timeouts.cancelPendingCompletionDrop()
         st.audioOnlyConfirmed = false
+    }
+
+    fun setCastPrepareOnly(prepareOnly: Boolean) {
+        st.castPrepareOnly = prepareOnly
+    }
+
+    fun isCastPrepareOnly(): Boolean = st.castPrepareOnly
+
+    fun closeCastPrepare() {
+        st.castPrepareOnly = false
+        resolver.nextGen()
+        LOG.i("echo-cast prepare closed: drop in-flight resolve results")
     }
 
     fun markStoppedForSourceSwitch() {
@@ -642,6 +660,14 @@ class PlaybackController {
             this@PlaybackController.startSwitchLinePlayTimeout()
         }
 
+        override fun cancelPlayTimeout() {
+            this@PlaybackController.cancelPlayTimeout()
+        }
+
+        override fun closeCastPrepare() {
+            this@PlaybackController.closeCastPrepare()
+        }
+
         override fun setPlayTimeoutBasePosition(position: Long) {
             this@PlaybackController.setPlayTimeoutBasePosition(position)
         }
@@ -797,6 +823,14 @@ class PlaybackController {
 
     fun isConfirmedAudioOnly(): Boolean {
         return music.isConfirmedAudioOnly()
+    }
+
+    fun isAudioOnlyContent(): Boolean {
+        return music.isAudioOnlyContent()
+    }
+
+    fun setMusicAudioOnly(enabled: Boolean) {
+        music.setMusicAudioOnly(enabled)
     }
 
     fun handlePlayStateForMusicSession(playState: PlayState): Boolean {

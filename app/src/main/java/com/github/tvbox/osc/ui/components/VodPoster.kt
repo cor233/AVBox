@@ -21,6 +21,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import coil3.Image
 import coil3.compose.AsyncImage
 import coil3.compose.AsyncImagePainter
 import coil3.compose.LocalPlatformContext
@@ -70,12 +71,17 @@ internal fun VodPoster(
     name: String?,
     pic: String?,
     modifier: Modifier = Modifier,
+    preferLarge: Boolean = false,
+    onImage: ((Image) -> Unit)? = null,
 ) {
     var showFallback by remember(pic) { mutableStateOf(false) }
+    var posterUrl by remember(pic, preferLarge) {
+        mutableStateOf(if (preferLarge) VodImages.largePosterUrl(pic) else pic)
+    }
     val context = LocalPlatformContext.current
-    val request = remember(context, pic) {
+    val request = remember(context, posterUrl) {
         ImageRequest.Builder(context)
-            .data(pic)
+            .data(posterUrl)
             .transitionFactory(Transition.Factory.NONE)
             .build()
     }
@@ -87,7 +93,12 @@ internal fun VodPoster(
             contentDescription = name,
             contentScale = ContentScale.Crop,
             onState = { state ->
-                showFallback = state is AsyncImagePainter.State.Error
+                if (state is AsyncImagePainter.State.Error) {
+                    if (posterUrl != pic) posterUrl = pic else showFallback = true
+                } else {
+                    showFallback = false
+                    if (state is AsyncImagePainter.State.Success) onImage?.invoke(state.result.image)
+                }
             },
             modifier = Modifier.fillMaxSize(),
         )

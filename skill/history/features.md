@@ -4705,3 +4705,202 @@ new-instance v2, Lorg/json/JSONArray;  invoke-direct {v2, v1}      # new JSONArr
 **验证**：`.\gradlew.bat :app:assembleDebug :app:testDebugUnitTest` BUILD SUCCESSFUL（26s）；单测 **87 suite / 686 用例 / 0 失败 / 0 错误 / 1 跳过**；i18n 硬闸门 `ui 层 0 处 / 0 文件`；零注释；`follow_reminder_subtitle` 在 strings 与代码里均 0 命中。**未真机走查**（用户禁止操作其手机）。
 
 **文档同步**：`skill/avbox-mobile-ui-spec.md` §4.4「追剧提醒面板」条 —— ①改写（头部两轮删减的完整记录 + 关闭途径）与②那句"头部副标题刻意保留"改为"也已在同日后一轮删除 ⇒ 本面板现在只有区标题、没有任何说明性小字"。`.codebuddy` / `.trae` 两镜像已同步。
+**追剧页落地(同日,用户「先写ui吧」;设计稿 = 本地工作稿 `文档/AVBox 追剧页方案.md`,不入库)**:把占位页做成真正的「第二个收藏页」—— 追剧记录 + 更新日/更新时间日程,**明确不做更新检测、不发系统通知**。
+
+**代码(新增 12 文件 = 9 主代码 + 2 单测 + 1 schema 导出 / 改 12 文件 = 8 代码 + 4 语 strings)**:
+①数据层:`data/VodFollow.kt`(实体,表 `vodFollow`)、`data/FollowDays.kt`(`encode`/`decode`/`todayIndex`,0 = 周一 … 6 = 周日)、`data/VodFollowDao.kt`、`data/FollowRepository.kt`(接口 + `RoomFollowRepository`;`upsert` 已存在则只改日程、`addedTime` 不动)、`data/AppGraph.kt` 加 `followRepository`。
+②库升级:`@Database(version = 2)` + `data/AppMigrations.kt`(`MIGRATION_1_2`);**`DB_FILE_VERSION` 保持 4**(库文件名不变 ⇒ 老库原地迁移,历史/收藏/进度/缓存保留)。按方案 §4 顺序做:先加实体 + 改版本 → 编译导出 `app/schemas/com.github.tvbox.osc.data.AppDataBase/2.json` → 把 `vodFollow` 的 `createSql` 逐字拷进 `AppMigrations.kt`(`${TABLE_NAME}` 换成 `vodFollow`)→ 再挂 `.addMigrations(MIGRATION_1_2)`。**额外做了一次离线校验**(方案未要求):用 Python `sqlite3` 按 `1.json` 建库后执行迁移 SQL,逐字比对导出串、并把 `PRAGMA table_info` 与 `2.json` 的 `fields`(列名 / 亲和性 / notNull / 主键位置)全量比对 —— 三项全过。
+③UI:`ui/components/WeekdayChip.kt`(**新**,把面板里的私版 chip 提为共用,并把 `WeekdayRes` / `formatReminderTime` / `joinedDaysText` 一并挪过来)、`ui/components/FollowReminderSheet.kt`(签名改 `initialDays` / `initialHour` / `onDismissRequest` / `onSave`,保存回写)、`ui/page/FollowingViewModel.kt`(列表 + 源名/可用性解析 + 筛选 + 编辑态 + `FollowEntry`)、`ui/page/FollowListRules.kt`(角标计数与筛选排序纯逻辑)、`ui/page/FollowRow.kt`(卡片)、`ui/page/FollowingPage.kt`(重写:筛选条 + 区块标题 + 两级空态 + 编辑多选)、`ui/page/HistoryRow.kt`(`PROGRESS_ENTER_DURATION_MS` 与 `parseEpisodeTotal` 由 private 提为 internal,供 `FollowRow` 复用)。
+④详情页接线:`DetailViewModel` 加 `follow: StateFlow<VodFollow?>`(`loadDetail` / `loadDetailInternal` 各读一次、`resetContentState` 清)+ `saveFollow`;`DetailContent` 的追剧图标按"已追剧"切 `primary` tint、面板传预填与回调。
+⑤文案:新增 8 条(简体 / 英语 / 繁體台灣三份齐全),`following_empty` 由「功能开发中,敬请期待」/「Coming soon」改「暂无追剧」/「Nothing followed yet」,HK 差异层同步该条。
+
+**与方案的两处偏差(已向用户说明)**:①方案的 `FollowDays.fromCalendarDayOfWeek` 未实现 —— 本项目用 `java.time` 取今天,`Calendar` 那条转换没有任何调用方,加了就是死代码;②卡片第 3 行要显示"看到第几集",方案只列了 `episodeTotals` / `playedPercents`(都给不出集号),实现改为**只读**取一次 `HistoryRepository.getVodInfo(sourceKey, vodId)` —— 与历史页同一份记录、不新增任何存储。另外方案 §7 未列 `following_delete_selected_message`(批量删除的二次确认要用),本条为本轮补的。
+
+**验证**:`.\gradlew.bat :app:assembleDebug :app:testDebugUnitTest` BUILD SUCCESSFUL;单测 **694 用例 / 0 失败**(新增 `FollowDaysTest` 4 例 + `FollowListRulesTest` 4 例);迁移 SQL 离线比对三项全过。**未真机走查**(用户禁止操作其手机;设备当时未在线,APK 已构建待装)。⚠️ 走查提示:**真机第一次打开库会跑 `MIGRATION_1_2`**,请把历史/收藏/播放进度一起看一遍,且**升级路径与全新安装路径都要看**(全新安装不跑迁移)。
+
+**文档同步**:`skill/avbox-mobile-ui-spec.md` §4.12 整节由「占位」改写为落地形态(定位 / 存储 / 页面 / 筛选 / 卡片 / 交互 / 两级空态 / 文案),§4.4「追剧提醒面板」条里的"刻意不落库"改写为"保存即落库"(含面板新签名与"取消追剧只走追剧页删除"的口径)。`.codebuddy` / `.trae` 两镜像已同步。
+**补丁 1(同日,用户看装机截图后要求「把追剧卡片的进度条删除了不需要,还有会显示当前源不可用,点击后进去一直在加载不好和收藏页一样自动跳转到对应源」):卡片去掉进度行 + 点击改走收藏页那套源路由**
+
+①**删掉卡片的第 3 行**(进度条 +「第X集/共Y集」):`FollowRow` 收成「剧名 + 源名」「更新日时间」两行,连带撤掉 `FollowingViewModel` 的 `history` / `episodeTotals` / `playedPercents`(`HistoryRepository` 依赖一并去掉)、`FollowEntry.history` 字段与 `FollowingPage` 的两处取数;顺手把上一轮为复用它而放宽的 `HistoryRow.PROGRESS_ENTER_DURATION_MS` / `parseEpisodeTotal` **改回 private**(现在只有历史页在用)。`FollowListRulesTest` 的 `FollowEntry` 构造同步。
+②**点卡片改为收藏页同款源路由**:`cid` 空或等于当前订阅 → 直接进详情;`cid` 在 `SubscribeList.vodUrls()` 里 → 切订阅源后进详情;否则跳搜索。与收藏页**共用一份实现** —— 把 `CollectPage.kt` 的私有 `reopenViaSubscription` 提到 `ui/page/PageActions.kt`(`internal suspend`,参数化为 cid/sourceKey/vodId/name/pic + `collect` 标志),收藏页改为调用它,两页行为逐字一致(`SWITCH_SUBSCRIBE_TIMEOUT_MS = 20s`、切完仍无该 sourceKey 就退化为跳搜索)。**成因**:跨订阅的追剧条目点进去时源不在当前配置里 ⇒ 详情页只能走"换源搜索"兜底,表现为一直转圈。
+
+**验证**:`.\gradlew.bat :app:assembleDebug :app:testDebugUnitTest` BUILD SUCCESSFUL;单测 **694 用例 / 0 失败**;行尾 LF 已核对;**未真机走查**(用户禁止操作其手机;设备未在线,APK 已构建待装)。
+
+**文档同步**:`skill/avbox-mobile-ui-spec.md` §4.12「卡片」条改为两行 + 注明进度行已删,并新增「点卡片的源路由」条(含"不这么做的症状")。`.codebuddy` / `.trae` 两镜像已同步。
+**补丁 2(同日,用户看图要求「进度条加回去,右上角的站点名称放在标题下方被 surfaceContainer 圆角胶囊包裹,然后将更新时间放在『每周一…』下方」):卡片改五行版**
+
+进度行按用户要求**恢复**(上一轮刚按照片删掉 —— 这类"删了又加"属正常迭代,以最新一条为准),并重排为五行:①剧名 ②**源名从右上角移到标题下方、进 `surfaceContainer` 全圆角胶囊**(内距 10dp/4dp,`bodyMedium`;源不可用仍走 `error` 色并附 `source_unavailable`)③`ic_follow_update_time` + 星期串(新键 `following_update_days` =「每%1$s」,仍用 `follow_days_separator` 连接)④更新时间**另起一行、左缩进 22dp**对齐星期文字(新键 `following_update_time` =「%1$s 更新」,英文 `Updates at %1$s`)⑤进度条 + 集号。行距改 `Arrangement.spacedBy(4.dp)`(五行内容已高于海报,原来的 `SpaceBetween` 会把间距压成 0),海报仍 64dp。⚠️ 原 `follow_summary`(「每%1$s %2$s 更新」)保留给详情页面板的摘要卡,**没删也没改**。取数侧随之恢复:`FollowEntry.history` + `episodeTotals` / `playedPercents`,以及 `HistoryRow` 的 `internal` 共享面(`PROGRESS_ENTER_DURATION_MS` / `parseEpisodeTotal`)。
+
+**验证**:`.\gradlew.bat :app:assembleDebug :app:testDebugUnitTest` BUILD SUCCESSFUL;单测 **694 用例 / 0 失败**;i18n 硬闸门 `ui 层 0 处`、key 检查无新增 UNUSED / 同值;行尾 LF 已核对;**未真机走查**(设备未在线,APK 已构建待装)。
+
+**文档同步**:`skill/avbox-mobile-ui-spec.md` §4.12「卡片」条改写为五行版(含源名胶囊、"更新时间缩进对齐"、"别动 `follow_summary`"三条),并把「卡片的进度取数」条补回。`.codebuddy` / `.trae` 两镜像已同步。
+**补丁 3(同日,用户又发两张截图「站点名称放回到右上角,顺便把记录页面历史卡片站点也用圆角胶囊包裹,还有感觉追剧卡片的影视海报比较小和记录页面不一样的」):源名胶囊挪回标题行 + 记录页也套胶囊**
+
+**先量后改**:用 System.Drawing 逐像素量了两张截图(1260×2800 = 360dp 宽,3.5px/dp)—— **两页海报本来就是同一个尺寸**(都是 64dp 宽 / 95.4dp 高,包围盒逐个像素一致);差异在卡片高度:追剧卡 131dp(源名胶囊独占一行把内容撑到 107dp)、记录卡 119dp(内容 = 海报高 96dp)。所以"海报显小"的根因是上一轮把胶囊单独放一行,不是海报尺寸。
+①**追剧卡**:源名胶囊挪回标题行右上角(`Row` + 标题 `weight(1f)` + 胶囊 `widthIn(max = 160.dp)`),内容回到 ≈96dp ⇒ 卡片 120dp、与记录页一致,海报自然铺满(海报尺寸未动)。天数行 / 时间单独一行 / 进度条都不变。
+②**记录页历史卡**:源名同样套 `surfaceContainer` 全圆角胶囊(`bodyMedium` + 内距 10dp/4dp + `widthIn(max = 160.dp)`,原为裸 `bodySmall` 文字);源不可用仍是 `error` 色 + `source_unavailable`。两页现在是同一个"站点胶囊"组件口径。
+⚠️ 记录页那张卡用的是 `Arrangement.SpaceBetween` + 列 `fillMaxHeight()`,标题行被胶囊撑到 28dp 后内容 64dp 仍 < 海报 96dp,照旧摊开、不溢出(改这行时别把 SpaceBetween 换成 spacedBy)。
+
+**验证**:`.\gradlew.bat :app:assembleDebug :app:testDebugUnitTest` BUILD SUCCESSFUL;单测 **694 用例 / 0 失败**;行尾 LF 已核对;**未真机走查**(设备未在线,APK 已构建待装)。
+
+**文档同步**:`skill/avbox-mobile-ui-spec.md` §4.12「卡片」条改为"标题行 + 右上角胶囊"并把"胶囊位置 = 尺寸约束(独占一行会让海报显小)"写进去;§4.2 记录 tab 的「视觉」条补上历史卡源名胶囊口径。`.codebuddy` / `.trae` 两镜像已同步。
+**补丁 4(同日,用户发追剧页截图 + 一张 ⋮ 图标:「将追剧页面右上角的站点胶囊删除,改为图二这样的图标,裸图标不需要容器,点击后出现弹出式菜单,有两个选项从上到下依次是,还没有看,已经看了,点击已经看了,顶部当日的日历则少这部影片的提示」):站点胶囊 → 「已看 / 未看」⋮ 菜单 + 角标联动**
+
+①**站点名从追剧卡片上整个撤掉**,连带 `FollowEntry.sourceName` / `sourceUnavailable` 与 `FollowingViewModel` 里那套源名解析 + `SOURCE_NAME_CACHE` 写入(那套逻辑只为渲染这个胶囊存在,留着就是死代码);**右上角换成裸 ⋮** —— 直接复用共用组件 `AVBoxOptionMenuAction`(其图标本就是裸 `ic_more_vert`、无容器),菜单两项 = 新增文案 `following_not_watched`(还没有看)/ `following_watched`(已经看了),`selectedIndex` 反映当前状态(菜单项右侧 `primary` 对勾),`contentDescription` 复用 `player_menu_more`。
+②**「已经看了」= 当天已看标记**:点它 → 该片不再计入**星期 chip 的角标**(口径变为"当天还没看的追更数",即用户说的"少这部影片的提示");点「还没有看」撤销。**带日期、只算当天** ⇒ 存 MMKV `follow_watched`(`HashMap<owner, epochDay>`,owner = sourceKey|vodId;`data/FollowWatched.kt` 的 `snapshot` / `mark` / `clear`,写入时修剪非当天项),**次日自动失效**;**不落 Room ⇒ `vodFollow` 表结构与 schema 版本都没动**(不需要第二次迁移)。角标过滤收进 `FollowListRules.dayCounts`(现在收 `List<FollowEntry>`);列表**不隐藏**已看的片、卡片无额外状态标记(反馈 = 菜单对勾 + 角标变化)。
+③**顺手去掉 `source_unavailable` 在本页的显示**(站点名都没了,没地方挂);点卡片的跨订阅自动切源路由不受影响。
+
+**新增文案**:2 条 × 三语(`following_not_watched` / `following_watched`),无删除;HK 差异层不需要新条目。
+
+**验证**:`.\gradlew.bat :app:assembleDebug :app:testDebugUnitTest` BUILD SUCCESSFUL;单测 **698 用例 / 0 失败**(新增 `FollowListRulesTest.dayCounts_skipWatchedShows` + `FollowWatchedTest` 3 例);i18n 硬闸门 `ui 层 0 处`、key 检查无新增 UNUSED / 同值;行尾 LF 已核对;**未真机走查**(设备未在线,APK 已构建待装)。
+
+**文档同步**:`skill/avbox-mobile-ui-spec.md` §4.12 —— 卡片条①改写(站点胶囊 → ⋮ 菜单)、新增「『已经看了』的语义与角标联动」条(键名 / 日粒度 / 次日失效 / 不落 Room),并把"尺寸支点"那条从"源名胶囊"改写成"右侧文字列总高 ≈ 96dp"。`.codebuddy` / `.trae` 两镜像已同步。
+**补丁 5(同日,用户报「我点击已经看了怎么让所有日历右上角的提示都没了」):角标口径收窄到"今天那一格"**
+
+**现象与根因**:补丁 4 把"已看"实现成**该片从它所有更新日的角标里都消失**(`dayCounts` 直接 `filterNot { it.watched }`)。用户当时只有 1 部片(更新日 = 周一/周二/周三),点一下"已经看了" → 三个角标同时归 0 → **0 不显示 ⇒ 整排角标一起消失**,看着像功能把所有提示都清空了。用户原始口径是"**顶部当日的**日历少这部影片的提示",不是"全部消失"。
+**改法**:`FollowListRules.dayCounts(items, today)` —— 只对 `watched` 的条目做 `days - today`(即今天那一格减一),其余星期格照旧统计;`FollowingPage` 的 `WeekdayFilterBar` 把 `FollowDays.todayIndex()` 传进去(`remember(items, today)`)。测试改为 `dayCounts_dropWatchedShowsOnlyOnToday`(同一条数据 `today = 2` 与 `today = 5` 两个期望值,把"只减今天"锁住)。
+
+**验证**:`.\gradlew.bat :app:assembleDebug :app:testDebugUnitTest` BUILD SUCCESSFUL;单测 **698 用例 / 0 失败**;行尾 LF 已核对;**未真机走查**(设备未在线)。
+
+**文档同步**:`skill/avbox-mobile-ui-spec.md` §4.12「『已经看了』的语义与角标联动」条改写(含"别写成所有更新日都消失"的反例与其现象)。`.codebuddy` / `.trae` 两镜像已同步。
+**补丁 6(同日,用户续报「我现在切换到周二然后点击已经看了,结果消除的是周三的角标,还有如果切换到本周,那么点击已经看了应该消除本周这部剧的所有角标」):"已看"改为按天记录,作用范围跟当前视图走**
+
+补丁 5 的"只减今天"把范围钉死在 `FollowDays.todayIndex()` 上,与用户当前看的视图无关 ⇒ 在**周二**视图里点"已经看了",消掉的却是今天(**周三**)那一格,用户当场报回。**最终口径 = 作用范围跟着当前筛选视图**:某天视图 → 只消那一天;本周视图 → 消该片**所有更新日**。
+**改法**:`follow_watched` 的语义从"owner → epochDay"改成"**owner|dayIndex → epochDay**"(`FollowWatched.mark/clear` 现在收 `days: Set<Int>`;`snapshot` 按 owner 归组出 `Map<owner, Set<dayIndex>>`);`FollowEntry.watched: Boolean` → `watchedDays: Set<Int>`;VM 的 `setWatched` 用 `targetDays(entry)`(= 选中某天 ?: 该片全部更新日)决定标记/回滚哪几天,并当场更新内存条目(不重查库);`FollowListRules.dayCounts(items)` = 每个更新日集合减去 `watchedDays`,新增 `isWatched(entry, selectedDay)` 供菜单勾选态(某天视图 = 当天 ∈ 集合;本周视图 = 更新日全部已看;未设日程的片恒为未看)。列表、卡片与其余表现不变。
+
+**验证**:`.\gradlew.bat :app:assembleDebug :app:testDebugUnitTest` BUILD SUCCESSFUL;单测 **700 用例 / 0 失败**(`FollowListRulesTest` 的 `dayCounts_dropOnlyWatchedDays` / `isWatchedFollowsSelectedView` + `FollowWatchedTest` 4 例把两种视图口径都锁住);行尾 LF 已核对;**未真机走查**(设备未在线)。
+
+**文档同步**:`skill/avbox-mobile-ui-spec.md` §4.12「『已经看了』的语义与角标联动」条**整条改写**为"作用范围 = 当前筛选视图"(含按天记录的键格式与两个纯函数的分工)。`.codebuddy` / `.trae` 两镜像已同步。
+**补丁 7(同日,用户问「给选择已经看过了的卡片增加观看状态你觉得适合加在什么地方」→ 回「a」):已看的卡片状态 = 海报右下角小对勾**
+
+**先给方案再动手**:列了四个候选位置(海报角标 / ⋮ 图标状态化 / 标题行胶囊或降透明度 / 进度行),逐条比代价 —— 关键约束是"右侧文字列总高 ≈ 96dp = 海报高"(当天已踩过一次),**任何独占一行的状态标记都会把卡片撑高**;进度行那条还只对有历史记录的片存在。用户选了 A。
+**落地**:`FollowRow` 的海报 `Box` 里加一层 overlay —— **18dp `primary` 圆底 + `onPrimary` `ic_check`**(内距 4dp、`contentDescription = following_watched`),**只做指示、不可点**(操作仍走 ⋮ 菜单),放**右下角**(左上角留给编辑态 `SelectCircle`);判据复用现成的 `FollowListRules.isWatched(entry, selectedDay)`(某天视图看那天;本周视图要更新日全部已看)。**overlay 不占高度 ⇒ 不碰那块卡片的尺寸平衡;不碰存储与 `FollowRow` 之外的任何文件**。
+
+**验证**:`.\gradlew.bat :app:assembleDebug :app:testDebugUnitTest` BUILD SUCCESSFUL;单测 **700 用例 / 0 失败**;i18n 硬闸门 `ui 层 0 处`;行尾 LF 已核对;**未真机走查**(设备未在线)。
+
+**文档同步**:`skill/avbox-mobile-ui-spec.md` §4.12 —— 卡片条补上"已看对勾 = overlay、不占高度、不可点、放右下"与其理由,并把「『已经看了』的语义」条末尾那句"卡片上没有额外状态标记"改成"卡片状态 = 海报右下角对勾(与菜单同一判据)"。`.codebuddy` / `.trae` 两镜像已同步。
+**补丁 8(同日,Q&A 后用户「修了」):`today` 从页面 `remember` 挪进 VM 的刷新链**
+
+**背景**:用户问"到了下一周会自动刷新吗,怎么识别本周"。答:①**「本周」根本不识别周** —— `updateDays` 是"每周几"的周期设定,「本周」= 7 天并集,**与日期无关、不存在跨周刷新**;②真正跟日期有关的只有"今天描边"与"已看标记"两处,已看标记靠 KV 里存的 `epochDay` 自动失效;③**发现一处瑕疵**:`WeekdayFilterBar` 里 `val today = remember { FollowDays.todayIndex() }` 只在首次组合算一次,而 pager 的 `beyondViewportPageCount = 3` 让本页一直留在组合里 ⇒ 跨零点后**描边可能要等进程重启才纠正**(已看标记则随 `refresh()` 正常更新)。
+**改法**:`FollowingViewModel` 增加 `today: MutableStateFlow<Int>`,在 `refresh()` 开头 `today.value = FollowDays.todayIndex()`;页面 `collectAsStateWithLifecycle` 后传给 `WeekdayFilterBar`(该组件不再自己 `remember`),顺手删掉页面里已无用的 `FollowDays` import。**效果**:描边与已看标记**同一来源、同一时机**刷新(VM `init` / 页面 `ON_RESUME` / `TYPE_API_URL_CHANGE`),切个 tab 回来就一起纠正;仍**不做零点定时器**(页面级刷新是既有惯例,已写进规范)。
+
+**验证**:`.\gradlew.bat :app:assembleDebug :app:testDebugUnitTest` BUILD SUCCESSFUL;单测 **700 用例 / 0 失败**;行尾 LF 已核对;**未真机走查**(设备未在线)。
+
+**文档同步**:`skill/avbox-mobile-ui-spec.md` §4.12 —— 筛选条"今天描边"那条补上"`today` 由 VM 随 refresh 下发"的原因,并新增一条「跟日期有关的两处的刷新时机」(次日生效 = 下一次 refresh、不做零点定时器、「本周」与日期无关)。`.codebuddy` / `.trae` 两镜像已同步。
+**补丁 9(同日,用户「审查一下是否有错误遗漏和引入新回归,是否可以收尾」→「修了」):审查 0 阻断 / 0 高 / 1 中 + 4 低,全部修掉**
+
+审查范围 = 本会话全部改动;工具 = `git diff/status`、自建 Kotlin 未使用 import 脚本、i18n 两道门、行尾核查、`assembleDebug` + 单测、SQLite 离线复演、`KVDecoder` 取值链核对。
+①**[中] `refresh()` 会吞掉刚落下的「已看」点击**:KV 快照原先在读**最前**、`items.value` 赋值在**逐条查历史之后** ⇒ 这个窗口里点「已经看了」会被整表覆盖回未看(视觉回退,虽然 KV 里已写、下次 refresh 自愈)。改:先建 `entries`(history 就绪、`watchedDays` 先占位),**再读快照、随即赋值**,把窗口压到微秒级。
+②**[低] `FollowingPage.kt` 未使用 import `data.VodFollow`** 删除。⚠️ 附带发现:仓库自带 `check_import_usage.py` 只认 Java `import …;`,**对 Kotlin 恒报 imports=0 / 未使用=0**(工具缺口)。
+③**[低] 无消费方成员删除**:`FollowRepository.isFollowed()` / `delete(id)` 与 `VodFollowDao.delete(id)` / `deleteAll()` —— 全仓无调用(方案 §3.3 列过,按项目死代码口径删;`currentCid` / `find` / `getAll` / `upsert` / `deleteSelected` 保留)。
+④**[低] `VodFollowCreateSql` 由公开 `const val` 收成 `private`**(仅同文件用)。
+⑤**[低] 「已看」写盘挪出主线程**:`setWatched` 先即时更新内存条目,`FollowWatched.mark/clear` 放 `Dispatchers.IO`(原先与 `EpisodeTotals.putFromVod` 同为"主线程 KV 写",低频也顺手清掉)。
+⑥**[低] 追剧页进详情不再传 `collect = true`**(`fromCollect` 目前只进日志,否则日志把来源标成收藏);收藏页保持原样。
+**未改(附理由)**:度量类发现 —— `FollowingPage.kt` 303 行、`FollowingPage` 单方法 ≈206 行 —— 抽 `when{…}` 段会得到 10+ 参数的私有 composable,收益不抵;要彻底解需连 VM 状态一起下沉,**建议等真有第二个页面复用筛选条时再做**(度量类不计入终止线)。
+
+**验证**:`.\gradlew.bat :app:assembleDebug :app:testDebugUnitTest` BUILD SUCCESSFUL;单测 **700 用例 / 0 失败**;`isFollowed`/`deleteAll` 全仓复核已无本轮残留(命中项均属收藏/历史/TrackMemory 的既有实现);行尾 LF 已核对;i18n 硬闸门 `ui 层 0 处`、key 检查仅剩既有的 `toast_permission_required` 与既有 `播放` 同值;**未真机走查**(设备未在线,APK 已构建待装)。
+
+**收尾判定**:按终止线(无阻断/高/中,剩余全为既有或口味差异)⇒ **代码侧满足收尾条件**;交付侧仍差"设备上线装机走查"(迁移升级路径 + 某天/本周视图角标 + 已看对勾)。⚠️ 提交时记得带上未跟踪的 `app/schemas/com.github.tvbox.osc.data.AppDataBase/2.json` 与 `ic_follow_update_time.xml` / `ic_follow_update_week.xml`。
+
+## 首页展示方式:标签改「沉浸 / 普通」+ 默认改沉浸(2026-10-08,未 commit)
+
+**需求(用户,附截图)**:`SearchSettingsSheet` 顶部「首页海报」分段的两个标签由「横向展示 / 竖向展示」改为**「沉浸 / 普通」**,并把**默认值改成沉浸**。
+
+**背景(回答用户 Q&A 时核到的两件事)**:①`HomeSettings.current()` 原判据是 `KV.get(KEY_LAYOUT, VALUE_LAYOUT_VERTICAL)`,即键缺失(新装 / 清数据)时 = 竖排;全仓写这个键的只有该分段按钮(无首启写入点),所以"默认"就是键缺失时的取值;②用户截图里高亮的是「横向展示」,属该机已存过 `home_layout=horizontal` 的历史值,不是默认值(顺带确认:整屏 Hero + 海报取色只在 `Horizontal` 渲染,`Vertical` 走 `HomeGridLayout` 栅格)。
+
+**改动(4 文件)**:`util/HomeSettings.kt` 的 `KV.get` 兜底值 `VALUE_LAYOUT_VERTICAL` → `VALUE_LAYOUT_HORIZONTAL`(一行;`KEY_LAYOUT` / 值常量 / 枚举名 `Horizontal`/`Vertical` 全部不动,key 名仍按横竖语义命名);三层资源同步改值 —— `values`「沉浸 / 普通」、`values-en`「Immersive / Standard」、`values-b+zh+Hant`「沉浸 / 普通」;港差异层无这两条(回落基础层),不动。
+
+**影响面**:仅"从未切过这个设置"的设备会跟着变成沉浸;显式选过竖向(`home_layout=vertical`)的设备保持竖向。首屏分类请求的排版参数(`HomeViewModel` 的 `getSort(key, horizontal)`)与刷新范围随之对齐,无需额外改动。
+
+**验证**:`.\gradlew.bat :app:assembleDebug` BUILD SUCCESSFUL;`i18n_align.py` 三档 PASS(`en` / `b+zh+Hant` 548=548,`zh-rHK --subset` 仅既有的 4 条 `REDUNDANT-VS-UPPER`);`i18n_check_keys.py` 只剩既有的 `toast_permission_required` 未用与「播放」同值双 key;行尾 LF 已核对;**未真机走查**(设备未在线)。
+
+**文档同步**:`skill/avbox-mobile-ui-spec.md` —— §4.6「结果展示方式」的默认值警示条改为"搜索页默认竖排、首页自 2026-10-08 起默认 `Horizontal`(沉浸)"并记下标签改名;§「窗口分档」那句补上"键缺失时默认 `Horizontal`"。`.codebuddy` / `.trae` 两镜像已同步。
+
+## tab 切换路过中间页闪加载指示器:活跃页判据改 targetPage + 列表 loading 只在首次(2026-10-08,未 commit)
+
+**需求(用户报现象)**:「从首页切换 tab 到我的页时中途会闪烁 md3e 的几何圆形加载指示器,大概是到了追剧这个位置的时候」。按「报现象先给方案」先只做排查,给 A/B/C 三案与推荐(A+B),用户拍板 **A+B 一起修**。
+
+**根因链(三环,全部取证)**:
+1. `MainScreen` 用 `pagerState.currentPage` 决定哪一页是活跃页(RESUMED)。`currentPage` 的语义本仓早有登记 = "滚动途中离吸附点最近的那页,跨多页滚动时会依次经过中间页"(2026-09-23 那条 tab 文字闪烁的真机 bug,当时改用 `targetPage` 修掉;`avbox-mobile-ui-spec.md` §4.11 有这条)。首页→我的要跨 1、2 两页 ⇒ **追剧页(index 2)在动画中途被 RESUMED**。
+2. 追剧页的 ON_RESUME 挂着刷新:`FollowingPage.kt` 的 `LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { vm.refresh() }`。
+3. `FollowingViewModel.refresh()` 的加载态条件是"列表为空就回到 loading"(`if (items.value.isEmpty()) loading.value = true`)⇒ 命中 ⇒ 满屏 64dp `ContainedLoadingIndicator` 画几帧,IO 跑完才切回空态。
+**取证**:① 从设备只读拉库(`run-as … exec-out cat databases/tvbox.v4.db`,TRUNCATE 模式单文件即一致)查得 **`vodFollow=0` / `vodCollect=3` / `vodRecord=4`** ⇒ 第 3 环条件成立;② 只有追剧闪、记录(index 1)不闪,与"记录页没有 ON_RESUME 刷新、历史/收藏条目非空"一致;③ 反证判据:追剧列表一旦非空,闪烁应消失。
+
+**改动(4 文件)**:
+- **A**:`MainScreen.kt` 页面级 owner 的判据 `page == pagerState.currentPage` → **`page == pagerState.targetPage`**(经过页不再被 RESUMED;与 §4.11 的 tab 选择态同源)。副作用 = 目标页的 ON_RESUME 从"停稳后"提前到"动画开始",无观感差。
+- **B**:三个列表 VM 删掉"列表为空就回到 loading 态"那行 —— `FollowingViewModel` / `HistoryViewModel` / `CollectViewModel`(同款写法,一并统一;`loading` 今后只表示"首次加载中",刷新一律静默)。顺带消掉同类现象:空追剧页从别的 tab 回访也会闪一次;切源/清空后列表为空的刷新也不再闪。
+- **未取 C**:活跃页判据换成 `settledPage`(只有停稳才 RESUMED,语义最严)留给"手动拖拽经过中间页仍复现"时再用。
+
+**影响面**:`loading` 语义收窄后,空列表在"刷新期间"显示的是上一次的结果(空态),不再有"空态→spinner→空态"的抖动;数据流与 DB 读写路径未动。
+
+**验证**:`.\gradlew.bat :app:assembleDebug :app:testDebugUnitTest` BUILD SUCCESSFUL;单测 **94 套 / 721 用例 / 0 失败**(与既有基线一致,三个 VM 无既有用例);行尾 LF 已核对;已装机(vivo `10AF1J04JX0016G`,`lastUpdateTime=2026-10-08 05:19:51`)。**走查判据**:①首页点 tab 到「我的」(以及反过来)全程不出现加载指示器;②空追剧页来回切 tab / 退后台回前台不闪;③手动滑动手势跨页时同样不闪(未复现则 C 不用做);④三个列表页正常加载/刷新/空态无回归。
+
+**文档同步**:`skill/avbox-mobile-ui-spec.md` §6.20 —— 「机制」条补上"活跃页 = `pagerState.targetPage`,不是 `currentPage`"与其真机现象;新增「列表页的全屏加载指示器只在首次加载出现」条(含三个 VM 与新增列表页的口径)。`.codebuddy` / `.trae` 两镜像已同步。
+
+## 沉浸式首页接入模糊底(音乐页手法,2026-10-08,未 commit)
+
+**需求(用户)**:先问"音乐播放页是不是用了模糊效果?这种效果能否运用到首页沉浸式布局下" —— 先只做调研与方案(A/B 两落点 + 三条约束),用户拍板 **A+B 一起做**。
+
+**音乐页现状(参照物)**:`MusicPlayerScreen.MusicBackdrop` = 专辑封面 `AsyncImage` + `graphicsLayer{ scale 1.3f }` + `.blur(56.dp)`,上面叠 `surface` 的 `0.22 / 0.5 / 0.88` 三段竖向蒙层。1.3× 放大是防模糊边缘透明化露出底色边,蒙层负责让前景文字可读。
+
+**设计(关键取舍:两层合成一层)**:A(Hero 渐隐露出模糊)与 B(页面级模糊底)**共用同一层模糊**,不各起一层 —— 页面级底座 = 当前停稳页海报的同图 + 1.3× + `blur(40dp)` + 取色蒙层;Hero 侧改用 `CompositingStrategy.Offscreen` + `BlendMode.DstIn`,按**同一条** `HeroSpotlightFadeStops` 曲线把海报自身淡出(`Color.White.copy(alpha = 1f - alpha)`),露出下层。于是"渐变终止边"(马赫带,此前靠把曲线从 4 段调到 7 段压下去的那条)从根上不存在了:海报下面是同一张图的模糊延伸,再往下才是取色底色。
+
+**改动(3 文件)**:①新增 `ui/components/HomeHeroBackdrop.kt`(`homeHeroBackdropSupported` = `SDK_INT >= S`;`Crossfade(pic, tween(200))`;蒙层曲线 = `0f→0.54` 起始档 + `HeroSpotlightFadeStops` 按 `heroFraction` 映射并 `coerceAtLeast(0.6)` + Hero 下方回落段 `0.86 / 0.84`);②`ui/components/HeroSpotlight.kt` 增参 `onPosterPic`(停稳页上报海报 URL)与 `fadeToBackdrop`,渐隐曲线由 `private` 改 `internal` 供底座共用,纯色渐隐降为 `fadeToBackdrop = false` 时的兜底;③`ui/page/HomePage.kt` 在 scaffold 内容的最底层(`when` 之前)铺 `HomeHeroBackdrop`,状态 `backdropPic`,判据 `homeLayout == Horizontal && homeHeroBackdropSupported`。
+
+**为什么蒙层要有 0.6 下限**:上限(标题/评分/圆点所在的 Hero 下缘)必须接近 1.0 —— 文案用 `onSurface`(不是白字),浅色主题 + 深色海报时底色一淡就掉对比度;下限则保证**滚动后**(Hero 滚走、区块标题/空态文字裸落在模糊底上)仍有对比度。两者之间靠"回落段"把模糊透出来(横屏沉浸式首页那层底部渐变遮罩此前已按用户要求全 app 撤掉,故滚动状态下模糊会一直铺到导航栏后面)。
+
+**代价/风险登记**:全屏 `blur(40dp)` 是每帧一次全屏 GPU pass,且停稳页切换的 200ms 内 `Crossfade` 会同时存在两层模糊;本页还有取色链路与液态玻璃源层录制。本次未做帧率实测(用户走查为准),若掉帧:先降半径,再缩短 Crossfade,最后才考虑只在 Hero 区域内模糊。
+
+**验证**:`.\gradlew.bat :app:assembleDebug :app:testDebugUnitTest` BUILD SUCCESSFUL;单测 **94 套 / 721 用例 / 0 失败**;已装机(vivo `10AF1J04JX0016G`,`lastUpdateTime=2026-10-08 05:28:01`)。**走查判据**:①沉浸式首页 Hero 下缘应从"海报"自然过渡到"同一图的模糊延伸 + 取色底",看不到横向"分隔线/终止边";②标题/评分/圆点在明暗两种海报下都可读;③下滑后区块标题、chips、卡片区文字可读,模糊可见但不抢内容;④Hero 左右滑动:模糊底随停稳页 200ms 换图、不闪、不卡;⑤竖向(普通)布局与 API<31 设备外观与改造前一致(退回纯色底)。
+
+**文档同步**:`skill/avbox-mobile-ui-spec.md` §6.9 新增"沉浸式首页的模糊底只能有一层,且必须带蒙层下限"条(含 API 31 门控、与 Hero 共用曲线、下限不可撤三条硬约束)。`.codebuddy` / `.trae` 两镜像已同步。
+
+## 详情页播放入口收敛(只留海报页与全屏,8 片 + 审查轮,2026-10-08,未 commit)
+
+**口径(用户真机走查逐条拍板)**:详情页只有两张脸 —— 未起播 = 海报 Hero 页,起播 = 全屏,顶部 16:9 小窗整体删除。**进播放三条路(一律先进全屏)**:播放胶囊 / 选集卡(含当前集)/ 画质 chip。**线路、投屏、换源回滚一律不起播**;投屏改「只解析地址不播放」,解析失败也不以起播兜底;退全屏 = 停播回海报但保留内核复用。
+
+**分片**:①删 16:9 小窗(顶部播放器盒子只留 `fullBox` 撑满 / 高 0 两态,删 `previewBoxHeight`、右下角展开图标、文案 `detail_fullscreen_play`);②退全屏停播 `PlayContainer.stopForExitFullscreen()`(`pause` + 存进度 + `stopPlaybackKeepPlayer` 保内核 + 撤播放通知 + 清 `ownedPlaybackKey`),`DetailViewModel.playing` 删除、`DetailActivity.playContainer` 提升为 Compose state;③点线路只切选中 + 清画质残留(不再起播);④点当前集也进全屏;⑤投屏只解析(`PlaybackAttemptState.castPrepareOnly`:仅解析模式跳过内核清理/历史写/进度写/publishTitle/清弹幕歌词/画质 chip 等全部写入类副作用,`goPlayUrl` 拿地址即 return;收摊入口 `closeCastPrepare()` = 清开关 + `resolver.nextGen()` 代次失效);⑥换源失败回滚只在"换源前在播"才续播(`SwitchSnapshot.wasPlaying` 取值 `fullScreen`,当前入口只有海报页 ⇒ 实际等于不续播);⑦判据收进纯函数 `ui/activity/DetailPlaybackPolicy.kt` + 11 例单测(**改入口先改表**);⑧死资源清理(`detail_fullscreen_play` 四语 / `ic_player_expand` / `DetailScreen` 与 `PlayContainer` 的 4 个死 import / 既有死 key `toast_permission_required`)。
+
+**审查轮(同批,片 1–7 全量复核,6 类修复)**:两条中级 —— ①投屏收摊原用 `st.switchStopPending`,该标志挂到下次 `play()`,会把海报页「点另一个画质 chip」和「重播当前地址」这些无关 `goPlayUrl` 一起压掉(静默失效)⇒ 改代次失效;②投屏轮询跨内容存活 —— 点投屏后 5s 内切内容/换源,迟到的地址会把设备列表弹到新内容上 ⇒ `stopForSourceSwitch()` / `stopForContentSwitch()` 开头 `endCastPrepare()`。其余:仅解析拿地址那一刻也走统一收摊、删 5 处解释性注释(全库零注释)、去死 elvis(`chip.name ?: ""`)、删死 import。
+
+**验证**:`.\\gradlew.bat :app:assembleDebug :app:testDebugUnitTest` BUILD SUCCESSFUL,单测 **735 用例 / 0 失败**(新增 `DetailPlaybackPolicyTest` 11 例);`i18n_check_keys.py` 无 UNUSED / 未声明 key;`i18n_gate.py` ui 层硬闸门 0 处;已装机(vivo `10AF1J04JX0016G`)。真机走查归用户(判据在方案档 §7)。
+
+**文档同步**:`skill/avbox-mobile-ui-spec.md` §4.4 段首新增「2026-10-08 现状口径」条(两张脸 / 三条路 / 不起播清单 / 退全屏停播保内核 + 明确本节 3 条旧条目作废:竖屏 16:9 布局、预览态几何与预览态进度行、右下角全屏钮);`.codebuddy` / `.trae` 两镜像已同步。方案档(本地 `文档/detail-fullscreen-only-plan.md`)含分片施工备注、审查轮结论与待拍板项。
+
+## 播放器 Surface 竞态与切页链路修复(5 缺陷,2026-10-08,未 commit)
+
+**由来(用户真机走查)**:①「退出音乐播放页再进视频页必崩」→ 顺出同源 5 个缺陷;②中途用户报「全屏侧滑退出先闪暂停图标」「播放中切页弹播放错误 toast」「Texture 渲染下切页黑屏有声」「切页后进度条卡 0 不可拖」;③最后追问「切页再进入会重缓冲,解码器必须得重建吗」。
+
+**根因(一条主线)**:视频**输出面(Surface)的生命周期**与**视频渲染器启用态**被绑在一起。`clearDisplay()` 会经引擎不变量 `videoOutputInvalid` 顺手 `setRendererDisabled(video, true)`,换好面再放开 ⇒ track selection 变化 ⇒ media period 重配 ⇒ **codec 重建 + 约 460ms 重缓冲**。对照旧版(`57d92fb`,doikki fork):`VideoView.attachContainerTo()` 与今天几乎一致、**唯一差别就是不碰输出面**,`PlaybackEngine.attach()` 也不遮黑/不清面/不切渲染器 —— 故旧版切页不重建、不重缓冲。
+
+**5 个缺陷与修法**
+1. **退出音乐页 → `DECODER_INIT_FAILED: The surface has been released`**:`EngineTextureRenderView.release()` 只 `surface.release()`、从不通知播放器解绑;而新 SurfaceView 的 surface 异步建立,`attachToPlayer` 因 `isValid == false` 跳过 `setDisplay` ⇒ 播放器一直握着死面,`setAudioOnlyMode(false)` 抢先启用渲染器后解码器在死面 `configure()`。修 = 引擎收敛出唯一判据 **视频渲染器启用 ⟺ `!audioOnlyRequested && !videoOutputInvalid`**(`applyRendererEnablement()`)+ 释放旧视图前先解绑。
+2. **退出全屏闪中央 ▶ 暂停浮层**:`stopForExitFullscreen()` 的 `pause()` → `applyPlayState(PAUSED)` 里 `hideBottom()` 收掉 `controlsVisible` ⇒ `pauseOverlayVisible = PAUSED && !controlsVisible && !lifecyclePaused` 立刻成立 ⇒ `PlayerPauseLayer` 画出大 ▶。修 = 新增 `PlayerUiState.exitPaused`,`pauseOverlayVisible` 追加 `&& !exitPaused`,并在 `pause()` **之前**先 `setExitPaused(true)`(顺序关键)。**`lifecyclePaused` 不能复用** —— 那是"退后台保任务快照"的语义(提交 `e75e7d2`)。
+3. **播放中切页 → `obsolete surface` + 播放错误 toast**:容器从 A 页 slot **重挂**到 B 页 slot,SurfaceView 换父 ⇒ 旧面销毁重建,而 codec 仍在渲染旧面。修 = `attachContainerTo()` / `detachContainerFromHost()` 在 `removeView(mPlayerContainer)` **之前**先解绑输出面。
+4. **Texture 渲染下切页黑屏有声(缺陷 3 的修法引入的回归)**:`EngineTextureRenderView.onSurfaceTextureAvailable` 的「复用已有 texture」分支只 `setSurfaceTexture(existing); return`,**从不重新绑定播放器 surface**;而 `onSurfaceTextureDestroyed` 返回 `false`(框架不释放 SurfaceTexture)⇒ 容器重挂后**必然**走这个分支 ⇒ `videoOutputInvalid` 永真 ⇒ 渲染器永久关闭。修 = 该分支改走 `refreshSurface()`。
+5. **切页后进度条卡 0、不可拖动(回归)**:`ComposeVideoController.contentUrl` 是**每页一个控制器**的字段(`PlayContainer` 里 `new ComposeVideoController`),而 `MyVideoView` 是引擎共享的;新页面走 `setData` 的 `isSamePlaybackOwned` 分支(日志 `echo-p3 take over same playback`)**接管已有播放、不重下 url** ⇒ `onContentUrlSet` 从不被调用 ⇒ `staleContent` 恒真 ⇒ `state.position/duration` 不写(duration 为 0 时滑杆无量程,故也拖不动)。修 = 在 `isSamePlaybackOwned` 分支里补 `mController.onContentUrlSet(mVideoView?.currentUrl)`(该判定要求 `startedPlaybackKey == session.playbackKey`,**只在同一内容时为真**,是唯一安全的播种点)。
+   - **踩坑(同批内自我更正)**:初版把播种放在 `setKernelProvider(view)`(每次页面绑定共享播放器都播种),导致**换到不同影片时进度条闪回上一部的位置** —— 播种采纳的是播放器**当时**的地址(旧片),切换途中 `staleContent` 判假,把旧 duration/position 写进了 UI。真机证据:11:19:57.350 换到 `902056` → 11:19:58.243 `echo-bar-draw: progress=122.49 uiPosition=342611 uiDuration=2796920`(旧片 2796920) → 11:19:58.527 新片 2647960 才接管。改到接管分支后此现象消失。
+
+**最后一步优化(用户要求"回到旧版这样的效果")**:新增 `PlayerEngine.detachVideoSurface()` —— 只 `internalPlayer.clearVideoSurface()`、**不置** `videoOutputInvalid`;`KernelPlayer` / `ExoPlayer` 各加同名转发;`AppPlayerView.attachContainerTo()` / `detachContainerFromHost()` 由 `clearDisplay()` 改调它。于是换父前输出面已解绑(`obsolete surface` 仍防住),但渲染器启用态不变 ⇒ 无 track selection 变化 ⇒ 无 media period 重配。
+
+**改动(13 文件)**:`player/engine/PlayerEngine.kt`(不变量三件套 + `applyRendererEnablement()` / `setVideoOutputInvalid()` + `detachVideoSurface()`)、`player/host/EngineTextureRenderView.kt`(`release()` 先解绑再释放并置空;复用分支走 `refreshSurface()`)、`player/host/EngineSurfaceRenderView.kt`(新增 `released` 标记,`surfaceCreated/Changed/Destroyed` 与 `attachToPlayer` 全部加守卫 —— 防被移除的旧视图"迟到的 surfaceDestroyed"清掉新输出;`surfaceDestroyed` 亦由 `clearDisplay()` 改 `detachVideoSurface()`,见下"审查修复轮")、`player/host/PlayerRenderView.kt` + `player/MyVideoView.kt`(删已无用的 surface-ready 门控 `isSurfaceReady` / `runWhenSurfaceReady` / `runWhenRenderSurfaceReady`)、`player/AppPlayerView.kt`(`addDisplay()` 先解绑再释放;挂摘容器改走 `detachVideoSurface()`)、`player/KernelPlayer.kt` + `player/ExoPlayer.kt`(`detachVideoSurface()` 声明为 `abstract` 并由 `ExoPlayer` 实现;`clearDisplay()` 保留 `open`)、`player/PlaybackEngine.kt`(`attach()` 接管时按配置还原渲染视图;`HeadlessBridge.setAudioOnlyMode` 简化,不再手动等 surface 就绪)、`player/state/PlayerUiState.kt`(`exitPaused`)、`player/controller/PlayerControlApi.kt` + `player/controller/ComposeVideoController.kt`(`setExitPaused` 实现与复位)、`ui/player/PlayContainer.kt`(`stopForExitFullscreen()` 在 `pause()` 前 `setExitPaused(true)`;`isSamePlaybackOwned` 分支播种 `contentUrl`)、`test/.../PlayerUiStateVisibilityTest.kt`(+3 例)。
+
+**效果对照(同样 4 次切页)**
+
+| 指标 | `clearDisplay()` 版 | **`detachVideoSurface()` 版** |
+|---|---|---|
+| `echo-exo-codec-init` | 每次切页 1 次 | **全程 1 次**(仅会话开始) |
+| 切页后 BUFFERING | ~460ms | **无**(attach→PLAYING 7~8ms) |
+| `outputInvalid=true` 翻转 | 每次 1 次 | **0** |
+| `obsolete surface` / `ERROR_CODE` | 0 | **0** |
+| `release player kernel` | 0 | 0 |
+
+**代价登记(用户 2026-10-08 拍板保留)**:音乐页 → 视频页仍有 **383~525ms 重缓冲**。根因**不是**容器重挂,而是音乐页 WIP 新增的 `setAudioOnlyMode`(`audioOnlyRequested` true→false 必然引起 track selection 变化)。旧版音乐页只有 `MyVideoView.switchRenderToTexture()`、**不 disable 渲染器**,故无此代价。保留理由:该转换频率远低于普通切页,renderer disable 是刻意加的崩溃防护(避 1x1 Surface 在翻页时失效导致硬解崩溃),拿约 400ms 换稳定性划算。若日后要动:①回退成只切渲染视图(无重缓冲、放弃防护);②提前放开渲染器把重配藏进转场(需实测是否复发"解码器绑死 surface")。
+
+**验证**:`.\\gradlew.bat :app:assembleDebug :app:testDebugUnitTest` BUILD SUCCESSFUL;单测 `PlayerUiStateVisibilityTest` 10/10、`DetailPlaybackPolicyTest` 11/11;全程装机 vivo `10AF1J04JX0016G`(末次 `lastUpdateTime=2026-10-08 11:12:53`);5 个场景真机走查通过(`dumpsys activity exit-info` 无崩溃 / 无 ANR)。判据:退出音乐页无 `DECODER_INIT_FAILED`;退全屏无中央 ▶;切页有 `echo-exo-detach-surface: renderers kept`、无 `obsolete surface`、无 `release player kernel`;`echo-p2 engine create` 全程 1 次;`echo-progress-tick` 的 `stale=false`。
+
+**已作废的旧口径**:①「清输出面 = 同时禁用视频渲染器」—— 初版实现(`clearDisplay()` 走不变量)在切页路径上被推翻,两概念必须解耦(见上)。②「在 `setKernelProvider` 里播种 `contentUrl`」—— 见缺陷 5 的踩坑:它让换片时进度条闪回上一部;已改为只在 `isSamePlaybackOwned` 分支播种。
+
+**审查修复轮(同批,`skill/review/review-20261008-batch1.md`)**:按 `skill/avbox-code-review-spec.md` 审本批未提交 diff(26 文件 / +464 −25),出 4 条中级 + 6 条低级,无阻断无高级。已修 2 条中级:①`KernelPlayer.detachVideoSurface()` 由 `open { setSurface(null) }` 改 `abstract`(原默认实现会经 `setVideoSurface(null)` 置 `videoOutputInvalid` ⇒ 禁用渲染器,与"不改启用态"契约相反);②`EngineSurfaceRenderView.surfaceDestroyed` 由 `clearDisplay()` 改 `detachVideoSurface()`,与切页路径统一(实测容器重挂时 `echo-surface: destroyed` 0 次,本就不触发;`addDisplay()` 的 `clearDisplay()` 保留作音乐页退出的开关守卫)。**#3 为审查者误报,已驳回并恢复 WIP 原样**:我依据 `PlaybackSession.playbackKey()` 含 `vod.id` 推断"原条件已覆盖 WIP 注释所述场景",漏掉运行时路径 —— 音乐页的 `setMusicAudioOnly(true)` 会强制 audio-only,`MusicSessionDelegate:201` 因而把 `audioOnlyConfirmed` 置 true(即使内容带视频轨);"从音乐页返回同一内容"时 `playbackKey` 相同、原条件不清 ⇒ 被弹回音乐页(真机复现"进入视频就会重新进入音乐播放页")。WIP 的"每次 `startSession` 都清"正是修这个的。**#9 决定不改并留档**:给接管分支的 `contentUrl` 播种加 `scheduler.webPlayUrl()` 比对会在"线路地址 ≠ 播放器实际地址"时误判不一致 ⇒ 不播种 ⇒ 进度条卡 0 复发。P2 六项(`applyRendererEnablement` 与 `EngineTrackSelection` 双写 `rendererDisabled`、`PlayerBottomBar` 文件级 `lastDrawnProgress`、热路径诊断日志常开、`release()` 未清两个 renderer 列表、`detachVideoSurface` 无输出面仍解码、播种缺一致性校验)留到提交前一次性处理。
+
+**文档同步**:`skill/avbox-playback-service-spec.md` §3.8 新增两条约束(「输出面解绑与渲染器开关解耦」「`videoOutputInvalid` 一旦置真必须有确定复位路径」)、§7.4 补 5 行缺陷、§8 补修订记录;`.codebuddy` / `.trae` 两镜像已同步。方案档(本地 `文档/playback-surface-race-fixes.md`)含完整日志锚点、与旧版的逐项对照表、走查判据。

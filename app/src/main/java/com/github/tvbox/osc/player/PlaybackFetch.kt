@@ -48,7 +48,10 @@ class PlaybackFetch(private val controller: PlaybackController) {
     }
 
     private fun handlePlayResult(info: JSONObject?) {
-        if (info == null) controller.publishQuality(null)
+        val prepareOnly = controller.isCastPrepareOnly()
+        if (info == null) {
+            if (!prepareOnly) controller.publishQuality(null)
+        }
         if (info != null) {
             try {
                 if (controller.isStalePlayResult(info)) {
@@ -61,7 +64,7 @@ class PlaybackFetch(private val controller: PlaybackController) {
                     return
                 }
                 controller.cancelResolvePlayUrlTimeout()
-                controller.publishQuality(info)
+                if (!prepareOnly) controller.publishQuality(info)
                 controller.setWebPlayUrl(null)
                 controller.setProgressKey(info.optString("proKey", null))
                 val parse = info.optString("parse", "1") == "1"

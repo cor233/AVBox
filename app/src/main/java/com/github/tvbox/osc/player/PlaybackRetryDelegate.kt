@@ -54,6 +54,8 @@ class PlaybackRetryDelegate(private val host: Host) {
         fun isCrossContentReuseAllowed(): Boolean
 
         fun stopMusicSessionForFailedPlayback()
+
+        fun closeCastPrepare()
     }
 
     private fun restoreAutoSwitchedPlayer() {
@@ -272,8 +274,20 @@ class PlaybackRetryDelegate(private val host: Host) {
         return true
     }
 
+    private fun abortIfCastPrepare(reason: String): Boolean {
+        val st = host.attemptState()
+        if (!st.castPrepareOnly) return false
+        LOG.i("echo-cast prepare aborted: $reason")
+        host.cancelPlayRequest()
+        host.stopParse()
+        host.cancelPlayTimeout()
+        host.closeCastPrepare()
+        return true
+    }
+
     fun handleResolvePlayUrlTimeout() {
         val st = host.attemptState()
+        if (abortIfCastPrepare("resolveTimeout")) return
         if (retryWithFreshResolve("resolveTimeout")) return
         LOG.i("echo-resolvePlayUrl timeout, try next line")
         host.cancelPlayRequest()
@@ -293,6 +307,7 @@ class PlaybackRetryDelegate(private val host: Host) {
     fun handleResolvePlayUrlFailed(err: String) {
         val st = host.attemptState()
         LOG.i("echo-resolvePlayUrl failed, try next line: $err")
+        if (abortIfCastPrepare(err)) return
         host.cancelPlayRequest()
         host.stopParse()
         if (st.userPickedLine) {
@@ -313,6 +328,7 @@ class PlaybackRetryDelegate(private val host: Host) {
         val view = host.view()
         val state = view?.playState()
         LOG.i("echo-switchLinePlay timeout state: $state, started: " + st.playbackStarted)
+        if (abortIfCastPrepare("switchLineTimeout")) return
         if (host.isPlaybackStarted()) {
             host.cancelPlayTimeout()
             view?.hideTipOnUiThread()

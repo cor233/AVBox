@@ -8,8 +8,11 @@ package com.github.tvbox.osc.ui.page
 import android.content.Intent
 import android.widget.Toast
 import androidx.compose.animation.Crossfade
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -63,11 +66,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -75,6 +80,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.github.tvbox.osc.R
 import com.github.tvbox.osc.bean.Movie
+import com.github.tvbox.osc.bean.MovieSort
 import com.github.tvbox.osc.net.SiteSearch
 import com.github.tvbox.osc.ui.activity.ConfigManageActivity
 import com.github.tvbox.osc.ui.activity.PartitionListActivity
@@ -83,8 +89,11 @@ import com.github.tvbox.osc.ui.activity.SearchViewModel
 import com.github.tvbox.osc.ui.components.AVBoxBottomSheet
 import com.github.tvbox.osc.ui.components.AVBoxOptionMenuAction
 import com.github.tvbox.osc.ui.components.AppTopBarScaffold
-import com.github.tvbox.osc.ui.components.HeroCarousel
+import com.github.tvbox.osc.ui.components.HeroSpotlight
+import com.github.tvbox.osc.ui.components.HomeBackdrop
+import com.github.tvbox.osc.ui.components.HomeHeroBackdrop
 import com.github.tvbox.osc.ui.components.LoadState
+import com.github.tvbox.osc.ui.components.homeHeroBackdropSupported
 import com.github.tvbox.osc.ui.components.LoadStateBox
 import com.github.tvbox.osc.ui.components.LocalSheetDismiss
 import com.github.tvbox.osc.ui.components.SearchField
@@ -95,10 +104,14 @@ import com.github.tvbox.osc.ui.components.SettingsGroup
 import com.github.tvbox.osc.ui.components.SettingsOptionRow
 import com.github.tvbox.osc.ui.components.SettingsRow
 import com.github.tvbox.osc.ui.components.SkeletonBox
+import com.github.tvbox.osc.ui.components.VodCard
 import com.github.tvbox.osc.ui.components.VodCardMenu
+import com.github.tvbox.osc.ui.components.VodCardStyle
 import com.github.tvbox.osc.ui.components.glassTopBarSurface
+import com.github.tvbox.osc.ui.components.heroSpotlightHeight
 import com.github.tvbox.osc.ui.components.rememberVodCardMenuState
 import com.github.tvbox.osc.ui.page.jumpToSearch
+import com.github.tvbox.osc.ui.theme.AppThemeState
 import com.github.tvbox.osc.ui.theme.cardContainer
 import com.github.tvbox.osc.util.HomeSettings
 import com.kyant.capsule.ContinuousCapsule
@@ -110,15 +123,22 @@ private const val CapsuleLogoZoom = 1.5f
 
 private val HomeTopBarControlSpacing = 8.dp
 
+private val HomeCapsuleArrowInset = 5.dp
+
 @Composable
-fun HomePage(vm: HomeViewModel, contentPadding: PaddingValues = PaddingValues(0.dp)) {
+fun HomePage(
+    vm: HomeViewModel,
+    contentPadding: PaddingValues = PaddingValues(0.dp),
+) {
     val navStart = contentPadding.calculateStartPadding(LocalLayoutDirection.current)
     val navBottom = contentPadding.calculateBottomPadding()
+    val screenHeightDp = LocalConfiguration.current.screenHeightDp
     val context = LocalContext.current
     val currentSource by vm.currentSource.collectAsStateWithLifecycle()
     val sources by vm.sources.collectAsStateWithLifecycle()
     val rec by vm.rec.collectAsStateWithLifecycle()
     val partitions by vm.partitions.collectAsStateWithLifecycle()
+    val sorts by vm.sorts.collectAsStateWithLifecycle()
     val vodMenu = rememberVodCardMenuState()
 
     val listState = rememberLazyListState()
@@ -144,10 +164,25 @@ fun HomePage(vm: HomeViewModel, contentPadding: PaddingValues = PaddingValues(0.
 
     var showSourceSheet by remember { mutableStateOf(false) }
     var showSearchSettings by remember { mutableStateOf(false) }
+    var backdropSeed by remember { mutableStateOf<Int?>(null) }
+    var backdropPic by remember { mutableStateOf("") }
+    val heroBackdropEnabled = homeLayout == HomeSettings.HomeLayout.Horizontal &&
+        homeHeroBackdropSupported
+    val darkTheme = AppThemeState.isDark(isSystemInDarkTheme())
+    val backdropContainer by animateColorAsState(
+        targetValue = backdropSeed
+            ?.takeIf { homeLayout == HomeSettings.HomeLayout.Horizontal }
+            ?.let { Color(HomeBackdrop.surfaceOf(it, darkTheme)) }
+            ?: MaterialTheme.colorScheme.surfaceContainer,
+        animationSpec = tween(200),
+        label = "homeBackdrop",
+    )
 
     AppTopBarScaffold(
         collapseEnabled = false,
         topBarStartInset = navStart,
+        topScrimEnabled = homeLayout != HomeSettings.HomeLayout.Horizontal,
+        containerColor = backdropContainer,
         titleContent = {
             BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
                 Row(
@@ -189,6 +224,7 @@ fun HomePage(vm: HomeViewModel, contentPadding: PaddingValues = PaddingValues(0.
                     Text(
                         text = currentSource?.name?.takeIf { it.isNotEmpty() } ?: stringResource(R.string.home_subscription_source),
                         style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium,
                         color = MaterialTheme.colorScheme.onSurface,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
@@ -233,12 +269,13 @@ fun HomePage(vm: HomeViewModel, contentPadding: PaddingValues = PaddingValues(0.
             }
         },
     ) { topPad, _ ->
+        if (heroBackdropEnabled && backdropPic.isNotEmpty()) {
+            HomeHeroBackdrop(pic = backdropPic, scrimColor = backdropContainer)
+        }
         when {
             pageLoading -> {
                 Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(bottom = navBottom),
+                    modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center,
                 ) {
                     ContainedLoadingIndicator(Modifier.size(64.dp))
@@ -291,55 +328,69 @@ fun HomePage(vm: HomeViewModel, contentPadding: PaddingValues = PaddingValues(0.
                     ),
                 contentPadding = PaddingValues(
                     start = navStart,
-                    top = topPad + 8.dp,
+                    top = 0.dp,
                     bottom = 88.dp + navBottom,
                 ),
             ) {
                 item(key = "hero") {
-                    if (rec.state == HomeViewModel.PartitionState.Ready && rec.videos.isNotEmpty()) {
-                        HeroCarousel(
-                            videos = rec.videos.take(5),
-                            onCardClick = { video -> handleCardClick(vm, video, context) },
-                        )
-                    } else if (rec.state == HomeViewModel.PartitionState.Loading) {
-                        SkeletonBox(
-                            modifier = Modifier
-                                .fillParentMaxWidth(0.78f)
-                                .aspectRatio(1.5f)
-                                .clip(RoundedCornerShape(24.dp)),
-                            shape = RoundedCornerShape(24.dp),
-                        )
-                    } else if (rec.state == HomeViewModel.PartitionState.Error) {
-                        Box(
-                            modifier = Modifier
-                                .fillParentMaxWidth(0.78f)
-                                .aspectRatio(1.5f)
-                                .clip(RoundedCornerShape(24.dp))
-                                .background(MaterialTheme.colorScheme.surfaceBright),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            LoadStateBox(
-                                state = LoadState.Error(),
-                                emptyText = "",
-                                errorText = stringResource(R.string.home_load_timeout),
-                                                retryText = stringResource(R.string.common_retry),
-                                onRetry = { vm.loadHome() },
+                    when {
+                        rec.state == HomeViewModel.PartitionState.Ready && rec.videos.isNotEmpty() -> {
+                            HeroSpotlight(
+                                videos = rec.videos.take(HomeViewModel.HERO_VIDEO_COUNT),
+                                backdropColor = backdropContainer,
+                                onBackdropSeed = { argb -> backdropSeed = argb },
+                                onPosterPic = { pic -> backdropPic = pic },
+                                onCardClick = { video -> handleCardClick(vm, video, context) },
+                                fadeToBackdrop = heroBackdropEnabled,
                             )
+                        }
+                        rec.state == HomeViewModel.PartitionState.Loading -> {
+                            SkeletonBox(
+                                modifier = Modifier
+                                    .fillParentMaxWidth()
+                                    .height(heroSpotlightHeight(screenHeightDp)),
+                            )
+                        }
+                        rec.state == HomeViewModel.PartitionState.Error -> {
+                            Box(
+                                modifier = Modifier
+                                    .fillParentMaxWidth()
+                                    .height(heroSpotlightHeight(screenHeightDp))
+                                    .background(MaterialTheme.colorScheme.surfaceContainer),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                LoadStateBox(
+                                    state = LoadState.Error(),
+                                    emptyText = "",
+                                    errorText = stringResource(R.string.home_load_timeout),
+                                    retryText = stringResource(R.string.common_retry),
+                                    onRetry = { vm.loadHome() },
+                                )
+                            }
+                        }
+                        else -> {
+                            Spacer(modifier = Modifier.height(topPad + 8.dp))
                         }
                     }
                 }
+                item(key = "cats") {
+                    HomeCategoryChips(
+                        sorts = sorts,
+                        onOpenSort = { sort -> PartitionListActivity.startForPartition(context, sort) },
+                    )
+                }
                 if (rec.state != HomeViewModel.PartitionState.Empty &&
-                    (rec.state == HomeViewModel.PartitionState.Loading || rec.videos.size > 5)
+                    (rec.state == HomeViewModel.PartitionState.Loading ||
+                        rec.videos.size > HomeViewModel.HERO_VIDEO_COUNT)
                 ) {
                     item(key = "rec") {
                         PartitionSection(
                             title = stringResource(R.string.home_recommend),
                             state = rec.state,
-                            videos = rec.videos.drop(5),
+                            videos = rec.videos.drop(HomeViewModel.HERO_VIDEO_COUNT),
                             onLoadMore = {},
                             onCardClick = { video -> handleCardClick(vm, video, context) },
                             onCardLongClick = { video -> vodMenu.show(video) },
-                            cardWidth = 140.dp,
                         )
                     }
                 }
@@ -588,26 +639,11 @@ private fun PartitionSection(
                 modifier = Modifier.weight(1f),
             )
             if (onOpenAll != null) {
-                Row(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(18.dp))
-                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.7f))
-                        .clickable(onClick = onOpenAll)
-                        .padding(horizontal = 8.dp, vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        text = stringResource(R.string.common_all),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(18.dp),
-                    )
-                }
+                HomeCapsule(
+                    text = stringResource(R.string.common_all),
+                    onClick = onOpenAll,
+                    trailingArrow = true,
+                )
             }
         }
         when (state) {
@@ -663,17 +699,83 @@ private fun PartitionSection(
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 itemsIndexed(videos) { index, video ->
-                    com.github.tvbox.osc.ui.components.VodCard(
+                    VodCard(
                         video = video,
                         onClick = { onCardClick(video) },
                         onLongClick = { onCardLongClick(video) },
                         modifier = Modifier.width(cardWidth),
+                        style = VodCardStyle.Stacked,
                     )
                 }
                 item(key = "more_$title") {
                     LaunchedEffect(videos.size) { onLoadMore() }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun HomeCategoryChips(
+    sorts: List<MovieSort.SortData>,
+    onOpenSort: (MovieSort.SortData) -> Unit,
+) {
+    if (sorts.isEmpty()) return
+    Column(modifier = Modifier.padding(top = 24.dp, bottom = 12.dp)) {
+        Text(
+            text = stringResource(R.string.home_all_categories),
+            style = MaterialTheme.typography.titleLarge,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 14.dp),
+        )
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            items(sorts) { sort ->
+                HomeCapsule(
+                    text = sort.name ?: "",
+                    onClick = { onOpenSort(sort) },
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun HomeCapsule(
+    text: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    contentPadding: PaddingValues = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+    trailingArrow: Boolean = false,
+    fontWeight: FontWeight = FontWeight.Medium,
+) {
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(18.dp))
+            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.7f))
+            .clickable(onClick = onClick)
+            .padding(contentPadding),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = fontWeight,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+        )
+        if (trailingArrow) {
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .size(18.dp)
+                    .offset(x = HomeCapsuleArrowInset),
+            )
         }
     }
 }

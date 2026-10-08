@@ -32,7 +32,9 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Rect
@@ -59,6 +61,7 @@ fun AppTopBarScaffold(
     actions: @Composable RowScope.() -> Unit = {},
     collapseEnabled: Boolean = true,
     topBarStartInset: Dp = 0.dp,
+    topScrimEnabled: Boolean = true,
     content: @Composable androidx.compose.foundation.layout.BoxScope.(topPadding: androidx.compose.ui.unit.Dp, bottomPadding: androidx.compose.ui.unit.Dp) -> Unit,
 ) {
     val scrollBehavior = if (collapseEnabled) {
@@ -69,11 +72,12 @@ fun AppTopBarScaffold(
     val glassConfig = LiquidGlassState.config
     val glassEnabled = glassConfig.controlsEnabled &&
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
-    val glassOnDraw: ContentDrawScope.() -> Unit = remember(containerColor) {
-        { drawRect(containerColor); drawContent() }
+    val glassColor by rememberUpdatedState(containerColor)
+    val glassOnDraw: ContentDrawScope.() -> Unit = remember {
+        { drawRect(glassColor); drawContent() }
     }
     val glassBackdrop = rememberLayerBackdrop(onDraw = glassOnDraw)
-    val pauseGlassRecording = LocalGlassPauseRecording.current
+    val pauseGlassRecording = LocalTopBarGlassPauseRecording.current
     Scaffold(
         modifier = modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
@@ -110,7 +114,7 @@ fun AppTopBarScaffold(
         val topPadding = padding.calculateTopPadding()
         val density = LocalDensity.current
         val glassBandHeight = topPadding + GLASS_BACKDROP_BAND_MARGIN_DP.dp
-        val glassBounds: (Size) -> Rect? = remember(density, glassBandHeight) {
+        val glassBounds: (Size) -> Rect? = remember(density, glassBandHeight, containerColor) {
             { size -> Rect(0f, 0f, size.width, with(density) { glassBandHeight.toPx() }) }
         }
         Box(modifier = Modifier.fillMaxSize()) {
@@ -130,7 +134,9 @@ fun AppTopBarScaffold(
                     padding.calculateBottomPadding(),
                 )
             }
-            TopScrim(height = topPadding)
+            if (topScrimEnabled) {
+                TopScrim(height = topPadding)
+            }
         }
     }
 }
@@ -164,11 +170,12 @@ fun TopBarActionBox(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     tint: Color = MaterialTheme.colorScheme.onSurface,
+    fallbackColor: Color = MaterialTheme.colorScheme.surfaceBright,
 ) {
     Box(
         modifier = modifier
             .size(40.dp)
-            .glassTopBarSurface(CircleShape, MaterialTheme.colorScheme.surfaceBright)
+            .glassTopBarSurface(CircleShape, fallbackColor)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {

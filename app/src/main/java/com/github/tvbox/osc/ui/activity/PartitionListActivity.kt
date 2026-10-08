@@ -1,4 +1,7 @@
-@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@file:OptIn(
+    androidx.compose.material3.ExperimentalMaterial3Api::class,
+    androidx.compose.material3.ExperimentalMaterial3ExpressiveApi::class,
+)
 
 package com.github.tvbox.osc.ui.activity
 
@@ -21,6 +24,7 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.ContainedLoadingIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -54,6 +58,7 @@ import com.github.tvbox.osc.ui.components.LoadStateBox
 import com.github.tvbox.osc.ui.components.AppTopBarScaffold
 import com.github.tvbox.osc.ui.components.VodCard
 import com.github.tvbox.osc.ui.components.VodCardMenu
+import com.github.tvbox.osc.ui.components.VodCardStyle
 import com.github.tvbox.osc.ui.components.glassTopBarSurface
 import com.github.tvbox.osc.ui.components.rememberVodCardMenuState
 import com.github.tvbox.osc.ui.WindowSize
@@ -201,6 +206,7 @@ private fun PartitionListScreen(mode: String, title: String, sortJson: String?, 
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(top = topPad),
+                loadingContent = { ContainedLoadingIndicator(Modifier.size(64.dp)) },
             )
 
             ui.state == PartitionListVM.State.Empty -> LoadStateBox(
@@ -291,6 +297,7 @@ private fun VideoGrid(
                 video = video,
                 onClick = { onCardClick(video) },
                 onLongClick = { onCardLongClick(video) },
+                style = VodCardStyle.Stacked,
             )
         }
         if (enableLoadMore) {

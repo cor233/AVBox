@@ -29,7 +29,6 @@
     <string name="player_no_video_track">沒有視頻軌</string>
     <string name="player_switch_video_track">切換視頻軌</string>
     <string name="player_lock">鎖定屏幕</string>
-    <string name="detail_fullscreen_play">全屏播放</string>
     <string name="live_exit_fullscreen">退出全屏</string>
     <string name="toast_folder_data_missing">文件夾數據缺失，無法打開</string>
     <string name="player_get_url_timeout">獲取播放地址超時</string>
@@ -73,5 +72,5 @@
     <string name="tab_records">記錄</string>
     <string name="tab_following">追劇</string>
     <string name="tab_mine">我的</string>
-    <string name="following_empty">功能開發中，敬請期待</string>
+    <string name="following_empty">暫無追劇</string>
 </resources>

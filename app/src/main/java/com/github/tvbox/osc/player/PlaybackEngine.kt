@@ -218,6 +218,9 @@ class PlaybackEngine(context: Context) : PlaybackHostApi {
 
     fun isReleased(): Boolean = released
 
+    /** 用户配置的渲染类型：1=SurfaceView，其余=TextureView（与 PlayerHelper.updateCfg 一致）。 */
+    private fun configuredRenderType(): Int = KV.get(HawkConfig.PLAY_RENDER, 1)
+
     fun attach(page: PlaybackPage) {
         if (released) return
         if (liveMode) exitLiveState()
@@ -225,6 +228,14 @@ class PlaybackEngine(context: Context) : PlaybackHostApi {
         if (!videoView.isPlaying) videoView.coverVideoFrame()
         videoView.attachContainerTo(page.renderSlot())
         controller.setViewBridge(page.viewBridge())
+        // 音乐页会把渲染视图切成 TextureView，返回影视页必须还原成配置的渲染类型，
+        // 否则 alignInstanceConfigOnTakeover 会误判成渲染类型变更并白白重建内核。
+        // 基准用用户全局渲染设置：音乐页改的是渲染视图工厂（不可作基准），
+        // 而 controller.playerCfg() 在接管瞬间可能还是音乐页那份陈旧配置。
+        // 音乐页自身由 ensureAudioOnlyRender 统一切 Texture，这里无需先建一个 SurfaceView。
+        if (!page.isAudioOnlyPage()) {
+            videoView.alignRenderViewToConfig(configuredRenderType())
+        }
         cancelIdleRelease()
         LOG.i(TAG + " attach page=" + page.hashCode() + " key=" + (session?.playbackKey() ?: "-"))
     }
@@ -455,6 +466,12 @@ class PlaybackEngine(context: Context) : PlaybackHostApi {
 
         override fun isKernelErrored(): Boolean = !released && videoView.isKernelErrored()
 
+        override fun currentUrl(): String? = if (released) null else videoView.currentUrl
+
+        override fun onContentUrlSet(url: String?) {
+            // 无头桥接没有进度条；详情页路径由 PlayContainerViewBridge 直接转给页面控制器。
+        }
+
         override fun releasePlayer() {
             this@PlaybackEngine.releasePlayer()
         }
@@ -497,6 +514,19 @@ class PlaybackEngine(context: Context) : PlaybackHostApi {
 
         override fun ensureRenderViewMatchesConfig() {
             if (!released) videoView.ensureRenderViewMatchesConfig()
+        }
+
+        override fun setAudioOnlyMode(audioOnly: Boolean) {
+            if (released) return
+            if (!audioOnly) {
+                videoView.alignRenderViewToConfig(configuredRenderType())
+            }
+            (videoView.mediaPlayer as? ExoPlayer)?.setAudioOnlyMode(audioOnly)
+        }
+
+        override fun isAudioOnlyMode(): Boolean {
+            if (released) return false
+            return (videoView.mediaPlayer as? ExoPlayer)?.isAudioOnlyMode() == true
         }
 
         override fun playExternalPlayer(

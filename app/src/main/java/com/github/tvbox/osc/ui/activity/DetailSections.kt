@@ -1,11 +1,17 @@
 package com.github.tvbox.osc.ui.activity
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -13,7 +19,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -23,16 +29,21 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.github.tvbox.osc.R
 import com.github.tvbox.osc.bean.Movie
 import com.github.tvbox.osc.ui.components.VodCard
 import com.github.tvbox.osc.ui.page.openVodCardOrDetail
-import com.github.tvbox.osc.ui.theme.filterChipColors
 
 @Composable
 internal fun SectionTitleIcon(painter: Painter) {
@@ -54,6 +65,102 @@ internal fun SectionTitleIcon(imageVector: ImageVector) {
     )
 }
 
+internal const val DetailCardAlpha = 0.5f
+
+@Composable
+internal fun detailCardColor(): Color =
+    MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = DetailCardAlpha)
+
+@Composable
+internal fun detailChipColors() = FilterChipDefaults.filterChipColors(
+    containerColor = detailCardColor(),
+    selectedContainerColor = detailCardColor(),
+    labelColor = MaterialTheme.colorScheme.onSurface,
+    selectedLabelColor = MaterialTheme.colorScheme.onSurface,
+)
+
+@Composable
+internal fun detailChipBorder(selected: Boolean) = if (selected) {
+    BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
+} else {
+    BorderStroke(0.dp, Color.Transparent)
+}
+
+internal val DetailItemHeight = 70.dp
+internal val DetailItemMinWidth = 160.dp
+internal val DetailItemWidth = 160.dp
+
+private const val DetailGlassGlossAlpha = 0.06f
+private const val DetailGlassHighlightTopAlpha = 0.35f
+private const val DetailGlassHighlightBottomAlpha = 0.06f
+
+@Composable
+internal fun Modifier.detailGlass(shape: Shape): Modifier = this
+    .clip(shape)
+    .background(detailCardColor())
+    .background(
+        Brush.verticalGradient(
+            0f to Color.White.copy(alpha = DetailGlassGlossAlpha),
+            0.45f to Color.Transparent,
+        ),
+    )
+    .border(
+        width = 1.dp,
+        brush = Brush.verticalGradient(
+            listOf(
+                Color.White.copy(alpha = DetailGlassHighlightTopAlpha),
+                Color.White.copy(alpha = DetailGlassHighlightBottomAlpha),
+            ),
+        ),
+        shape = shape,
+    )
+
+@Composable
+internal fun DetailItemCard(
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    val shape = RoundedCornerShape(16.dp)
+    Column(
+        modifier = modifier
+            .height(DetailItemHeight)
+            .defaultMinSize(minWidth = DetailItemMinWidth)
+            .detailGlass(shape)
+            .then(
+                if (selected) {
+                    Modifier.border(1.5.dp, MaterialTheme.colorScheme.primary, shape)
+                } else {
+                    Modifier
+                },
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        content = content,
+    )
+}
+
+@Composable
+private fun SourceCard(name: String, selected: Boolean, onClick: () -> Unit) {
+    DetailItemCard(
+        selected = selected,
+        onClick = onClick,
+        modifier = Modifier.width(DetailItemWidth),
+    ) {
+        Text(
+            text = name,
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
 @Composable
 internal fun SourceSection(vm: DetailViewModel, currentSourceName: String?, revision: Int) {
     @Suppress("UNUSED_EXPRESSION") revision
@@ -66,9 +173,8 @@ internal fun SourceSection(vm: DetailViewModel, currentSourceName: String?, revi
     }
     Column(
         modifier = Modifier
-            .padding(start = 6.dp, end = 6.dp, top = 12.dp)
-            .background(MaterialTheme.colorScheme.surfaceBright, RoundedCornerShape(16.dp))
-            .padding(vertical = 12.dp)
+            .fillMaxWidth()
+            .padding(top = 16.dp)
     ) {
         Row(
             modifier = Modifier
@@ -96,28 +202,22 @@ internal fun SourceSection(vm: DetailViewModel, currentSourceName: String?, revi
         LazyRow(
             state = listState,
             contentPadding = PaddingValues(horizontal = 16.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             if (currentSourceName != null) {
                 item(key = "current") {
-                    FilterChip(
+                    SourceCard(
+                        name = currentSourceName,
                         selected = true,
                         onClick = {},
-                        label = { Text(currentSourceName) },
-                        shape = RoundedCornerShape(20.dp),
-                        colors = MaterialTheme.colorScheme.filterChipColors(),
                     )
                 }
             }
             itemsIndexed(sourceChips, key = { _, c -> c.key }) { _, chip ->
-                FilterChip(
+                SourceCard(
+                    name = chip.name,
                     selected = false,
                     onClick = { vm.candidateForKey(chip.key)?.let { vm.switchSource(it) } },
-                    label = { Text(chip.name) },
-                    shape = RoundedCornerShape(20.dp),
-                    colors = MaterialTheme.colorScheme.filterChipColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceContainer,
-                    ),
                 )
             }
         }

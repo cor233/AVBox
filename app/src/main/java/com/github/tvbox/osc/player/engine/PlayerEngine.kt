@@ -71,6 +71,8 @@ class PlayerEngine(
 
     private val videoRenderers = ArrayList<Renderer>()
 
+    private val videoRendererIndices = ArrayList<Int>()
+
     private val trackSelector = DefaultTrackSelector(appContext)
 
     private val trackSelection = EngineTrackSelection(object : EngineTrackSelection.Host {
@@ -110,6 +112,9 @@ class PlayerEngine(
     private var lastOutputWidth = 0
     private var lastOutputHeight = 0
     private var redrawScheduled = false
+    private var audioOnlyRequested = false
+    private var videoOutputInvalid = false
+    private var videoRenderersDisabled = false
 
     var videoSizeListener: VideoSizeListener? = null
 
@@ -210,6 +215,7 @@ class PlayerEngine(
             appContext,
             { trackSelection.subtitleDelayUs },
             videoRenderers,
+            videoRendererIndices,
             config.dynamicScheduling,
         )
             .setEnableDecoderFallback(true)
@@ -363,6 +369,9 @@ class PlayerEngine(
             it.release()
         }
         internalPlayer = null
+        audioOnlyRequested = false
+        videoOutputInvalid = false
+        videoRenderersDisabled = false
         speedPlaybackParameters = null
     }
 
@@ -389,6 +398,23 @@ class PlayerEngine(
 
     fun setVideoSurface(surface: Surface?) {
         internalPlayer?.setVideoSurface(surface)
+        setVideoOutputInvalid(surface == null || !surface.isValid)
+    }
+
+    fun clearVideoOutput() {
+        internalPlayer?.clearVideoSurface()
+        setVideoOutputInvalid(true)
+    }
+
+    fun detachVideoSurface() {
+        internalPlayer?.clearVideoSurface()
+        LOG.i("echo-exo-detach-surface: renderers kept")
+    }
+
+    private fun setVideoOutputInvalid(invalid: Boolean) {
+        if (invalid == videoOutputInvalid) return
+        videoOutputInvalid = invalid
+        applyRendererEnablement()
     }
 
     fun setDisplay(holder: SurfaceHolder?) {
@@ -397,8 +423,12 @@ class PlayerEngine(
             return
         }
         val surface = holder.surface
+        if (surface == null || !surface.isValid) {
+            // 翻页/宿主窗口切换时 surface 可能已销毁：此时必须清空输出，否则解码器会绑定已释放的 surface。
+            setVideoSurface(null)
+            return
+        }
         setVideoSurface(surface)
-        if (surface == null || !surface.isValid) return
         val frame = holder.surfaceFrame
         if (frame != null) {
             notifyVideoOutputResolution(frame.width(), frame.height())
@@ -452,6 +482,41 @@ class PlayerEngine(
 
     val isTunnelingEnabled: Boolean
         get() = tunnelingEnabled
+
+    val isAudioOnlyMode: Boolean
+        get() = audioOnlyRequested
+
+    fun setAudioOnlyMode(audioOnly: Boolean) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            mainHandler.post { setAudioOnlyMode(audioOnly) }
+            return
+        }
+        if (audioOnly == audioOnlyRequested) return
+        audioOnlyRequested = audioOnly
+        applyRendererEnablement()
+    }
+
+    private fun applyRendererEnablement() {
+        val exo = internalPlayer ?: return
+        if (videoRendererIndices.isEmpty()) return
+        val disable = audioOnlyRequested || videoOutputInvalid
+        if (disable == videoRenderersDisabled) return
+        val rendererCount = exo.rendererCount
+        val builder = trackSelector.buildUponParameters()
+        var applied = 0
+        for (index in videoRendererIndices) {
+            if (index < 0 || index >= rendererCount) continue
+            builder.setRendererDisabled(index, disable)
+            applied++
+        }
+        if (applied == 0) return
+        videoRenderersDisabled = disable
+        trackSelector.setParameters(builder.build())
+        LOG.i(
+            "echo-music audio-only mode=$disable videoRenderers=$applied" +
+                " requested=$audioOnlyRequested outputInvalid=$videoOutputInvalid",
+        )
+    }
 
     val videoDecoderName: String
         get() = PlayerCodecStats.videoDecoderName

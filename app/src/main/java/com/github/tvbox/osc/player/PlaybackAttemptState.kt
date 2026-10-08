@@ -70,6 +70,9 @@ class PlaybackAttemptState {
     @JvmField
     var audioOnlyConfirmed: Boolean = false
 
+    @JvmField
+    var castPrepareOnly: Boolean = false
+
     fun beginSession() {
         playbackStarted = false
         switchStopPending = false

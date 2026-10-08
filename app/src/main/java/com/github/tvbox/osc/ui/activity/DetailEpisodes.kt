@@ -1,7 +1,6 @@
 package com.github.tvbox.osc.ui.activity
 
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -41,6 +40,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -62,9 +62,8 @@ internal fun EpisodeRow(
 ) {
     Column(
         modifier = Modifier
-            .padding(start = 6.dp, end = 6.dp, top = 12.dp)
-            .background(MaterialTheme.colorScheme.surfaceBright, RoundedCornerShape(16.dp))
-            .padding(vertical = 12.dp)
+            .fillMaxWidth()
+            .padding(top = 16.dp)
     ) {
         Row(
             modifier = Modifier
@@ -90,7 +89,7 @@ internal fun EpisodeRow(
                 text = stringResource(if (info.reverseSort) R.string.detail_order_asc else R.string.detail_order_desc),
                 onClick = { vm.toggleReverse() },
             )
-            Spacer(Modifier.width(8.dp))
+            Spacer(Modifier.width(2.dp))
             PillAction(
                 iconRes = R.drawable.ic_episode_grid_all,
                 text = stringResource(R.string.common_all),
@@ -112,26 +111,33 @@ internal fun EpisodeRow(
         LazyRow(
             state = listState,
             contentPadding = PaddingValues(horizontal = 16.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             itemsIndexed(episodes) { index, ep ->
-                FilterChip(
+                EpisodeCard(
+                    name = ep.name ?: (index + 1).toString(),
                     selected = index == playIndex,
                     onClick = { vm.onEpisodeClick(index) },
-                    label = {
-                        Text(
-                            text = ep.name ?: (index + 1).toString(),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    },
-                    shape = RoundedCornerShape(20.dp),
-                    colors = MaterialTheme.colorScheme.filterChipColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceContainer,
-                    ),
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun EpisodeCard(name: String, selected: Boolean, onClick: () -> Unit) {
+    DetailItemCard(
+        selected = selected,
+        onClick = onClick,
+    ) {
+        Text(
+            text = name,
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 
@@ -140,10 +146,9 @@ private fun PillAction(iconRes: Int, text: String, onClick: () -> Unit) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
-            .clip(RoundedCornerShape(50))
-            .background(MaterialTheme.colorScheme.surfaceContainer)
+            .clip(RoundedCornerShape(8.dp))
             .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 8.dp),
+            .padding(horizontal = 6.dp, vertical = 8.dp),
     ) {
         Icon(
             painter = painterResource(iconRes),

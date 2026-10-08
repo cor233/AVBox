@@ -64,4 +64,23 @@ class PlayerUiStateVisibilityTest {
         s.applyTip("", loading = false, err = false)
         assertTrue(s.centerControlsVisible)
     }
+
+    @Test
+    fun pauseOverlay_visibleOnUserPause() {
+        assertTrue(state(playState = PlayState.PAUSED, controlsVisible = false).pauseOverlayVisible)
+    }
+
+    @Test
+    fun pauseOverlay_hiddenWhileLifecyclePaused() {
+        val s = state(playState = PlayState.PAUSED, controlsVisible = false)
+        s.lifecyclePaused = true
+        assertFalse(s.pauseOverlayVisible)
+    }
+
+    @Test
+    fun pauseOverlay_hiddenWhenPausedByLeavingFullscreen() {
+        val s = state(playState = PlayState.PAUSED, controlsVisible = false)
+        s.exitPaused = true
+        assertFalse(s.pauseOverlayVisible)
+    }
 }

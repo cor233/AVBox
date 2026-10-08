@@ -8,6 +8,7 @@ import android.view.Surface
 import android.view.TextureView
 import android.view.View
 import com.github.tvbox.osc.player.KernelPlayer
+import com.github.tvbox.osc.util.LOG
 
 @SuppressLint("ViewConstructor")
 class EngineTextureRenderView(
@@ -38,6 +39,7 @@ class EngineTextureRenderView(
 
     init {
         surfaceTextureListener = this
+        LOG.i("echo-render-view: create TextureView")
     }
 
     override fun setOnSurfaceReadyListener(listener: Runnable?) {
@@ -113,9 +115,13 @@ class EngineTextureRenderView(
     override fun doScreenShot(): Bitmap? = bitmap
 
     override fun release() {
+        mediaPlayer?.clearDisplay()
+        mediaPlayer = null
         releaseRetiredSurface()
         surface?.release()
+        surface = null
         texture?.release()
+        texture = null
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
@@ -136,6 +142,7 @@ class EngineTextureRenderView(
         val existing = texture
         if (existing != null) {
             setSurfaceTexture(existing)
+            refreshSurface()
             return
         }
         texture = surfaceTexture

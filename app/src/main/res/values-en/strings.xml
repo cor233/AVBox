@@ -93,6 +93,7 @@
     <string name="home_no_source">No subscription configured</string>
     <string name="home_load_timeout">Home page timed out. Check your network and try again</string>
     <string name="home_recommend">Recommended</string>
+    <string name="home_all_categories">All Categories</string>
 
     <string name="search_settings">Search Settings</string>
     <string name="search_no_site">No search sites selected. Tick them in Search Settings on the Home page</string>
@@ -208,11 +209,10 @@
     <string name="weekday_fri">Fri</string>
     <string name="weekday_sat">Sat</string>
     <string name="weekday_sun">Sun</string>
-    <string name="follow_schedule_time_hint">e.g. 21:30</string>
-    <string name="follow_reminder_title">Watch reminder</string>
+    <string name="follow_reminder_title">Update log</string>
     <string name="follow_update_day">Update days</string>
-    <string name="follow_reminder_time">Reminder time</string>
-    <string name="follow_summary">Remind me every %1$s at %2$s</string>
+    <string name="follow_reminder_time">Update time</string>
+    <string name="follow_summary">Every %1$s at %2$s</string>
     <string name="follow_days_separator">, </string>
     <string name="follow_save_settings">Save settings</string>
     <string name="common_collect">Favorites</string>
@@ -245,7 +245,19 @@
 
     <string name="collect_clear">Clear favorites</string>
     <string name="collect_empty">No favorites</string>
-    <string name="following_empty">Coming soon</string>
+    <string name="following_empty">Nothing followed yet</string>
+    <string name="following_week">This week</string>
+    <string name="following_section_week">%1$d shows this week</string>
+    <string name="following_section_day">%2$d shows on %1$s</string>
+    <string name="following_day_empty">Nothing to follow on this day</string>
+    <string name="following_view_week">View this week</string>
+    <string name="following_no_schedule">No update day set</string>
+    <string name="following_update_days">Every %1$s</string>
+    <string name="following_update_time">Updates at %1$s</string>
+    <string name="following_not_watched">Not watched yet</string>
+    <string name="following_watched">Already watched</string>
+    <string name="following_delete_selected_message">Remove %1$d selected shows from following?</string>
+    <string name="toast_follow_saved">Added to following</string>
     <string name="collect_clear_message">This will delete all favorites and cannot be undone</string>
     <string name="collect_uncollect_message">Remove “%1$s” from favorites?</string>
     <string name="collect_delete_selected_message">Remove %1$d selected favorites?</string>
@@ -258,8 +270,8 @@
     <string name="music_next">Next</string>
 
     <string name="search_home_poster">Home posters</string>
-    <string name="search_layout_horizontal">Horizontal</string>
-    <string name="search_layout_vertical">Vertical</string>
+    <string name="search_layout_horizontal">Immersive</string>
+    <string name="search_layout_vertical">Standard</string>
     <string name="search_exact">Exact search</string>
     <string name="search_sites">Search sites</string>
     <string name="search_sites_none_hint">No sites selected — searches will return nothing</string>
@@ -306,7 +318,6 @@
     <string name="player_scale_crop">Crop</string>
     <string name="player_parse_failed_prefix">Parse failed >>> %1$s</string>
 
-    <string name="detail_fullscreen_play">Play fullscreen</string>
     <string name="detail_empty_source">No sources. Try switching source or searching</string>
     <string name="detail_music_player">Open Music Player</string>
     <string name="detail_uncollect">Remove favorite</string>
@@ -316,6 +327,7 @@
     <string name="detail_expand">Expand</string>
     <string name="detail_quality">Quality</string>
     <string name="detail_line">Line</string>
+    <string name="detail_line_video_count">%1$d videos</string>
     <string name="detail_episodes">Episodes</string>
     <string name="detail_episodes_of">%1$s Episodes</string>
     <string name="detail_order_asc">Ascending</string>
@@ -511,7 +523,6 @@
     <string name="music_mode_order">In order</string>
     <string name="live_source_auto_disabled">This source was auto-disabled. You can re-enable it in Config Management</string>
     <string name="toast_file_picker_unavailable">Cannot open the file picker</string>
-    <string name="toast_permission_required">Permission required</string>
     <string name="toast_folder_data_missing">Folder data is missing, cannot open</string>
 
     <string name="player_sniffing_url">Sniffing playback URL</string>

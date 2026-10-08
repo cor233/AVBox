@@ -101,7 +101,7 @@ PlaybackService(前台服务,托管生命周期)
 4. 摘引用:`releaseController()` + `setDanmuView(null)` + `detachContainerFromHost()` + `setViewBridge(headlessView)`。
 5. `scheduleIdleRelease()` —— 实例留着,但给它一个释放上界(见 3.3)。
 
-**容器搬运**:`AppPlayerView.attachContainerTo(host)` / `detachContainerFromHost()` 只搬 `mPlayerContainer`(插到宿主 index 0),**不碰系统栏、不改全屏状态** —— 本仓库的"全屏"是 Activity 级(方向 + 系统栏),容器始终留在页面槽位。搬运会触发 SurfaceView 的 `surfaceDestroyed`/`surfaceCreated`,渲染宿主自己 `setDisplay(null)` 再重挂(安全性见 §6-R1)。
+**容器搬运**:`AppPlayerView.attachContainerTo(host)` / `detachContainerFromHost()` 只搬 `mPlayerContainer`(插到宿主 index 0),**不碰系统栏、不改全屏状态** —— 本仓库的"全屏"是 Activity 级(方向 + 系统栏),容器始终留在页面槽位。搬运会触发 SurfaceView 的 `surfaceDestroyed`/`surfaceCreated`,渲染宿主在换父**之前**先 `detachVideoSurface()`(只解绑、不切渲染器启用态),再重挂(安全性见 §6-R1)。
 
 ### 3.2 遮黑帧与揭开(两处真机 bug 的根因面)
 
@@ -163,6 +163,8 @@ PlaybackService(前台服务,托管生命周期)
 - **引擎无页面起播必须自带渲染宿主**:`PlaybackEngine.createPlayerView()` 显式按设置建工厂 —— 无页面桥不会注入播放器配置,否则落到默认 Texture 工厂,新宿主的交面/输出尺寸钩子静默失效(历史上开调色黑屏的根因面)。
 - 输出分辨率信令:Surface 路径靠内核 `setDisplay` 补发(唯一补发点);Texture 路径没有 SurfaceHolder,靠 `TextureRenderHost.setOnSurfaceReadyListener` + `onLayout` + 视频尺寸就绪**当帧**补发,且**只推视频原生尺寸**(推视图尺寸会被管线等比适应进画布 = 丢「铺满/裁剪」)。三条不变量详见 `avbox-mobile-ui-spec.md` §6.17。
 - 音频焦点:`PlayerAudioFocus`(纯逻辑 `AudioFocusActions` 可单测 + Android 壳),语义照抄旧 `AudioFocusHelper`(GAIN 恢复 / LOSS 暂停待恢复 / DUCK 降音量 / 静音不请求不恢复 / 同值去重 / 主线程派发)。
+- **输出面解绑与渲染器开关必须解耦(2026-10-08)**:换 Surface(换渲染视图 / 挂摘容器 / SurfaceView 重建)只走 `PlayerEngine.detachVideoSurface()` —— 只 `clearVideoSurface()`、**不置** `videoOutputInvalid`;`clearVideoDisplay()` 那条会经不变量顺手 `setRendererDisabled(video, true)`,换好面再放开 ⇒ track selection 变化 ⇒ media period 重配 ⇒ **codec 重建 + 约 460ms 重缓冲**。切页路径已改走前者,实测 attach→PLAYING 7~8ms、全程 `echo-exo-codec-init` 仅 1 次。`EngineSurfaceRenderView.surfaceDestroyed` 也已统一到 `detachVideoSurface()`;`addDisplay()` 仍用 `clearDisplay()`(换渲染视图时确实需要压住渲染器)。**唯一例外**:音乐页仍按 `setAudioOnlyMode` 禁用视频渲染器(避 1x1 Surface 在翻页时失效导致硬解崩溃),退出音乐页因此仍有约 400~500ms 重缓冲(用户 2026-10-08 拍板保留)。**代价**:解绑后渲染器保持启用,换面期间解码器会在 null surface 上继续解码(浪费但不崩)。
+- **`videoOutputInvalid` 一旦置真,必须有确定的复位路径(2026-10-08)**:SurfaceView 侧 `surfaceCreated` / `surfaceChanged` 必然重绑;TextureView 侧的 `onSurfaceTextureAvailable`「复用已有 texture」分支原先只 `setSurfaceTexture(existing)` 就 `return`(而 `onSurfaceTextureDestroyed` 返回 `false`、框架不释放 ⇒ 容器重挂后必然走该分支),会造成渲染器永久关闭 = **黑屏有声**。现该分支改走 `refreshSurface()`。新增任何"清输出面"的调用点前,先确认对应渲染视图有一条确定的重新绑定路径。
 
 ## 4. 真机验收清单
 
@@ -265,6 +267,11 @@ fongmi 的关键实现点(仍具参考价值):服务侧建/释放内核、`bindP
 | 2026-09-21 | 音乐页退出→进直播漏音 | `enterLive()` 原只 `pause()`,而 PAUSED 时是空操作 ⇒ 改 `releasePlayer()` 停死旧内核 |
 | 2026-09-21 | 影视页退出→进新影视页闪上一部画面 | `attach()` 搬容器前先 `coverVideoFrame()` 遮黑(新增"只遮黑不停内核"的 API;`clearVideoFrame()` 会停内核,不能用于此),起播由 `STATE_PLAYING` 揭开 |
 | 2026-10-03 | 内核复用总闸从「预热」开关上摘除 | 换线/换源/换片一律走复用,不再重建;预热开关收敛为"启动预建 + 空闲常驻"(D8) |
+| 2026-10-08 | 退出音乐页 `DECODER_INIT_FAILED: The surface has been released` | 换渲染视图时旧面已释放、播放器未解绑,而新 SurfaceView 的 surface 异步建立(`attachToPlayer` 因 `isValid == false` 跳过 `setDisplay`)⇒ 解码器在死面 `configure()`。修法 = 引擎收敛不变量(**视频渲染器启用 ⟺ `!audioOnlyRequested && !videoOutputInvalid`**)+ 释放旧视图前先解绑 |
+| 2026-10-08 | 全屏侧滑退出闪中央 ▶ 暂停浮层 | `stopForExitFullscreen()` 的 `pause()` 触发 `applyPlayState(PAUSED)` → `hideBottom()` 收掉 `controlsVisible` ⇒ `pauseOverlayVisible` 立刻成立。修法 = 新增 `PlayerUiState.exitPaused`,在 `pause()` **之前**置真(`lifecyclePaused` 不可复用,那是"退后台保任务快照"语义) |
+| 2026-10-08 | 播放中切页 `obsolete surface` + 播放错误 toast | 容器跨页重挂 ⇒ SurfaceView 换父、旧面销毁重建而 codec 仍在渲染旧面。修法 = `attachContainerTo()` / `detachContainerFromHost()` 在 `removeView` 前先解绑输出面 |
+| 2026-10-08 | Texture 渲染下切页黑屏有声 | `onSurfaceTextureAvailable` 的复用分支从不重绑播放器 surface ⇒ `videoOutputInvalid` 永真 ⇒ 渲染器永久关闭。修法 = 该分支改走 `refreshSurface()`(见 §3.8) |
+| 2026-10-08 | 切页后进度条卡 0、不可拖动 | `contentUrl` 是 per-page 控制器字段而 `MyVideoView` 引擎共享;接管同一播放不重下 url ⇒ `onContentUrlSet` 从不调用 ⇒ `staleContent` 恒真 ⇒ `state.position/duration` 不写。修法 = 在 `PlayContainer.setData` 的 `isSamePlaybackOwned` 分支播种 `contentUrl`(该判定要求内容 key 相同,**只在同一内容时为真**,故换片时不会误放行;初版播在 `setKernelProvider` 会让换片时进度条闪回上一部,已作废) |
 
 ## 8. 修订记录
 
@@ -285,3 +292,4 @@ fongmi 的关键实现点(仍具参考价值):服务侧建/释放内核、`bindP
 | 2026-10-06 | **M10 拆除**:`player` 模块 + `dkplayer-ui` 删除;media3 依赖 / `WAKE_LOCK` 权限 / 3 个原生库归位 app(见 §7.3) |
 | 2026-10-06 | **本文重写为 as-built 规范**:组件表、所有权/线程/数据流、挂摘协议与运行机制按现栈重述;§4 走查清单保留原编号并补 M7 换代后的走查重点(15–18);D1 作废、新增 D9;**§4 节号与 1–14 编号保持不变**(外部文档按「§4 清单」引用)。历史方案与 fongmi 对照压到 §7 |
 | 2026-10-07 | 画面开关(调色/超分)重播改走 `requireKernelRebuild()`:复用内核下关闭态不下发效果列表 ⇒ 旧链残留(GPU ~34% 下不来);§3.3 强重建条件补点,细节见 `avbox-mobile-ui-spec.md` §6.17 |
+| 2026-10-08 | Surface 竞态与切页链路修复(5 缺陷):§3.8 新增「输出面解绑与渲染器开关解耦」「`videoOutputInvalid` 复位路径」两条约束,§7.4 补 5 行;切页路径由 `clearDisplay()` 改 `detachVideoSurface()`,实测不重建 codec、不重缓冲(attach→PLAYING 7~8ms);缺陷 5 的 `contentUrl` 播种点由 `setKernelProvider` 更正为 `isSamePlaybackOwned` 分支(前者会让换片时进度条闪回上一部)。**同批审查修复轮**:`KernelPlayer.detachVideoSurface()` 改 `abstract`(原默认实现会反向禁用渲染器)、`surfaceDestroyed` 统一到 `detachVideoSurface()`;`PlaybackController.startSession` 的 `audioOnlyConfirmed` 清理条件经真机复现后**维持 WIP 原样**(每次清)—— 音乐页强制 audio-only 会把带视频轨的内容也标成已确认,同 `playbackKey` 返回时不清就会被弹回音乐页;审查报告与修复轮记录见 `skill/review/review-20261008-batch1.md`。过程记录见 `history/features.md` |

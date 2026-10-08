@@ -1,12 +1,5 @@
 package com.github.tvbox.osc.ui.activity
 
-import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
-import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -17,6 +10,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyRow
@@ -26,7 +21,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -42,19 +36,22 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.github.tvbox.osc.R
 import com.github.tvbox.osc.api.ApiConfig
 import com.github.tvbox.osc.bean.Movie
+import com.github.tvbox.osc.data.FollowDays
 import com.github.tvbox.osc.ui.components.FollowReminderSheet
-import com.github.tvbox.osc.ui.theme.filterChipColors
 
 @Composable
 internal fun DetailContent(
     activity: DetailActivity,
     vm: DetailViewModel,
     revision: Int,
+    onPosterPic: (String) -> Unit,
+    onSeed: (Int?) -> Unit,
     onCardLongClick: (Movie.Video) -> Unit,
 ) {
     val info = vm.vodInfo ?: return
@@ -67,6 +64,7 @@ internal fun DetailContent(
     val qualityOptions by vm.qualityOptions.collectAsState()
     val qualitySelected by vm.qualitySelected.collectAsState()
     val collected by vm.collected.collectAsState()
+    val followRecord by vm.follow.collectAsState()
     var descExpanded by rememberSaveable { mutableStateOf(false) }
     var followScheduleOpen by rememberSaveable { mutableStateOf(false) }
 
@@ -77,139 +75,115 @@ internal fun DetailContent(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(bottom = 32.dp),
     ) {
-        item(key = "header") {
+        item(key = "hero") {
+            DetailHero(
+                title = info.name ?: "TVBox",
+                picture = info.pic,
+                year = info.year,
+                area = info.area,
+                type = info.type,
+                collected = collected,
+                followed = followRecord != null,
+                onPosterPic = onPosterPic,
+                onSeed = onSeed,
+                onBack = { activity.onBackPressedDispatcher.onBackPressed() },
+                onPlay = { vm.onPlayRequested(DetailPlaybackEntry.PlayCapsule) },
+                onMusic = { activity.openMusicPlayer() },
+                onCast = { activity.openCast() },
+                onCollect = { vm.toggleCollect() },
+                onFollow = { followScheduleOpen = true },
+            )
+        }
+
+        item(key = "desc") {
             val desc = remember(info.des) { removeHtmlTag(info.des) }
-            Column(
-                modifier = Modifier
-                    .padding(start = 6.dp, end = 6.dp, top = 12.dp)
-                    .background(MaterialTheme.colorScheme.surfaceBright, RoundedCornerShape(16.dp))
-                    .padding(horizontal = 16.dp, vertical = 12.dp)
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.fillMaxWidth(),
+            if (desc.isNotEmpty()) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 16.dp, end = 16.dp, top = 4.dp),
                 ) {
                     Text(
-                        text = info.name ?: "TVBox",
-                        style = MaterialTheme.typography.titleLarge,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 2,
+                        text = desc,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = if (descExpanded) Int.MAX_VALUE else 3,
                         overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { descExpanded = !descExpanded },
                     )
-                    IconButton(onClick = { activity.openMusicPlayer() }) {
-                        Icon(
-                            painter = painterResource(R.drawable.ic_detail_music_player),
-                            contentDescription = stringResource(R.string.detail_music_player),
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(24.dp),
-                        )
-                    }
-                    IconButton(onClick = { activity.playContainer?.showCast() }) {
-                        Icon(
-                            painter = painterResource(R.drawable.ic_detail_cast),
-                            contentDescription = stringResource(R.string.common_cast),
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(24.dp),
-                        )
-                    }
-                    IconButton(onClick = { vm.toggleCollect() }) {
-                        AnimatedContent(
-                            targetState = collected,
-                            transitionSpec = {
-                                (scaleIn(initialScale = 0.6f) + fadeIn()) togetherWith
-                                        (scaleOut(targetScale = 0.6f) + fadeOut())
-                            },
-                            label = "collectIcon",
-                        ) { isCollected ->
-                            Icon(
-                                painter = painterResource(
-                                    if (isCollected) R.drawable.ic_tab_collect_filled else R.drawable.ic_tab_collect
-                                ),
-                                contentDescription = stringResource(if (isCollected) R.string.detail_uncollect else R.string.detail_collect),
-                                tint = if (isCollected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(24.dp),
-                            )
-                        }
-                    }
-                    IconButton(onClick = { followScheduleOpen = true }) {
-                        Icon(
-                            painter = painterResource(R.drawable.ic_tab_following),
-                            contentDescription = stringResource(R.string.tab_following),
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(24.dp),
-                        )
-                    }
-                }
-                val metaParts = listOfNotNull(
-                    if (info.year > 0) info.year.toString() else null,
-                    info.area?.takeIf { it.isNotBlank() },
-                    info.type?.takeIf { it.isNotBlank() },
-                )
-                Column(modifier = Modifier.padding(top = 4.dp)) {
-                    if (metaParts.isNotEmpty()) {
-                        Text(
-                            text = metaParts.joinToString(" · "),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier
+                            .fillMaxWidth()
                             .padding(top = 4.dp)
-                            .background(MaterialTheme.colorScheme.surfaceContainer, RoundedCornerShape(50))
-                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { descExpanded = !descExpanded },
                     ) {
+                        Spacer(Modifier.weight(1f))
                         Text(
-                            text = stringResource(R.string.detail_source, displaySourceName),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
+                            text = stringResource(if (descExpanded) R.string.detail_collapse else R.string.detail_expand),
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                        Icon(
+                            imageVector = Icons.Filled.ArrowDropDown,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier
+                                .size(20.dp)
+                                .rotate(if (descExpanded) 180f else 0f),
                         )
                     }
                 }
-                if (desc.isNotEmpty()) {
-                    Column(
+            }
+        }
+
+        if (flags.isNotEmpty()) {
+            item(key = "flags") {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 16.dp),
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier
-                            .padding(top = 8.dp)
                             .fillMaxWidth()
-                            .background(MaterialTheme.colorScheme.surfaceContainer, RoundedCornerShape(12.dp))
-                            .padding(12.dp)
+                            .padding(start = 16.dp, end = 16.dp, bottom = 10.dp),
                     ) {
+                        SectionTitleIcon(painterResource(R.drawable.ic_detail_line))
                         Text(
-                            text = desc,
-                            style = MaterialTheme.typography.bodyMedium,
+                            text = stringResource(R.string.detail_line),
+                            style = MaterialTheme.typography.titleLarge,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.padding(start = 8.dp),
+                        )
+                        Spacer(Modifier.weight(1f))
+                        Text(
+                            text = stringResource(R.string.detail_source, displaySourceName),
+                            style = MaterialTheme.typography.labelLarge,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = if (descExpanded) Int.MAX_VALUE else 3,
+                            maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier
-                                .clip(RoundedCornerShape(8.dp))
-                                .clickable { descExpanded = !descExpanded },
+                                .padding(start = 12.dp)
+                                .widthIn(max = 180.dp),
                         )
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier
-                                .padding(top = 4.dp)
-                                .clip(RoundedCornerShape(8.dp))
-                                .clickable { descExpanded = !descExpanded },
-                        ) {
-                            Spacer(Modifier.weight(1f))
-                            Text(
-                                text = stringResource(if (descExpanded) R.string.detail_collapse else R.string.detail_expand),
-                                style = MaterialTheme.typography.labelLarge,
-                                color = MaterialTheme.colorScheme.primary,
-                            )
-                            Icon(
-                                imageVector = Icons.Filled.ArrowDropDown,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier
-                                    .size(20.dp)
-                                    .rotate(if (descExpanded) 180f else 0f),
+                    }
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = 16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        itemsIndexed(flags, key = { i, f -> "${i}_${f.name}" }) { _, flag ->
+                            LineCard(
+                                name = flag.name ?: "",
+                                count = info.seriesMap?.get(flag.name)?.size ?: 0,
+                                selected = flag.name == currentFlag,
+                                onClick = { vm.onFlagClick(flag.name ?: "") },
                             )
                         }
                     }
@@ -229,26 +203,8 @@ internal fun DetailContent(
                             onClick = { vm.onQualityClick(index, activity.playbackFacts()) },
                             label = { Text(option) },
                             shape = RoundedCornerShape(20.dp),
-                            colors = MaterialTheme.colorScheme.filterChipColors(),
-                        )
-                    }
-                }
-            }
-        }
-
-        if (flags.size > 1) {
-            item(key = "flags") {
-                ChipRow(
-                    title = stringResource(R.string.detail_line),
-                    leading = { SectionTitleIcon(painterResource(R.drawable.ic_detail_line)) },
-                ) {
-                    itemsIndexed(flags, key = { i, f -> "${i}_${f.name}" }) { _, flag ->
-                        FilterChip(
-                            selected = flag.name == currentFlag,
-                            onClick = { vm.onFlagClick(flag.name ?: "") },
-                            label = { Text(flag.name ?: "") },
-                            shape = RoundedCornerShape(20.dp),
-                            colors = MaterialTheme.colorScheme.filterChipColors(),
+                            border = detailChipBorder(selected = index == qualitySelected),
+                            colors = detailChipColors(),
                         )
                     }
                 }
@@ -271,7 +227,43 @@ internal fun DetailContent(
     }
 
     if (followScheduleOpen) {
-        FollowReminderSheet(onDismissRequest = { followScheduleOpen = false })
+        FollowReminderSheet(
+            initialDays = followRecord?.let { FollowDays.decode(it.updateDays) }?.takeIf { it.isNotEmpty() }
+                ?: setOf(0),
+            initialHour = followRecord?.updateHour ?: 21,
+            onDismissRequest = { followScheduleOpen = false },
+            onSave = { days, hour -> vm.saveFollow(days, hour) },
+        )
+    }
+}
+
+@Composable
+private fun LineCard(
+    name: String,
+    count: Int,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    DetailItemCard(
+        selected = selected,
+        onClick = onClick,
+        modifier = Modifier.width(DetailItemWidth),
+    ) {
+        Text(
+            text = name,
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Text(
+            text = stringResource(R.string.detail_line_video_count, count),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            modifier = Modifier.padding(top = 6.dp),
+        )
     }
 }
 
@@ -284,9 +276,7 @@ private fun ChipRow(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(start = 6.dp, end = 6.dp, top = 12.dp)
-            .background(MaterialTheme.colorScheme.surfaceBright, RoundedCornerShape(16.dp))
-            .padding(vertical = 12.dp),
+            .padding(top = 16.dp),
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,

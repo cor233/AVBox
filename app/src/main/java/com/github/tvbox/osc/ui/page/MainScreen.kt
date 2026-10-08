@@ -63,13 +63,14 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.compose.rememberLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.github.tvbox.osc.R
 import com.github.tvbox.osc.server.ControlManager
 import com.github.tvbox.osc.ui.activity.LivePlayActivity
 import com.github.tvbox.osc.ui.components.AVBoxAlertDialog
-import com.github.tvbox.osc.ui.components.LocalGlassPauseRecording
+import com.github.tvbox.osc.ui.components.LocalTopBarGlassPauseRecording
 import com.github.tvbox.osc.ui.components.LocalSheetDismissThen
 import com.github.tvbox.osc.ui.components.LocalSheetHost
 import com.github.tvbox.osc.ui.components.SheetHost
@@ -83,6 +84,7 @@ import com.github.tvbox.osc.ui.theme.LiquidGlassState
 import com.github.tvbox.osc.util.AppManager
 import com.github.tvbox.osc.util.BootGuard
 import com.github.tvbox.osc.util.HawkConfig
+import com.github.tvbox.osc.util.HomeSettings
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import com.github.tvbox.osc.util.KV
@@ -204,6 +206,9 @@ private fun MainContent() {
     val pauseGlassRecording: () -> Boolean = remember(pagerState, sheetHost) {
         { pagerState.isScrollInProgress || sheetHost.request != null }
     }
+    val pauseTopBarRecording: () -> Boolean = remember(pagerState) {
+        { pagerState.isScrollInProgress }
+    }
     val density = LocalDensity.current
     val layoutDirection = LocalLayoutDirection.current
 
@@ -246,7 +251,7 @@ private fun MainContent() {
     }
     CompositionLocalProvider(
         LocalSheetHost provides sheetHost,
-        LocalGlassPauseRecording provides pauseGlassRecording,
+        LocalTopBarGlassPauseRecording provides pauseTopBarRecording,
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
             Scaffold(
@@ -312,7 +317,7 @@ private fun MainContent() {
                             .then(if (liquidGlassEnabled) Modifier else Modifier.padding(innerPadding)),
                     ) { page ->
                         val pageLifecycleOwner = rememberLifecycleOwner(
-                            maxLifecycle = if (page == pagerState.currentPage) {
+                            maxLifecycle = if (page == pagerState.targetPage) {
                                 Lifecycle.State.RESUMED
                             } else {
                                 Lifecycle.State.STARTED
@@ -330,35 +335,39 @@ private fun MainContent() {
                 }
             }
             if (liquidGlassEnabled) {
-                val scrimColor = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.9f)
-                val (scrimStart, scrimEnd) = if (NavMetrics.scrimOpaqueAtStart(navAxis)) {
-                    scrimColor to Color.Transparent
-                } else {
-                    Color.Transparent to scrimColor
+                val homeHorizontal = HomeSettings.layoutFlow.collectAsStateWithLifecycle().value ==
+                    HomeSettings.HomeLayout.Horizontal
+                if (!homeHorizontal) {
+                    val scrimColor = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.9f)
+                    val (scrimStart, scrimEnd) = if (NavMetrics.scrimOpaqueAtStart(navAxis)) {
+                        scrimColor to Color.Transparent
+                    } else {
+                        Color.Transparent to scrimColor
+                    }
+                    Box(
+                        modifier = Modifier
+                            .then(
+                                if (navAxis == NavAxis.Horizontal) {
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .height(navBandExtent)
+                                        .align(Alignment.BottomCenter)
+                                } else {
+                                    Modifier
+                                        .fillMaxHeight()
+                                        .width(navBandExtent)
+                                        .align(Alignment.CenterStart)
+                                }
+                            )
+                            .background(
+                                if (navAxis == NavAxis.Horizontal) {
+                                    Brush.verticalGradient(0f to scrimStart, 1f to scrimEnd)
+                                } else {
+                                    Brush.horizontalGradient(0f to scrimStart, 1f to scrimEnd)
+                                }
+                            ),
+                    )
                 }
-                Box(
-                    modifier = Modifier
-                        .then(
-                            if (navAxis == NavAxis.Horizontal) {
-                                Modifier
-                                    .fillMaxWidth()
-                                    .height(navBandExtent)
-                                    .align(Alignment.BottomCenter)
-                            } else {
-                                Modifier
-                                    .fillMaxHeight()
-                                    .width(navBandExtent)
-                                    .align(Alignment.CenterStart)
-                            }
-                        )
-                        .background(
-                            if (navAxis == NavAxis.Horizontal) {
-                                Brush.verticalGradient(0f to scrimStart, 1f to scrimEnd)
-                            } else {
-                                Brush.horizontalGradient(0f to scrimStart, 1f to scrimEnd)
-                            }
-                        ),
-                )
                 Box(
                     modifier = if (navAxis == NavAxis.Horizontal) {
                         Modifier

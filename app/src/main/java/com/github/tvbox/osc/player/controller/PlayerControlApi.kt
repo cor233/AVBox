@@ -52,7 +52,12 @@ interface PlayerControlApi {
 
     fun onNewPlayStarted()
 
+    /** 内容地址下发到播放器时告知控制器，用于识别切换途中的陈旧进度。 */
+    fun onContentUrlSet(url: String?)
+
     fun setLifecyclePaused(paused: Boolean)
+
+    fun setExitPaused(paused: Boolean)
 
     fun resetSpeed()
 

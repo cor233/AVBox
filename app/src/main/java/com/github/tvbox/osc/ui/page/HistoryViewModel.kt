@@ -61,7 +61,6 @@ class HistoryViewModel(
             return
         }
         incognito.value = false
-        if (items.value.isEmpty()) loading.value = true
         if (scrollToTop) placementAnim.value = false
         viewModelScope.launch(Dispatchers.IO) {
             val limit = HistoryHelper.getHisNum(KV.get(HawkConfig.HISTORY_NUM, 0))

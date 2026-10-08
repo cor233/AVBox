@@ -12,6 +12,7 @@ import com.github.tvbox.osc.bean.VodInfo
 import com.github.tvbox.osc.data.AppGraph
 import com.github.tvbox.osc.data.EpisodeTotals
 import com.github.tvbox.osc.data.HistoryWriter
+import com.github.tvbox.osc.data.VodFollow
 import com.github.tvbox.osc.event.RefreshEvent
 import com.github.tvbox.osc.net.SearchHelper
 import com.github.tvbox.osc.player.PlaybackSession
@@ -60,7 +61,9 @@ class DetailViewModel : ViewModel() {
     val fullScreen = MutableStateFlow(false)
     val rotating = MutableStateFlow(false)
     val playSignal = MutableStateFlow(0)
+    val portraitResolved = MutableStateFlow(false)
     val collected = MutableStateFlow(false)
+    val follow = MutableStateFlow<VodFollow?>(null)
     val qualityOptions = MutableStateFlow<List<String>>(emptyList())
     val qualitySelected = MutableStateFlow(0)
     val sourceChips = MutableStateFlow<List<SourceChip>>(emptyList())
@@ -115,6 +118,7 @@ class DetailViewModel : ViewModel() {
         val firstsourceKey: String,
         val vodName: String,
         val vodPicture: String,
+        val wasPlaying: Boolean,
     )
 
     private var switchSnapshot: SwitchSnapshot? = null
@@ -191,6 +195,7 @@ class DetailViewModel : ViewModel() {
         searchTitle = ""
         manualLineSwitchPending = false
         collected.value = false
+        follow.value = null
         relatedVideos.value = emptyList()
         sourcesSearching.value = false
         qualityOptions.value = emptyList()
@@ -199,6 +204,7 @@ class DetailViewModel : ViewModel() {
         toastEvent.value = null
         finishEvent.value = false
         pageState.value = PageState.Loading
+        portraitResolved.value = false
         fallbackEpisode = null
         fallbackEpisodeIndex = -1
         usedSourceKeys.clear()
@@ -226,8 +232,29 @@ class DetailViewModel : ViewModel() {
         revision.value += 1
     }
 
-    fun requestPlay() {
-        playSignal.value += 1
+    internal fun onPlayRequested(entry: DetailPlaybackEntry) {
+        val list = vodInfo?.seriesMap?.get(vodInfo?.playFlag)
+        if (list.isNullOrEmpty()) {
+            toastEvent.value = str(R.string.detail_no_playable_content)
+            return
+        }
+        applyPlaybackEntry(entry)
+    }
+
+    internal fun applyPlaybackEntry(entry: DetailPlaybackEntry, resumable: Boolean = false) {
+        val plan = DetailPlaybackPolicy.plan(entry, resumable)
+        if (plan.enterFullScreen) {
+            fullScreen.value = true
+            rotating.value = false
+            portraitResolved.value = false
+        }
+        if (plan.startPlayback) playSignal.value += 1
+    }
+
+    fun onVideoSizeResolved(portraitVideo: Boolean) {
+        if (portraitResolved.value) return
+        portraitResolved.value = true
+        LOG.i("echo-player detail size resolved: portrait=$portraitVideo full=${fullScreen.value}")
     }
 
     private fun consumeManualLineSwitch(): Boolean {
@@ -261,6 +288,7 @@ class DetailViewModel : ViewModel() {
         firstsourceKey = sourceKey
         usedSourceKeys.add(firstsourceKey)
         collected.value = AppGraph.collectRepository.isVodCollect(sourceKey, vodId)
+        follow.value = AppGraph.followRepository.find(sourceKey, vodId)
         if (DetailResponseGuard.isUnloadableTarget(vodId, ApiConfig.get().getSource(sourceKey) == null)) {
             onDetailUnavailable()
             return
@@ -363,7 +391,6 @@ class DetailViewModel : ViewModel() {
                 if (!playingList.isNullOrEmpty()) switchSnapshot = null
                 pageState.value = PageState.Ready
                 bumpRevision()
-                requestPlay()
                 if (playingList.isNullOrEmpty()) {
                     startFallbackIfNeeded(auto = true)
                 }
@@ -506,7 +533,15 @@ class DetailViewModel : ViewModel() {
     private fun stopPlaybackForSwitch() {
         val info = vodInfo ?: return
         if (switchSnapshot == null) {
-            switchSnapshot = SwitchSnapshot(info, vodId, sourceKey, firstsourceKey, vodName, vodPicture)
+            switchSnapshot = SwitchSnapshot(
+                info,
+                vodId,
+                sourceKey,
+                firstsourceKey,
+                vodName,
+                vodPicture,
+                wasPlaying = fullScreen.value,
+            )
         }
         sendCommand(PlaybackCommand.StopForSourceSwitch(str(R.string.detail_switching_source)))
     }
@@ -531,7 +566,7 @@ class DetailViewModel : ViewModel() {
             }
         pageState.value = PageState.Ready
         bumpRevision()
-        requestPlay()
+        applyPlaybackEntry(DetailPlaybackEntry.SwitchRollback, resumable = snapshot.wasPlaying)
         return true
     }
 
@@ -587,6 +622,7 @@ class DetailViewModel : ViewModel() {
         sourceKey = key
         firstsourceKey = key
         collected.value = AppGraph.collectRepository.isVodCollect(sourceKey, vodId)
+        follow.value = AppGraph.followRepository.find(sourceKey, vodId)
         sourceViewModel.getDetail(sourceKey, vodId, true, requestToken)
     }
 
@@ -681,11 +717,11 @@ class DetailViewModel : ViewModel() {
     fun onEpisodeClick(position: Int) {
         val info = vodInfo ?: return
         val list = info.seriesMap?.get(info.playFlag) ?: return
-        if (position < 0 || position >= list.size || position == info.playIndex) return
+        if (position < 0 || position >= list.size) return
         info.playIndex = position
         list.forEachIndexed { index, series -> series.selected = index == position }
         bumpRevision()
-        requestPlay()
+        onPlayRequested(DetailPlaybackEntry.Episode)
     }
 
     fun onFlagClick(flagName: String) {
@@ -702,8 +738,9 @@ class DetailViewModel : ViewModel() {
         }
         info.seriesFlags.orEmpty().forEach { it.selected = it.name == flagName }
         manualLineSwitchPending = true
+        qualityOptions.value = emptyList()
+        qualitySelected.value = 0
         bumpRevision()
-        requestPlay()
     }
 
     fun toggleReverse() {
@@ -727,6 +764,13 @@ class DetailViewModel : ViewModel() {
         }
         collected.value = !collected.value
         EventBus.getDefault().post(RefreshEvent(RefreshEvent.TYPE_COLLECT_REFRESH))
+    }
+
+    fun saveFollow(days: Set<Int>, hour: Int) {
+        val info = vodInfo ?: return
+        AppGraph.followRepository.upsert(sourceKey, info, days, hour)
+        follow.value = AppGraph.followRepository.find(sourceKey, vodId)
+        toastEvent.value = str(R.string.toast_follow_saved)
     }
 
     private fun updateQualityOptions(result: org.json.JSONObject?) {
@@ -754,11 +798,9 @@ class DetailViewModel : ViewModel() {
     }
 
     fun onQualityClick(position: Int, facts: DetailPlaybackFacts) {
-        if (position == qualitySelected.value) {
-            onFullScreenToggleRequested(true, facts)
-            return
-        }
-        sendCommand(PlaybackCommand.SelectQuality(position))
+        val plan = DetailPlaybackPolicy.plan(DetailPlaybackEntry.Quality)
+        if (plan.enterFullScreen) onFullScreenToggleRequested(true, facts)
+        if (plan.startPlayback) sendCommand(PlaybackCommand.SelectQuality(position))
     }
 
     fun onQualitySelectionAccepted(position: Int) {

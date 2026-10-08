@@ -52,6 +52,12 @@ class PlayContainerViewBridge(private val container: PlayContainer) : PlaybackVi
 
     override fun isKernelErrored(): Boolean = container.mVideoView?.isKernelErrored() == true
 
+    override fun currentUrl(): String? = container.mVideoView?.currentUrl
+
+    override fun onContentUrlSet(url: String?) {
+        container.mController?.onContentUrlSet(url)
+    }
+
     override fun context(): Context = container.context
 
     override fun playbackHost(): PlaybackHostApi = container
@@ -74,6 +80,12 @@ class PlayContainerViewBridge(private val container: PlayContainer) : PlaybackVi
     override fun ensureRenderViewMatchesConfig() {
         container.mVideoView?.ensureRenderViewMatchesConfig()
     }
+
+    override fun setAudioOnlyMode(audioOnly: Boolean) {
+        container.setAudioOnlyMode(audioOnly)
+    }
+
+    override fun isAudioOnlyMode(): Boolean = container.isAudioOnlyMode()
 
     override fun releasePlayer() {
         container.releasePlayerKernel()
@@ -192,6 +204,8 @@ class PlayContainerViewBridge(private val container: PlayContainer) : PlaybackVi
         } else {
             view.setUrl(url)
         }
+        // 记录本轮内容地址：播放器切换完成前仍会返回上一部影片的进度，进度回调靠它判陈旧。
+        container.mController?.onContentUrlSet(url)
         container.scheduler.startSwitchLinePlayTimeout()
         if (reusePlayer) {
             val base = container.scheduler.playTimeoutBasePosition()

@@ -120,6 +120,40 @@ jobs:
             echo "existed=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Extract changelog for this version
+        id: notes
+        env:
+          VERSION: ${{ github.event.inputs.version }}
+        run: |
+          set -euo pipefail
+          SRC=.github/workflows/changelog.md
+          [ -f "$SRC" ] || { echo "::error::找不到 $SRC"; exit 1; }
+
+          awk -v ver="$VERSION" '
+            /^##[[:space:]]/ {
+              if (found) exit
+              line=$0
+              sub(/^##[[:space:]]+/, "", line)
+              sub(/[[:space:]]+$/, "", line)
+              if (line == ver) { found=1; next }
+              next
+            }
+            found {
+              if ($0 ~ /^---[[:space:]]*$/) exit
+              print
+            }
+          ' "$SRC" > release_body.md
+
+          if [ ! -s release_body.md ]; then
+            echo "::warning::$SRC 中未找到版本 $VERSION 的条目，Release 正文将为空"
+          fi
+
+          sed -i -e :a -e '/^\n*$/{$d;N;ba' -e '}' release_body.md || true
+          echo "::notice::release body 行数: $(wc -l < release_body.md)"
+          echo "----- release_body.md -----"
+          cat release_body.md
+          echo "---------------------------"
+
       - name: Upload APK to Release
         uses: softprops/action-gh-release@v3
         with:
@@ -129,7 +163,7 @@ jobs:
           prerelease: ${{ github.event.inputs.prerelease == 'true' }}
           fail_on_unmatched_files: true
           generate_release_notes: false
-          body: ""
+          body_path: release_body.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

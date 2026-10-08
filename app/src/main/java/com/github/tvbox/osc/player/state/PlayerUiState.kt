@@ -109,6 +109,8 @@ class PlayerUiState {
 
     var lifecyclePaused: Boolean by mutableStateOf(false)
 
+    var exitPaused: Boolean by mutableStateOf(false)
+
     val playbackActive: Boolean
         get() = lifecyclePaused ||
                 playState == PlayState.PLAYING ||
@@ -116,7 +118,7 @@ class PlayerUiState {
                 playState == PlayState.BUFFERED
 
     val pauseOverlayVisible: Boolean
-        get() = playState == PlayState.PAUSED && !controlsVisible && !lifecyclePaused
+        get() = playState == PlayState.PAUSED && !controlsVisible && !lifecyclePaused && !exitPaused
 
     val seekPreviewOrPosition: Int
         get() = if (dragging && duration > 0) seekPreviewPositionMs.toInt().coerceIn(0, duration) else position

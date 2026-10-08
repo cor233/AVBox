@@ -31,7 +31,7 @@ import kotlin.math.min
 
 internal val LocalTopBarGlassBackdrop = compositionLocalOf<LayerBackdrop?> { null }
 
-internal val LocalGlassPauseRecording = compositionLocalOf { { false } }
+internal val LocalTopBarGlassPauseRecording = compositionLocalOf { { false } }
 
 @Composable
 fun Modifier.glassTopBarSurface(

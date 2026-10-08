@@ -78,6 +78,12 @@ abstract class KernelPlayer {
 
     abstract fun setDisplay(holder: SurfaceHolder?)
 
+    open fun clearDisplay() {
+        setSurface(null)
+    }
+
+    abstract fun detachVideoSurface()
+
     abstract fun setVolume(leftVolume: Float, rightVolume: Float)
 
     abstract fun setLooping(isLooping: Boolean)

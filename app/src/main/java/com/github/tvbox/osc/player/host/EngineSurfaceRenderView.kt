@@ -8,6 +8,7 @@ import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
 import com.github.tvbox.osc.player.KernelPlayer
+import com.github.tvbox.osc.util.LOG
 
 class EngineSurfaceRenderView @JvmOverloads constructor(
     context: Context,
@@ -16,6 +17,8 @@ class EngineSurfaceRenderView @JvmOverloads constructor(
 ) : SurfaceView(context, attrs, defStyleAttr), PlayerRenderView, SurfaceHolder.Callback {
 
     private var mediaPlayer: KernelPlayer? = null
+
+    private var released = false
 
     private var scaleType = RenderMeasure.SCALE_DEFAULT
 
@@ -29,9 +32,11 @@ class EngineSurfaceRenderView @JvmOverloads constructor(
         val surfaceHolder = holder
         surfaceHolder.addCallback(this)
         surfaceHolder.setFormat(PixelFormat.RGBA_8888)
+        LOG.i("echo-render-view: create SurfaceView")
     }
 
     override fun attachToPlayer(player: KernelPlayer) {
+        if (released) return
         mediaPlayer = player
         val surfaceHolder = holder
         val surface = surfaceHolder.surface
@@ -62,7 +67,11 @@ class EngineSurfaceRenderView @JvmOverloads constructor(
 
     override fun doScreenShot(): Bitmap? = null
 
-    override fun release() = Unit
+    override fun release() {
+        released = true
+        mediaPlayer?.clearDisplay()
+        mediaPlayer = null
+    }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
         val measured = RenderMeasure.measure(
@@ -79,14 +88,19 @@ class EngineSurfaceRenderView @JvmOverloads constructor(
     }
 
     override fun surfaceCreated(holder: SurfaceHolder) {
+        if (released) return
+        LOG.i("echo-surface: created valid=" + holder.surface?.isValid)
         mediaPlayer?.setDisplay(holder)
     }
 
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+        if (released) return
         mediaPlayer?.setDisplay(holder)
     }
 
     override fun surfaceDestroyed(holder: SurfaceHolder) {
-        mediaPlayer?.setDisplay(null)
+        if (released) return
+        LOG.i("echo-surface: destroyed -> detach")
+        mediaPlayer?.detachVideoSurface()
     }
 }

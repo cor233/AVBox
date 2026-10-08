@@ -71,6 +71,10 @@ class HomeViewModel : ViewModel() {
 
     data class Rec(val state: PartitionState, val videos: List<Movie.Video>)
 
+    companion object {
+        const val HERO_VIDEO_COUNT = 5
+    }
+
     val currentSource = MutableStateFlow<SourceBean?>(null)
     val sources = MutableStateFlow<List<SourceBean>>(emptyList())
     val subscribeItems = MutableStateFlow<List<SubscribeSource>>(emptyList())
@@ -436,6 +440,15 @@ class HomeViewModel : ViewModel() {
                 Partition(p.sort, PartitionState.Ready, merged, page + 1, maxPage)
             }
         }
+        fillRecFromPartition()
+    }
+
+    private fun fillRecFromPartition() {
+        if (rec.value.videos.isNotEmpty()) return
+        val first = partitions.value.firstOrNull {
+            it.state == PartitionState.Ready && it.videos.isNotEmpty()
+        } ?: return
+        rec.value = Rec(PartitionState.Ready, first.videos.take(HERO_VIDEO_COUNT))
     }
 
     fun loadMorePartition(partition: Partition) {

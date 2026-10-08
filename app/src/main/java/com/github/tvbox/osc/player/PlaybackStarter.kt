@@ -82,6 +82,10 @@ class PlaybackStarter(private val host: Host) {
 
         fun startSwitchLinePlayTimeout()
 
+        fun cancelPlayTimeout()
+
+        fun closeCastPrepare()
+
         fun setPlayTimeoutBasePosition(position: Long)
 
         fun invalidatePreload()
@@ -105,35 +109,45 @@ class PlaybackStarter(private val host: Host) {
 
     fun play(reset: Boolean) {
         val st = host.attemptState()
+        val prepareOnly = st.castPrepareOnly
+        if (prepareOnly) LOG.i("echo-cast prepare: resolve only, no playback side effects")
         st.switchStopPending = false
         host.resolverNextGen()
         host.invalidatePreload()
         host.view()?.hidePreloadReadyTip()
         if (host.vod() == null) return
         val kernelPresent = host.view()?.mediaPlayer() != null
-        val idleKernelReused = isIdleKernelReusable(kernelPresent)
-        val crossContentReuseAllowed = isCrossContentReuseAllowed()
-        val reuseAllowed = host.consumeReusePlayerOnSwitch() || idleKernelReused || crossContentReuseAllowed
-        val startedKey = host.startedProgressKey()
-        val sameContentReuse = startedKey != null
-            && !KernelReusePolicy.isCrossContentSwitch(startedKey, host.progressKey())
-        val reusePlayer = KernelReusePolicy.decide(kernelPresent, false, false, reuseAllowed) == KernelDecision.REUSE
-        st.switchingPlayback = true
-        st.audioPlayback = false
-        host.view()?.onNewPlayStarted()
-        host.view()?.clearArtwork()
+        val reusePlayer = if (prepareOnly) {
+            false
+        } else {
+            val idleKernelReused = isIdleKernelReusable(kernelPresent)
+            val crossContentReuseAllowed = isCrossContentReuseAllowed()
+            val reuseAllowed = host.consumeReusePlayerOnSwitch() || idleKernelReused || crossContentReuseAllowed
+            KernelReusePolicy.decide(kernelPresent, false, false, reuseAllowed) == KernelDecision.REUSE
+        }
+        if (!prepareOnly) {
+            st.switchingPlayback = true
+            st.audioPlayback = false
+            host.view()?.onNewPlayStarted()
+            host.view()?.clearArtwork()
+        }
         val vs = host.currentSeries(host.vod()!!.playFlag, host.vod()!!.playIndex)
         if (vs == null) {
             host.handleResolvePlayUrlFailed(PlaybackController.str(R.string.player_get_info_error))
             return
         }
-        EventBus.getDefault().post(RefreshEvent(RefreshEvent.TYPE_REFRESH, host.vod()))
-        if (sameContentReuse) {
-            host.view()?.showTip("", true, false)
-        } else {
-            host.view()?.showTip(PlaybackController.str(R.string.player_getting_info), true, false)
+        if (!prepareOnly) {
+            val startedKey = host.startedProgressKey()
+            val sameContentReuse = startedKey != null
+                && !KernelReusePolicy.isCrossContentSwitch(startedKey, host.progressKey())
+            EventBus.getDefault().post(RefreshEvent(RefreshEvent.TYPE_REFRESH, host.vod()))
+            if (sameContentReuse) {
+                host.view()?.showTip("", true, false)
+            } else {
+                host.view()?.showTip(PlaybackController.str(R.string.player_getting_info), true, false)
+            }
+            host.publishTitle()
         }
-        host.publishTitle()
 
         host.stopParse()
         host.beginNewPlay()
@@ -142,35 +156,39 @@ class PlaybackStarter(private val host: Host) {
         host.setWebHeaderMap(null)
         host.initParseLoadFound()
 
-        host.view()?.stopOtherPlayers()
-        host.view()?.resetDanmu()
-        host.view()?.clearLyric()
-        if (reusePlayer) {
-            savePreviousContentProgress()
-            host.view()?.clearVideoFrame()
-        } else if (kernelPresent) {
-            host.view()?.releasePlayer()
+        if (!prepareOnly) {
+            host.view()?.stopOtherPlayers()
+            host.view()?.resetDanmu()
+            host.view()?.clearLyric()
+            if (reusePlayer) {
+                savePreviousContentProgress()
+                host.view()?.clearVideoFrame()
+            } else if (kernelPresent) {
+                host.view()?.releasePlayer()
+            }
+            ImgUtil.clearMemoryCache()
         }
-        ImgUtil.clearMemoryCache()
         host.setSubtitleCacheKey(
             host.vod()!!.sourceKey + "-" + host.vod()!!.id + "-" + host.vod()!!.playFlag + "-"
                 + host.vod()!!.playIndex + "-" + vs.name + "-subt"
         )
         host.setProgressKey(host.vod()!!.sourceKey + host.vod()!!.id + host.vod()!!.playFlag + host.vod()!!.playIndex + vs.name)
-        WatchProgressStore.onPlayStart(host.progressKey())
-        PlaybackProgress.onEpisodeStartNoScroll()
+        if (!prepareOnly) {
+            WatchProgressStore.onPlayStart(host.progressKey())
+            PlaybackProgress.onEpisodeStartNoScroll()
+        }
         host.startResolvePlayUrlTimeout()
         if (st.pendingInheritProgress > 0 && !TextUtils.isEmpty(st.pendingInheritKey)) {
-            host.inheritProgressFrom(st.pendingInheritKey, st.pendingInheritProgress)
+            if (!prepareOnly) host.inheritProgressFrom(st.pendingInheritKey, st.pendingInheritProgress)
             LOG.i("echo-switchSource inherit progress " + st.pendingInheritProgress + "ms from " + st.pendingInheritKey)
         }
         st.pendingInheritKey = null
         st.pendingInheritProgress = 0
-        if (reset) {
+        if (reset && !prepareOnly) {
             host.clearInheritProgress()
             WatchProgressStore.clear(host.progressOwner(), host.progressKey())
             AppGraph.cacheRepository.delete(MD5.string2MD5(host.subtitleCacheKey()), 0)
-        } else {
+        } else if (!prepareOnly) {
             host.inheritProgressIfNeeded()
             host.view()?.setSubtitleViewVisible(false)
         }
@@ -284,6 +302,12 @@ class PlaybackStarter(private val host: Host) {
             }
             host.setWebPlayUrl(finalUrl)
             host.stopParse()
+            if (st.castPrepareOnly) {
+                host.closeCastPrepare()
+                host.cancelPlayTimeout()
+                LOG.i("echo-cast prepare: url resolved, keep playback off")
+                return@Runnable
+            }
             if (host.view() == null) return@Runnable
             var targetUrl = finalUrl
             try {

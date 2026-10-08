@@ -17,6 +17,8 @@ import okhttp3.OkHttpClient
 object VodImages {
 
     private const val PIC_HTTP_CACHE_MB = 250L
+    private const val DOUBAN_SMALL_POSTER = "/s_ratio_poster/"
+    private const val DOUBAN_LARGE_POSTER = "/l_ratio_poster/"
     private var picCacheDir: File? = null
 
     fun init(context: Context) {
@@ -93,5 +95,12 @@ object VodImages {
         put("User-Agent", grab("@User-Agent"))
         put("Referer", grab("@Referer"))
         return url to headers
+    }
+
+    fun largePosterUrl(raw: String?): String? {
+        if (raw.isNullOrEmpty() || raw.startsWith("data:")) return raw
+        val url = raw.split("@")[0]
+        if (!url.contains(DOUBAN_SMALL_POSTER)) return raw
+        return url.replace(DOUBAN_SMALL_POSTER, DOUBAN_LARGE_POSTER) + raw.substring(url.length)
     }
 }

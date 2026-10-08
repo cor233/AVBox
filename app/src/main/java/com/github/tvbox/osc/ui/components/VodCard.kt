@@ -138,5 +138,5 @@ internal fun ratingBadgeText(note: String?): String? {
         val num = m.groupValues[1]
         return if (num.toFloatOrNull() == 0f) null else num
     }
-    return n
+    return n.takeIf { it.toFloatOrNull() != 0f }
 }
