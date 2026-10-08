@@ -1,6 +1,8 @@
 package com.github.tvbox.osc.player
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.view.Surface
 import android.view.SurfaceHolder
 import androidx.media3.common.Effect
@@ -13,6 +15,7 @@ import com.github.tvbox.osc.player.engine.PlayerEngineConfig
 import com.github.tvbox.osc.player.effect.PictureEffects
 import com.github.tvbox.osc.player.state.PlayState
 import com.github.tvbox.osc.player.state.PlaybackStateMachine
+import com.github.tvbox.osc.player.state.deriveKernelPlayState
 import com.github.tvbox.osc.util.HawkConfig
 import com.github.tvbox.osc.util.KV
 import com.github.tvbox.osc.util.LOG
@@ -25,6 +28,8 @@ class ExoPlayer(context: Context) : KernelPlayer() {
     private var engine: PlayerEngine? = null
 
     val stateMachine = PlaybackStateMachine()
+
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     override val playState: PlayState
         get() = stateMachine.currentState
@@ -68,6 +73,7 @@ class ExoPlayer(context: Context) : KernelPlayer() {
             }
         }
         newEngine.playbackStateListener = { state -> dispatchPlaybackState(state) }
+        newEngine.kernelSignalListener = { dispatchKernelSignal() }
         newEngine.retryAsHlsListener = { awaitingPrepared = true }
         newEngine.addErrorListener { _, _ ->
             stateMachine.onError()
@@ -222,7 +228,7 @@ class ExoPlayer(context: Context) : KernelPlayer() {
             }
 
             Player.STATE_READY -> {
-                stateMachine.onBufferingEnd()
+                stateMachine.onBufferingEnd(engine?.kernelIsPlaying == true)
                 mPlayerEventListener?.onInfo(MEDIA_INFO_BUFFERING_END, engine?.bufferedPercentage ?: 0)
             }
 
@@ -230,6 +236,32 @@ class ExoPlayer(context: Context) : KernelPlayer() {
                 stateMachine.onCompletion()
                 mPlayerEventListener?.onCompletion()
             }
+        }
+    }
+
+    private fun dispatchKernelSignal() {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            alignKernelPlayState()
+        } else {
+            mainHandler.post { alignKernelPlayState() }
+        }
+    }
+
+    private fun alignKernelPlayState() {
+        if (awaitingPrepared) return
+        when (stateMachine.currentState) {
+            PlayState.IDLE, PlayState.START_ABORT, PlayState.ERROR -> return
+            else -> Unit
+        }
+        val current = engine ?: return
+        val next = deriveKernelPlayState(
+            current.kernelPlayback,
+            current.kernelPlayWhenReady,
+            current.kernelIsPlaying,
+            current.kernelSuppressed,
+        ) ?: return
+        if (stateMachine.alignWithKernel(next)) {
+            mPlayerEventListener?.onKernelPlayStateChanged()
         }
     }
 
@@ -262,9 +294,9 @@ class ExoPlayer(context: Context) : KernelPlayer() {
     val isTunnelingEnabled: Boolean
         get() = engine?.isTunnelingEnabled ?: false
 
-    fun getTrackInfo(): TrackInfo = engine?.getTrackInfo() ?: TrackInfo()
+    override fun getTrackInfo(): TrackInfo = engine?.getTrackInfo() ?: TrackInfo()
 
-    fun setTrack(track: TrackInfoBean?) {
+    override fun setTrack(track: TrackInfoBean?) {
         engine?.setTrack(track)
     }
 

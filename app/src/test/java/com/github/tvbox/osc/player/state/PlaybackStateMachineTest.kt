@@ -1,6 +1,8 @@
 package com.github.tvbox.osc.player.state
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PlaybackStateMachineTest {
@@ -26,14 +28,25 @@ class PlaybackStateMachineTest {
                 listOf({ onPrepareRequested() }, { onPrepared() }, { onRenderingStart() }, { onBufferingStart() }),
             ),
             Sequence(
-                "buffering end after buffering start",
+                "buffering end resumes playing",
+                PlayState.PLAYING,
+                listOf(
+                    { onPrepareRequested() },
+                    { onPrepared() },
+                    { onRenderingStart() },
+                    { onBufferingStart() },
+                    { onBufferingEnd(true) },
+                ),
+            ),
+            Sequence(
+                "buffering end without playback stays buffered",
                 PlayState.BUFFERED,
                 listOf(
                     { onPrepareRequested() },
                     { onPrepared() },
                     { onRenderingStart() },
                     { onBufferingStart() },
-                    { onBufferingEnd() },
+                    { onBufferingEnd(false) },
                 ),
             ),
             Sequence(
@@ -103,7 +116,7 @@ class PlaybackStateMachineTest {
                     { onRenderingStart() },
                     { onPauseRequested() },
                     { onSeekWhilePaused() },
-                    { onBufferingEnd() },
+                    { onBufferingEnd(true) },
                 ),
             ),
             Sequence(
@@ -195,6 +208,39 @@ class PlaybackStateMachineTest {
                     { onPrepareRequested() },
                 ),
             ),
+            Sequence(
+                "kernel alignment recovers playing",
+                PlayState.PLAYING,
+                listOf(
+                    { onPrepareRequested() },
+                    { onPrepared() },
+                    { onPauseRequested() },
+                    { alignWithKernel(PlayState.PLAYING) },
+                ),
+            ),
+            Sequence(
+                "kernel alignment falls back to paused",
+                PlayState.PAUSED,
+                listOf(
+                    { onPrepareRequested() },
+                    { onPrepared() },
+                    { onRenderingStart() },
+                    { alignWithKernel(PlayState.PAUSED) },
+                ),
+            ),
+            Sequence(
+                "kernel alignment clears pause memory",
+                PlayState.BUFFERING,
+                listOf(
+                    { onPrepareRequested() },
+                    { onPrepared() },
+                    { onRenderingStart() },
+                    { onPauseRequested() },
+                    { onSeekWhilePaused() },
+                    { alignWithKernel(PlayState.PLAYING) },
+                    { onBufferingStart() },
+                ),
+            ),
         )
 
         for (case in cases) {
@@ -212,5 +258,17 @@ class PlaybackStateMachineTest {
         machine.onPrepared()
 
         assertEquals(PlayState.PREPARED, machine.state.value)
+    }
+
+    @Test
+    fun kernelAlignmentReportsOnlyRealChanges() {
+        val machine = PlaybackStateMachine()
+        machine.onPrepareRequested()
+        machine.onPrepared()
+
+        assertTrue(machine.alignWithKernel(PlayState.PLAYING))
+        assertFalse(machine.alignWithKernel(PlayState.PLAYING))
+        assertTrue(machine.alignWithKernel(PlayState.PAUSED))
+        assertFalse(machine.alignWithKernel(PlayState.PAUSED))
     }
 }

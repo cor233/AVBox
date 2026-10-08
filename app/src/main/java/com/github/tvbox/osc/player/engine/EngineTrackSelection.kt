@@ -246,7 +246,7 @@ internal class EngineTrackSelection(private val host: Host) {
         if (trackType == C.TRACK_TYPE_VIDEO) {
             return TrackMemory.videoFingerprint(codec, fmt.width, fmt.height)
         }
-        return TrackMemory.textFingerprint(getLanguage(fmt), codec)
+        return TrackMemory.textFingerprint(getLanguage(fmt), fmt.id, fmt.label, codec)
     }
 
     private fun mimeSubtype(fmt: Format?): String {

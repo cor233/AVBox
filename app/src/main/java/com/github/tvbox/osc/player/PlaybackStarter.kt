@@ -312,7 +312,7 @@ class PlaybackStarter(private val host: Host) {
             var targetUrl = finalUrl
             try {
                 val playerType = host.playerCfg()!!.getInt("pl")
-                if (playerType >= 10) {
+                if (playerType >= 10 && PlayerHelper.getPlayerExist(playerType)) {
                     host.view()?.releasePlayer()
                     val series = if (host.vod() == null || host.vod()!!.seriesMap == null) {
                         null

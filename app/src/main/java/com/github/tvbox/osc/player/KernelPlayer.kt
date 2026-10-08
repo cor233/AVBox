@@ -13,6 +13,7 @@ abstract class KernelPlayer {
         fun onInfo(what: Int, extra: Int)
         fun onPrepared()
         fun onVideoSizeChanged(width: Int, height: Int)
+        fun onKernelPlayStateChanged() {}
     }
 
     @JvmField
@@ -57,6 +58,10 @@ abstract class KernelPlayer {
     open fun keepRenderViewOnReset(): Boolean = false
 
     open fun resetTrackSelection() {}
+
+    open fun getTrackInfo(): TrackInfo = TrackInfo()
+
+    open fun setTrack(track: TrackInfoBean?) {}
 
     abstract val isPlaying: Boolean
 

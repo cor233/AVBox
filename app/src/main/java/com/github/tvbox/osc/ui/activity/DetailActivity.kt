@@ -34,7 +34,7 @@ import com.github.tvbox.osc.util.PermissionHelper
 import kotlinx.coroutines.launch
 
 private const val SYSBAR_APPEARANCE_REASSERT_DELAY_MS = 400L
-private const val VIDEO_SIZE_WATCH_TIMEOUT_MS = 1500L
+private const val VIDEO_SIZE_WATCH_TIMEOUT_MS = 10000L
 private const val CAST_URL_POLL_MS = 250L
 private const val CAST_URL_WAIT_ATTEMPTS = 20
 
@@ -53,8 +53,9 @@ class DetailActivity : BaseActivity(), PageHost {
 
     private val videoSizeTimeoutRunnable = Runnable {
         if (!videoSizeWatchArmed) return@Runnable
-        LOG.i("echo-player detail size timeout, fall back to landscape")
-        onVideoSizeReady(portraitVideo = false)
+        LOG.i("echo-player detail size timeout, keep portrait placeholder")
+        videoSizeWatchArmed = false
+        playContainer?.setVideoSizeReadyListener(null)
     }
 
     private val castWaitRunnable = object : Runnable {

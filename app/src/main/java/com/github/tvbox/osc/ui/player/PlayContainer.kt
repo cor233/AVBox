@@ -213,7 +213,6 @@ class PlayContainer(activity: Activity) : FrameLayout(activity), CustomAdapt, Pl
         if (EventBus.getDefault().isRegistered(this)) {
             EventBus.getDefault().unregister(this)
         }
-        trackSelector.invalidatePendingSwitch()
         if (danmuLoadController != null) {
             danmuLoadController!!.destroy()
             danmuLoadController = null
@@ -274,7 +273,9 @@ class PlayContainer(activity: Activity) : FrameLayout(activity), CustomAdapt, Pl
         surfaceSlot = findViewById(R.id.surfaceSlot)
         mController = ComposeVideoController(mActivity!!)
         (mController as? ComposeVideoController)?.onVideoSizeReady = { width, height ->
-            notifyVideoSizeReady(VideoOrientation.isPortrait(width, height))
+            if (VideoOrientation.isUsableSize(width, height)) {
+                notifyVideoSizeReady(VideoOrientation.isPortrait(width, height))
+            }
         }
 
         mController.getLyricView().setTextSize(if (previewMode) 16f else 24f)

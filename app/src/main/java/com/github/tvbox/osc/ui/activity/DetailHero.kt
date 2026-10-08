@@ -12,12 +12,12 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.navigationBarsIgnoringVisibility
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBars
-import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.statusBarsIgnoringVisibility
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
@@ -95,7 +95,7 @@ private val TypeSeparators = Regex("[,，、/|;；]+")
 
 @Composable
 internal fun DetailTopScrim(modifier: Modifier = Modifier) {
-    val statusTop = with(LocalDensity.current) { WindowInsets.statusBars.getTop(this).toDp() }
+    val statusTop = with(LocalDensity.current) { WindowInsets.statusBarsIgnoringVisibility.getTop(this).toDp() }
     Box(
         modifier = modifier
             .fillMaxWidth()
@@ -178,7 +178,7 @@ internal fun DetailHero(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .statusBarsPadding()
+                    .windowInsetsPadding(WindowInsets.statusBarsIgnoringVisibility)
                     .padding(horizontal = 16.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -208,7 +208,7 @@ internal fun DetailHero(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .navigationBarsPadding()
+                .windowInsetsPadding(WindowInsets.navigationBarsIgnoringVisibility)
                 .padding(
                     start = HeroCaptionHorizontalPadding,
                     end = HeroCaptionHorizontalPadding,

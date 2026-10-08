@@ -33,7 +33,7 @@ class PlaybackConfigDelegate(private val host: Host) {
                 cfg.put("pl", if (sourcePlayerType == -1) (KV.get(HawkConfig.PLAY_TYPE, 2) as Int) else sourcePlayerType)
             }
             val configuredType = cfg.optInt("pl", 2)
-            if (configuredType == 0 || configuredType == 1) {
+            if (configuredType == 0 || configuredType == 1 || !PlayerHelper.getPlayerExist(configuredType)) {
                 cfg.put("pl", 2)
             }
             cfg.put("pr", KV.get(HawkConfig.PLAY_RENDER, 1))

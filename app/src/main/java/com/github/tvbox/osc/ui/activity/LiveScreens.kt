@@ -71,7 +71,6 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.github.tvbox.osc.R
 import com.github.tvbox.osc.bean.LiveChannelGroup
-import com.github.tvbox.osc.bean.LiveChannelItem
 import com.github.tvbox.osc.player.state.PlayState
 import com.github.tvbox.osc.ui.components.AVBoxAlertDialog
 import com.github.tvbox.osc.ui.components.AVBoxBottomSheet
@@ -90,14 +89,14 @@ import java.util.Date
 import kotlin.math.max
 
 @Composable
-internal fun LiveScreen(activity: LivePlayActivity) {
-    val background = if (activity.isFullBox()) Color.Black else MaterialTheme.colorScheme.surfaceContainer
+internal fun LiveScreen(state: LivePlayUiState, actions: LivePlayActions) {
+    val background = if (state.frame.isFullBox) Color.Black else MaterialTheme.colorScheme.surfaceContainer
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(background),
     ) {
-        when (activity.pageState) {
+        when (state.frame.pageState) {
             PageState.LOADING -> LoadStateBox(
                 state = LoadState.Loading,
                 emptyText = "",
@@ -113,17 +112,30 @@ internal fun LiveScreen(activity: LivePlayActivity) {
                 errorText = stringResource(R.string.live_empty_channels),
                 retryText = stringResource(R.string.common_retry),
                 modifier = Modifier.fillMaxSize(),
-                onRetry = { activity.loadLiveConfigOnEnter() },
+                onRetry = actions.page.onRetryLoad,
             )
 
-            PageState.READY -> LiveReadyContent(activity)
+            PageState.READY -> LiveReadyContent(state, actions)
         }
-        if (activity.epgSheetVisible) EpgSheet(activity)
-        if (activity.settingsSheetVisible) SettingsSheet(activity)
-        activity.passwordDialogTarget?.let {
+        if (state.epg.sheetVisible) {
+            EpgSheet(
+                epg = state.epg,
+                onDismiss = actions.epg.onDismiss,
+                onRowClicked = actions.epg.onRowClicked,
+            )
+        }
+        if (state.settings.sheetVisible) {
+            SettingsSheet(
+                settings = state.settings,
+                onItemClick = actions.settings.onItemClick,
+                onItemLongClick = actions.settings.onItemLongClick,
+                onDismiss = actions.settings.onDismiss,
+            )
+        }
+        state.passwordDialogTarget?.let {
             LivePasswordDialog(
-                onConfirm = { activity.onPasswordConfirmed(it) },
-                onDismiss = { activity.passwordDialogTarget = null },
+                onConfirm = actions.page.onPasswordConfirm,
+                onDismiss = actions.page.onPasswordDismiss,
             )
         }
     }
@@ -172,7 +184,7 @@ private fun LivePasswordDialog(
 }
 
 @Composable
-private fun LiveReadyContent(activity: LivePlayActivity) {
+private fun LiveReadyContent(state: LivePlayUiState, actions: LivePlayActions) {
     val configuration = LocalConfiguration.current
     val shortEdge = minOf(configuration.screenWidthDp, configuration.screenHeightDp).dp
     val longEdge = maxOf(configuration.screenWidthDp, configuration.screenHeightDp).dp
@@ -181,8 +193,9 @@ private fun LiveReadyContent(activity: LivePlayActivity) {
         .coerceAtMost(maxOf(150.dp, longEdge / 2))
     Column(modifier = Modifier.fillMaxSize()) {
         PlayerArea(
-            activity = activity,
-            modifier = if (activity.isFullBox()) {
+            state = state,
+            actions = actions,
+            modifier = if (state.frame.isFullBox) {
                 Modifier.fillMaxSize()
             } else {
                 Modifier
@@ -192,16 +205,21 @@ private fun LiveReadyContent(activity: LivePlayActivity) {
                     .height(previewHeight)
             },
         )
-        if (!activity.isFullBox()) {
-            ChannelInfoSection(activity)
-            ChannelListSection(activity, Modifier.weight(1f))
+        if (!state.frame.isFullBox) {
+            ChannelInfoSection(info = state.channelInfo, timeshift = state.timeshift, overlay = state.overlay)
+            ChannelListSection(
+                channelList = state.channelList,
+                onToggleGroup = actions.list.onToggleGroup,
+                onSelectChannel = actions.list.onSelectChannel,
+                modifier = Modifier.weight(1f),
+            )
         }
     }
 }
 
 @Composable
-private fun PlayerArea(activity: LivePlayActivity, modifier: Modifier) {
-    val videoView = activity.mVideoView
+private fun PlayerArea(state: LivePlayUiState, actions: LivePlayActions, modifier: Modifier) {
+    val videoView = actions.player.videoView()
     Box(modifier = modifier.background(Color.Black)) {
         if (videoView != null) {
             AndroidView(
@@ -209,9 +227,9 @@ private fun PlayerArea(activity: LivePlayActivity, modifier: Modifier) {
                 modifier = Modifier.fillMaxSize(),
             )
         }
-        if (activity.snapshotVisible) {
+        if (state.player.snapshotVisible) {
             Box(modifier = Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) {
-                activity.snapshotBitmap?.let { bitmap ->
+                state.player.snapshotBitmap?.let { bitmap ->
                     Image(
                         bitmap = bitmap.asImageBitmap(),
                         contentDescription = null,
@@ -222,26 +240,26 @@ private fun PlayerArea(activity: LivePlayActivity, modifier: Modifier) {
                 CircularProgressIndicator(modifier = Modifier.size(36.dp), strokeWidth = 3.dp)
             }
         }
-        if (!activity.snapshotVisible &&
-            (activity.playState == PlayState.PREPARING || activity.playState == PlayState.BUFFERING)
+        if (!state.player.snapshotVisible &&
+            (state.player.playState == PlayState.PREPARING || state.player.playState == PlayState.BUFFERING)
         ) {
             CircularProgressIndicator(modifier = Modifier.align(Alignment.Center).size(40.dp), color = Color.White)
         }
-        if (activity.resolutionVisible && activity.resolutionText.isNotEmpty()) {
+        if (state.player.resolutionVisible && state.player.resolutionText.isNotEmpty()) {
             Surface(
                 modifier = Modifier.align(Alignment.TopStart).padding(12.dp),
                 shape = RoundedCornerShape(6.dp),
                 color = Color.Black.copy(alpha = 0.55f),
             ) {
                 Text(
-                    text = activity.resolutionText,
+                    text = state.player.resolutionText,
                     color = Color.White,
                     fontSize = 12.sp,
                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                 )
             }
         }
-        activity.gestureHintText?.let { hint ->
+        state.player.gestureHintText?.let { hint ->
             Surface(
                 modifier = Modifier.align(Alignment.Center),
                 shape = RoundedCornerShape(10.dp),
@@ -255,14 +273,20 @@ private fun PlayerArea(activity: LivePlayActivity, modifier: Modifier) {
                 )
             }
         }
-        if (activity.isBackState && activity.overlayVisible) {
-            TimeshiftBar(activity, Modifier.align(Alignment.BottomCenter))
+        if (state.timeshift.isBackState && state.overlay.visible) {
+            TimeshiftBar(
+                timeshift = state.timeshift,
+                paused = state.player.playState == PlayState.PAUSED,
+                onSeek = actions.player.onTimeshiftSeek,
+                onTogglePlay = actions.player.onTimeshiftTogglePlay,
+                modifier = Modifier.align(Alignment.BottomCenter),
+            )
         }
-        if (!activity.isFullBox()) {
-            PlayerCornerButtons(activity, Modifier.align(Alignment.TopEnd))
-        } else if (activity.overlayVisible) {
+        if (!state.frame.isFullBox) {
+            PlayerCornerButtons(actions.player, Modifier.align(Alignment.TopEnd))
+        } else if (state.overlay.visible) {
             IconButton(
-                onClick = { activity.applyFullscreen(false) },
+                onClick = actions.player.onExitFullscreen,
                 modifier = Modifier.align(Alignment.TopStart),
             ) {
                 Icon(
@@ -271,13 +295,13 @@ private fun PlayerArea(activity: LivePlayActivity, modifier: Modifier) {
                     tint = Color.White,
                 )
             }
-            PlayerCornerButtons(activity, Modifier.align(Alignment.TopEnd))
+            PlayerCornerButtons(actions.player, Modifier.align(Alignment.TopEnd))
         }
     }
 }
 
 @Composable
-private fun PlayerCornerButtons(activity: LivePlayActivity, modifier: Modifier) {
+private fun PlayerCornerButtons(actions: LivePlayerActions, modifier: Modifier) {
     Row(modifier = modifier.padding(8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         PlayerCornerButton(
             icon = {
@@ -288,7 +312,7 @@ private fun PlayerCornerButtons(activity: LivePlayActivity, modifier: Modifier) 
                     modifier = Modifier.size(20.dp),
                 )
             },
-            onClick = { activity.epgSheetVisible = true },
+            onClick = actions.onEpgSheetOpen,
         )
         PlayerCornerButton(
             icon = {
@@ -299,7 +323,7 @@ private fun PlayerCornerButtons(activity: LivePlayActivity, modifier: Modifier) 
                     modifier = Modifier.size(20.dp),
                 )
             },
-            onClick = { activity.openSettingsSheet() },
+            onClick = actions.onSettingsSheetOpen,
         )
     }
 }
@@ -316,28 +340,34 @@ private fun PlayerCornerButton(icon: @Composable () -> Unit, onClick: () -> Unit
 }
 
 @Composable
-private fun TimeshiftBar(activity: LivePlayActivity, modifier: Modifier) {
+private fun TimeshiftBar(
+    timeshift: LiveTimeshiftUi,
+    paused: Boolean,
+    onSeek: (Float) -> Unit,
+    onTogglePlay: () -> Unit,
+    modifier: Modifier,
+) {
     Row(
         modifier = modifier
             .fillMaxWidth()
             .padding(horizontal = 12.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        IconButton(onClick = { activity.onTimeshiftTogglePlay() }) {
+        IconButton(onClick = onTogglePlay) {
             Icon(
-                imageVector = if (activity.playState == PlayState.PAUSED) Icons.Filled.PlayArrow else Icons.Filled.Pause,
+                imageVector = if (paused) Icons.Filled.PlayArrow else Icons.Filled.Pause,
                 contentDescription = stringResource(R.string.player_play_pause),
                 tint = Color.White,
             )
         }
         Slider(
-            value = activity.tsPosition.toFloat().coerceIn(0f, max(activity.tsDuration, 1).toFloat()),
-            onValueChange = { activity.onTimeshiftSeek(it) },
-            valueRange = 0f..max(activity.tsDuration, 1).toFloat(),
+            value = timeshift.position.toFloat().coerceIn(0f, max(timeshift.duration, 1).toFloat()),
+            onValueChange = onSeek,
+            valueRange = 0f..max(timeshift.duration, 1).toFloat(),
             modifier = Modifier.weight(1f),
         )
         Text(
-            text = LiveEpgParser.durationToString(activity.tsPosition) + " / " + LiveEpgParser.durationToString(activity.tsDuration),
+            text = LiveEpgParser.durationToString(timeshift.position) + " / " + LiveEpgParser.durationToString(timeshift.duration),
             color = Color.White,
             fontSize = 12.sp,
             modifier = Modifier.padding(start = 8.dp),
@@ -346,8 +376,11 @@ private fun TimeshiftBar(activity: LivePlayActivity, modifier: Modifier) {
 }
 
 @Composable
-private fun ChannelInfoSection(activity: LivePlayActivity) {
-    val info = activity.channelInfoUi
+private fun ChannelInfoSection(
+    info: ChannelInfoUi,
+    timeshift: LiveTimeshiftUi,
+    overlay: LiveOverlayUi,
+) {
     if (info.name.isEmpty()) return
     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -370,7 +403,7 @@ private fun ChannelInfoSection(activity: LivePlayActivity) {
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
-            if (activity.isBackState) {
+            if (timeshift.isBackState) {
                 Text(text = stringResource(R.string.live_replaying), fontSize = 12.sp, color = MaterialTheme.colorScheme.tertiary)
             } else {
                 Text(text = stringResource(R.string.live_on_air), fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
@@ -396,11 +429,11 @@ private fun ChannelInfoSection(activity: LivePlayActivity) {
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
-        if (activity.showTimeOn || activity.showNetSpeedOn) {
+        if (overlay.showTimeOn || overlay.showNetSpeedOn) {
             Spacer(modifier = Modifier.height(2.dp))
             val parts = ArrayList<String>()
-            if (activity.showTimeOn && activity.timeText.isNotEmpty()) parts.add(activity.timeText)
-            if (activity.showNetSpeedOn && activity.netSpeedText.isNotEmpty()) parts.add(activity.netSpeedText)
+            if (overlay.showTimeOn && overlay.timeText.isNotEmpty()) parts.add(overlay.timeText)
+            if (overlay.showNetSpeedOn && overlay.netSpeedText.isNotEmpty()) parts.add(overlay.netSpeedText)
             Text(
                 text = parts.joinToString("  "),
                 fontSize = 12.sp,
@@ -411,16 +444,20 @@ private fun ChannelInfoSection(activity: LivePlayActivity) {
 }
 
 @Composable
-private fun ChannelListSection(activity: LivePlayActivity, modifier: Modifier) {
+private fun ChannelListSection(
+    channelList: LiveChannelListUi,
+    onToggleGroup: (Int) -> Unit,
+    onSelectChannel: (Int, Int) -> Unit,
+    modifier: Modifier,
+) {
     val listState = rememberLazyListState()
-    LaunchedEffect(activity.scrollTick, activity.channelVersion) {
-        val rows = activity.buildChannelRows()
+    LaunchedEffect(channelList.scrollRequestId) {
         var target = -1
-        for (i in rows.indices) {
-            val row = rows[i]
+        for (i in channelList.rows.indices) {
+            val row = channelList.rows[i]
             if (row.channel != null &&
-                row.group?.groupIndex == activity.currentChannelGroupIndex &&
-                row.channel.channelIndex == activity.currentLiveChannelIndex
+                row.group?.groupIndex == channelList.playingGroupIndex &&
+                row.channel.channelIndex == channelList.playingChannelIndex
             ) {
                 target = i
                 break
@@ -428,33 +465,47 @@ private fun ChannelListSection(activity: LivePlayActivity, modifier: Modifier) {
         }
         if (target > 0) listState.animateScrollToItem(max(0, target - 2))
     }
-    val rows = activity.buildChannelRows()
     val navBarInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
     LazyColumn(
         state = listState,
         modifier = modifier.fillMaxWidth(),
         contentPadding = PaddingValues(bottom = navBarInset + 24.dp),
     ) {
-        itemsIndexed(rows, key = { _, row -> row.key }) { _, row ->
+        itemsIndexed(channelList.rows, key = { _, row -> row.key }) { _, row ->
             val channel = row.channel
             if (channel == null) {
                 val group = row.group ?: return@itemsIndexed
-                GroupHeaderRow(activity, group)
+                GroupHeaderRow(
+                    group = group,
+                    expanded = channelList.expandedGroups.contains(group.groupIndex),
+                    locked = channelList.lockedGroups.contains(group.groupIndex),
+                    onToggle = { onToggleGroup(group.groupIndex) },
+                )
             } else {
-                ChannelRow(activity, row, channel)
+                val group = row.group
+                ChannelRow(
+                    row = row,
+                    selected = group != null &&
+                        group.groupIndex == channelList.playingGroupIndex &&
+                        channel.channelIndex == channelList.playingChannelIndex,
+                    onSelect = { onSelectChannel(group?.groupIndex ?: 0, row.channelPos) },
+                )
             }
         }
     }
 }
 
 @Composable
-private fun GroupHeaderRow(activity: LivePlayActivity, group: LiveChannelGroup) {
-    val expanded = activity.expandedGroups.contains(group.groupIndex)
-    val locked = group.groupPassword.orEmpty().isNotEmpty() && !activity.isPasswordConfirmedForUi(group.groupIndex)
+private fun GroupHeaderRow(
+    group: LiveChannelGroup,
+    expanded: Boolean,
+    locked: Boolean,
+    onToggle: () -> Unit,
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { activity.toggleChannelGroup(group.groupIndex) }
+            .clickable(onClick = onToggle)
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -486,18 +537,16 @@ private fun GroupHeaderRow(activity: LivePlayActivity, group: LiveChannelGroup) 
 
 @Composable
 private fun ChannelRow(
-    activity: LivePlayActivity,
     row: LiveListRow,
-    channel: LiveChannelItem,
+    selected: Boolean,
+    onSelect: () -> Unit,
 ) {
-    val group = row.group ?: return
-    val selected = group.groupIndex == activity.currentChannelGroupIndex &&
-            channel.channelIndex == activity.currentLiveChannelIndex
+    val channel = row.channel ?: return
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .background(if (selected) MaterialTheme.colorScheme.cardContainer else Color.Transparent)
-            .clickable { activity.selectChannel(group.groupIndex, row.channelPos) }
+            .clickable(onClick = onSelect)
             .padding(horizontal = 20.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -520,11 +569,14 @@ private fun ChannelRow(
 
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
-private fun EpgSheet(activity: LivePlayActivity) {
-    activity.epgVersion
-    val channelNameStr = activity.channelName?.channelName ?: ""
+private fun EpgSheet(
+    epg: LiveEpgUi,
+    onDismiss: () -> Unit,
+    onRowClicked: (Int) -> Boolean,
+) {
+    val channelNameStr = epg.channelName
     AVBoxBottomSheet(
-        onDismissRequest = { activity.epgSheetVisible = false },
+        onDismissRequest = onDismiss,
         title = if (channelNameStr.isEmpty()) {
             stringResource(R.string.live_epg)
         } else {
@@ -534,7 +586,7 @@ private fun EpgSheet(activity: LivePlayActivity) {
         isScrollable = false,
     ) {
         val dismissAnimated = LocalSheetDismiss.current
-        val epgList = activity.epgdata
+        val epgList = epg.epgList
         if (epgList.isEmpty()) {
             Text(
                 text = stringResource(R.string.live_epg_empty),
@@ -544,35 +596,35 @@ private fun EpgSheet(activity: LivePlayActivity) {
             )
             return@AVBoxBottomSheet
         }
-        val canCatchup = activity.canCurrentChannelCatchup()
+        val canCatchup = epg.canCatchup
         val now = Date()
         LazyColumn(
             modifier = Modifier.fillMaxWidth().heightIn(max = 520.dp),
             contentPadding = PaddingValues(bottom = 16.dp),
         ) {
-            itemsIndexed(epgList) { index, epg ->
-                val isNow = epg.startdateTime != null && epg.enddateTime != null &&
-                        !now.before(epg.startdateTime) && !now.after(epg.enddateTime)
-                val clickable = epg.startdateTime != null && !now.before(epg.startdateTime) &&
-                        (canCatchup || (epg.enddateTime != null && !now.after(epg.enddateTime)))
-                val selected = index == activity.currentLiveLookBackIndex
+            itemsIndexed(epgList) { index, item ->
+                val isNow = item.startdateTime != null && item.enddateTime != null &&
+                        !now.before(item.startdateTime) && !now.after(item.enddateTime)
+                val clickable = item.startdateTime != null && !now.before(item.startdateTime) &&
+                        (canCatchup || (item.enddateTime != null && !now.after(item.enddateTime)))
+                val selected = index == epg.lookBackIndex
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clickable(enabled = clickable) {
-                            if (activity.onEpgRowClicked(index)) dismissAnimated()
+                            if (onRowClicked(index)) dismissAnimated()
                         }
                         .padding(horizontal = 16.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
-                        text = epg.start + "-" + epg.end,
+                        text = item.start + "-" + item.end,
                         fontSize = 13.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Spacer(modifier = Modifier.width(12.dp))
                     Text(
-                        text = epg.title.orEmpty(),
+                        text = item.title.orEmpty(),
                         fontSize = 14.sp,
                         fontWeight = if (selected || isNow) FontWeight.Bold else FontWeight.Normal,
                         color = when {
@@ -605,11 +657,14 @@ private fun EpgSheet(activity: LivePlayActivity) {
 
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
-private fun SettingsSheet(activity: LivePlayActivity) {
-    activity.settingsVersion
-    val groups = activity.visibleSettingGroups()
+private fun SettingsSheet(
+    settings: LiveSettingsUi,
+    onItemClick: (Int, Int) -> Unit,
+    onItemLongClick: (Int) -> Unit,
+    onDismiss: () -> Unit,
+) {
     AVBoxBottomSheet(
-        onDismissRequest = { activity.settingsSheetVisible = false },
+        onDismissRequest = onDismiss,
         title = stringResource(R.string.live_settings),
         containerColor = MaterialTheme.colorScheme.surfaceContainer,
         isScrollable = false,
@@ -619,40 +674,39 @@ private fun SettingsSheet(activity: LivePlayActivity) {
             verticalArrangement = Arrangement.spacedBy(20.dp),
             contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 16.dp),
         ) {
-            groups.forEach { group ->
-                val items = group.liveSettingItems ?: return@forEach
+            settings.groups.forEach { group ->
                 item(key = "sg" + group.groupIndex) {
                     SettingsGroup(
-                        title = if (group.groupIndex == 6 && !activity.isLiveApiLineMode()) {
-                            stringResource(R.string.live_group_long_press_delete, group.groupName.orEmpty())
+                        title = if (group.longPressDelete) {
+                            stringResource(R.string.live_group_long_press_delete, group.title)
                         } else {
-                            group.groupName
+                            group.title
                         },
                     ) {
-                        items.forEachIndexed { index, item ->
+                        group.items.forEachIndexed { index, item ->
                             val position = when {
-                                items.size == 1 -> SettingsCardPosition.SINGLE
+                                group.items.size == 1 -> SettingsCardPosition.SINGLE
                                 index == 0 -> SettingsCardPosition.FIRST
-                                index == items.size - 1 -> SettingsCardPosition.LAST
+                                index == group.items.size - 1 -> SettingsCardPosition.LAST
                                 else -> SettingsCardPosition.MIDDLE
                             }
                             SettingsCard(
                                 position = position,
                                 color = MaterialTheme.colorScheme.surfaceBright,
                             ) {
-                                if (group.groupIndex == 4) {
+                                if (group.switchRow) {
                                     SettingsSwitchRow(
-                                        title = item.itemName.orEmpty(),
-                                        checked = activity.settingChecked(item.itemIndex),
-                                        onCheckedChange = { activity.clickSettingItem(group.groupIndex, item.itemIndex) },
+                                        title = item.title,
+                                        checked = item.checked,
+                                        onCheckedChange = { onItemClick(group.groupIndex, item.itemIndex) },
                                     )
                                 } else {
                                     SettingsOptionRow(
-                                        title = item.itemName.orEmpty(),
-                                        selected = activity.settingSelectedIndex(group.groupIndex) == item.itemIndex,
-                                        onClick = { activity.clickSettingItem(group.groupIndex, item.itemIndex) },
-                                        onLongClick = if (group.groupIndex == 6 && item.itemIndex > 0) {
-                                            { activity.removeLiveConfigHistory(item.itemIndex - 1) }
+                                        title = item.title,
+                                        selected = item.selected,
+                                        onClick = { onItemClick(group.groupIndex, item.itemIndex) },
+                                        onLongClick = if (group.groupIndex == LiveSettingsSnapshot.CONFIG_GROUP_INDEX && item.itemIndex > 0) {
+                                            { onItemLongClick(item.itemIndex - 1) }
                                         } else {
                                             null
                                         },

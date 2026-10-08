@@ -1,18 +1,50 @@
 package com.github.tvbox.osc.ui.activity
 
 import android.os.Handler
-import android.widget.Toast
 import com.github.tvbox.osc.api.ApiConfig
 import com.github.tvbox.osc.bean.LiveChannelGroup
 import com.github.tvbox.osc.bean.LiveChannelItem
+import com.github.tvbox.osc.player.MyVideoView
 import com.github.tvbox.osc.util.HawkConfig
 import com.github.tvbox.osc.util.KV
 import java.util.ArrayList
 
 internal class LiveChannelSourceLoader(
-    private val host: LivePlayActivity,
+    private val vm: LivePlayViewModel,
+    private val host: Host,
+    private val overlay: LiveOverlayController,
     private val handler: Handler,
 ) {
+
+    internal interface Host {
+        var changeSourceTimes: Int
+
+        fun groups(): MutableList<LiveChannelGroup>
+
+        fun videoView(): MyVideoView?
+
+        fun releasePlayerKernel()
+
+        fun isNeedInputPassword(groupIndex: Int): Boolean
+
+        fun selectChannelGroup(groupIndex: Int, liveChannelIndex: Int)
+
+        fun initLiveSettingGroupList()
+
+        fun onChannelGroupsChanged()
+
+        fun onSettingsInputsChanged()
+
+        fun cancelEpgPending()
+
+        fun initCatchup()
+
+        fun initPlayer(view: MyVideoView)
+
+        fun changeSourceTimeout(): Runnable
+
+        fun toast(msg: String)
+    }
 
     private var refreshingLiveChannelList = false
     private var loadingLiveConfigOnEnter = false
@@ -23,7 +55,7 @@ internal class LiveChannelSourceLoader(
         override fun isRefreshing(): Boolean = refreshingLiveChannelList
 
         override fun onLoading() {
-            host.pageState = PageState.LOADING
+            vm.updateFrame { it.copy(pageState = PageState.LOADING) }
         }
 
         override fun onEmpty() {
@@ -40,7 +72,7 @@ internal class LiveChannelSourceLoader(
     }
 
     fun getLiveChannels(groupIndex: Int): ArrayList<LiveChannelItem>? {
-        val group = host.liveChannelGroupList.getOrNull(groupIndex) ?: return null
+        val group = host.groups().getOrNull(groupIndex) ?: return null
         return if (!host.isNeedInputPassword(groupIndex)) group.liveChannels else ArrayList()
     }
 
@@ -54,7 +86,7 @@ internal class LiveChannelSourceLoader(
             loadLiveConfigOnEnter()
             return
         }
-        host.catchupController.initLiveObj()
+        host.initCatchup()
         if (list.size == 1 && list[0].groupName.orEmpty().startsWith("http://127.0.0.1")) {
             loadProxyLives(list[0].groupName.orEmpty())
         } else {
@@ -65,13 +97,14 @@ internal class LiveChannelSourceLoader(
     fun loadLiveConfigOnEnter() {
         if (loadingLiveConfigOnEnter) return
         loadingLiveConfigOnEnter = true
-        host.pageState = PageState.LOADING
+        vm.updateFrame { it.copy(pageState = PageState.LOADING) }
         ApiConfig.get().loadLiveConfig(true, object : ApiConfig.LoadConfigCallback {
             override fun success() {
                 handler.post {
                     loadingLiveConfigOnEnter = false
                     initLiveChannelList()
                     host.initLiveSettingGroupList()
+                    host.onSettingsInputsChanged()
                 }
             }
 
@@ -84,7 +117,7 @@ internal class LiveChannelSourceLoader(
 
             override fun notice(msg: String?) {
                 handler.post {
-                    Toast.makeText(host, msg, Toast.LENGTH_SHORT).show()
+                    host.toast(msg.orEmpty())
                 }
             }
         })
@@ -95,9 +128,10 @@ internal class LiveChannelSourceLoader(
     }
 
     private fun applyLiveChannelGroups(groups: List<LiveChannelGroup>) {
-        host.liveChannelGroupList.clear()
-        host.liveChannelGroupList.addAll(groups)
-        host.pageState = PageState.READY
+        host.groups().clear()
+        host.groups().addAll(groups)
+        host.onChannelGroupsChanged()
+        vm.updateFrame { it.copy(pageState = PageState.READY) }
         initLiveState()
     }
 
@@ -111,7 +145,7 @@ internal class LiveChannelSourceLoader(
         var lastChannelGroupIndex = -1
         var lastLiveChannelIndex = -1
         var lastLiveChannelItem: LiveChannelItem? = null
-        for (group in host.liveChannelGroupList) {
+        for (group in host.groups()) {
             val groupChannels = group.liveChannels
             if (groupChannels == null || groupChannels.isEmpty()) continue
             for (item in groupChannels) {
@@ -126,13 +160,13 @@ internal class LiveChannelSourceLoader(
         }
         if (lastChannelGroupIndex == -1) {
             val cctv1Channel = LiveChannelNavigator.firstChannelByName(
-                host.liveChannelGroupList, "CCTV1"
+                host.groups(), "CCTV1"
             ) { groupIndex -> host.isNeedInputPassword(groupIndex) }
             if (cctv1Channel != null) {
                 lastChannelGroupIndex = cctv1Channel[0]
                 lastLiveChannelIndex = cctv1Channel[1]
             } else {
-                lastChannelGroupIndex = LiveChannelNavigator.firstUnlockedGroupIndex(host.liveChannelGroupList)
+                lastChannelGroupIndex = LiveChannelNavigator.firstUnlockedGroupIndex(host.groups())
                 if (lastChannelGroupIndex == -1) lastChannelGroupIndex = 0
                 lastLiveChannelIndex = 0
             }
@@ -141,12 +175,10 @@ internal class LiveChannelSourceLoader(
             lastLiveChannelItem.sourceIndex = minOf(sourceIndex, lastLiveChannelItem.sourceNum - 1)
         }
 
-        host.mVideoView?.let { host.livePlayerManager.init(it) }
-        host.overlay.showTime()
-        host.overlay.showNetSpeed()
-        host.currentLiveChannelIndex = -1
-        host.expandedGroups.clear()
-        host.channelVersion++
+        host.videoView()?.let { host.initPlayer(it) }
+        overlay.showTime()
+        overlay.showNetSpeed()
+        vm.updateChannelList { it.copy(playingChannelIndex = -1, expandedGroups = emptySet()) }
         host.selectChannelGroup(lastChannelGroupIndex, lastLiveChannelIndex)
     }
 
@@ -154,62 +186,45 @@ internal class LiveChannelSourceLoader(
         refreshingLiveChannelList = true
         pendingLiveRefreshChannelName = channelName
         pendingLiveRefreshSourceIndex = sourceIndex
-        host.currentLiveLookBackIndex = -1
-        host.currentLiveChangeSourceTimes = 0
-        host.channelGroupPasswordConfirmed.clear()
-        handler.removeCallbacks(host.mConnectTimeoutChangeSourceRun)
-        host.epgController.cancelPending()
-        host.overlay.hideSwitchChannelSnapshot()
-        host.expandedGroups.clear()
-        host.isBackState = false
-        host.overlayVisible = false
-        host.channelVersion++
-        host.epgVersion++
+        vm.updateEpg { it.copy(lookBackIndex = -1) }
+        host.changeSourceTimes = 0
+        vm.updateChannelList { it.copy(confirmedPasswordGroups = emptySet(), expandedGroups = emptySet()) }
+        handler.removeCallbacks(host.changeSourceTimeout())
+        host.cancelEpgPending()
+        overlay.hideSwitchChannelSnapshot()
+        vm.updateTimeshift { it.copy(isBackState = false) }
+        vm.updateOverlay { it.copy(visible = false) }
         initLiveChannelList()
         host.initLiveSettingGroupList()
+        host.onSettingsInputsChanged()
     }
 
     private fun clearLiveChannelList(releasePlayer: Boolean) {
         refreshingLiveChannelList = false
         pendingLiveRefreshChannelName = null
         pendingLiveRefreshSourceIndex = -1
-        host.currentLiveChannelItem = null
-        host.currentLiveChannelIndex = -1
-        host.currentLiveLookBackIndex = -1
-        host.currentLiveChangeSourceTimes = 0
-        host.liveChannelGroupList.clear()
+        vm.updateChannelList {
+            it.copy(
+                playingChannel = null,
+                playingChannelIndex = -1,
+                tappedGroupIndex = 0,
+                expandedGroups = emptySet(),
+            )
+        }
+        vm.updateEpg { it.copy(lookBackIndex = -1, channelName = "", epgList = emptyList()) }
+        host.changeSourceTimes = 0
+        host.groups().clear()
         ApiConfig.get().clearLiveChannelGroups()
-        handler.removeCallbacks(host.mConnectTimeoutChangeSourceRun)
-        host.epgController.cancelPending()
-        host.overlay.hideSwitchChannelSnapshot()
+        handler.removeCallbacks(host.changeSourceTimeout())
+        host.cancelEpgPending()
+        overlay.hideSwitchChannelSnapshot()
         if (releasePlayer) host.releasePlayerKernel()
-        host.expandedGroups.clear()
-        host.selectedChannelGroupIndex = 0
-        host.channelName = null
-        host.epgdata = ArrayList()
-        host.channelInfoUi = ChannelInfoUi()
-        host.channelVersion++
-        host.epgVersion++
-        host.pageState = PageState.EMPTY
+        vm.updateChannelInfo(ChannelInfoUi())
+        host.onChannelGroupsChanged()
+        vm.updateFrame { it.copy(pageState = PageState.EMPTY) }
     }
 
     fun setEmptyLiveChannelList(releasePlayer: Boolean = true) {
         clearLiveChannelList(releasePlayer)
-    }
-
-    fun buildChannelRows(): List<LiveListRow> {
-        val rows = ArrayList<LiveListRow>()
-        for (group in host.liveChannelGroupList) {
-            rows.add(LiveListRow(group, null, -1, "g" + group.groupIndex))
-            if (host.expandedGroups.contains(group.groupIndex)) {
-                val channels = getLiveChannels(group.groupIndex)
-                if (channels != null) {
-                    for (i in channels.indices) {
-                        rows.add(LiveListRow(group, channels[i], i, "c" + group.groupIndex + "_" + channels[i].channelIndex))
-                    }
-                }
-            }
-        }
-        return rows
     }
 }

@@ -73,15 +73,16 @@ fun PlaySettingsScreen(onNavigateBack: () -> Unit, vm: SettingsViewModel = viewM
         ) {
             Spacer(Modifier.height(topPad + 8.dp))
 
+            val playerTypes = PlayerHelper.getExistPlayerTypes().sortedDescending()
+            val currentPlayType = if (playerTypes.contains(state.playType)) state.playType else 2
             SettingsGroup(title = stringResource(R.string.settings_group_play_picture)) {
                 SettingsCard(SettingsCardPosition.FIRST) {
-                    val playerTypes = PlayerHelper.getExistPlayerTypes().sortedDescending()
                     SettingsOptionMenuRow(
                         title = stringResource(R.string.settings_play_kernel),
                         leadingIconRes = R.drawable.ic_play_kernel,
-                        valueText = PlayerHelper.getPlayerName(state.playType),
+                        valueText = PlayerHelper.getPlayerName(currentPlayType),
                         options = playerTypes.map { PlayerHelper.getPlayerName(it) },
-                        selectedIndex = playerTypes.indexOf(state.playType).coerceAtLeast(0),
+                        selectedIndex = playerTypes.indexOf(currentPlayType).coerceAtLeast(0),
                         onSelect = { idx -> vm.put(HawkConfig.PLAY_TYPE, playerTypes[idx]) },
                     )
                 }
@@ -131,7 +132,7 @@ fun PlaySettingsScreen(onNavigateBack: () -> Unit, vm: SettingsViewModel = viewM
                             DecodeHard -> decodeLabels[0]
                             else -> codec
                         },
-                        enabled = state.playType == 2,
+                        enabled = currentPlayType == 2,
                         options = decodeLabels,
                         selectedIndex = if (codec == DecodeSoft) 1 else 0,
                         onSelect = { idx -> vm.put(HawkConfig.EXO_DECODE, if (idx == 1) DecodeSoft else DecodeHard) },
@@ -145,7 +146,7 @@ fun PlaySettingsScreen(onNavigateBack: () -> Unit, vm: SettingsViewModel = viewM
                         title = stringResource(R.string.settings_play_anime4k),
                         leadingIconRes = R.drawable.ic_play_anime4k,
                         valueText = labels[selected],
-                        enabled = state.playType == 2,
+                        enabled = currentPlayType == 2,
                         options = labels,
                         selectedIndex = selected,
                         onSelect = { idx -> vm.put(HawkConfig.ANIME4K_TIER, tiers[idx].name) },

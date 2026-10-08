@@ -52,14 +52,18 @@ class PlaybackController {
         cancelInFlight()
         timeouts.cancelPendingCompletionDrop()
         resolver.resetGen()
-        if (currentSession == null || !TextUtils.equals(currentSession!!.playbackKey(), session.playbackKey())) {
+        val contentChanged = currentSession == null ||
+            !TextUtils.equals(currentSession!!.playbackKey(), session.playbackKey())
+        if (contentChanged) {
             music.clearArtworks()
         }
         // 纯音频确认必须绑定当前内容：否则「先播纯音频、再播带视频轨的内容」时这个标记会残留，
         // 使视频内容被 isConfirmedAudioOnly() 误判为音频并自动跳进音乐页。
         st.audioOnlyConfirmed = false
         currentSession = session
-        progress.clearStartedPlaybackKey()
+        if (contentChanged) {
+            progress.clearStartedPlaybackKey()
+        }
         st.beginSession()
         clearM3u8ProxyUrl()
         vod = session.vod()

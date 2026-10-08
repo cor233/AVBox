@@ -34,11 +34,6 @@
             <category android:name="android.intent.category.BROWSABLE" />
             <data android:scheme="https" />
         </intent>
-        <package android:name="com.mxtech.videoplayer.pro" />
-        <package android:name="com.mxtech.videoplayer.ad" />
-        <package android:name="xyz.re.player.ex" />
-        <package android:name="org.xbmc.kodi" />
-        <package android:name="org.videolan.vlc" />
     </queries>
 
     <application

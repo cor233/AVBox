@@ -64,7 +64,7 @@ class App : Application() {
             KV.put(HawkConfig.PLAY_TYPE, 2)
         } else {
             val playType = KV.get(HawkConfig.PLAY_TYPE, 2)
-            if (playType == 0 || playType == 1) {
+            if (playType == 0 || playType == 1 || (playType > 2 && playType != 13)) {
                 KV.put(HawkConfig.PLAY_TYPE, 2)
             }
         }

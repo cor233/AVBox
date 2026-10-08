@@ -42,8 +42,8 @@ object TrackMemory {
     }
 
     @JvmStatic
-    fun textFingerprint(language: String?, codec: String?): String {
-        return "T" + "/" + field(language) + "/" + fieldCodec(codec)
+    fun textFingerprint(language: String?, id: String?, label: String?, codec: String?): String {
+        return "T" + "/" + field(language) + "/" + field(id) + "/" + field(label) + "/" + fieldCodec(codec)
     }
 
     @JvmStatic

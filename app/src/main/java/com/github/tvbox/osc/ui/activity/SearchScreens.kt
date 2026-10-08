@@ -125,7 +125,7 @@ internal fun LayoutSwitchAction(
             ) {
                 LayoutSwitchCard(
                     iconRes = R.drawable.ic_layout_horizontal,
-                    label = stringResource(R.string.search_layout_horizontal),
+                    label = stringResource(R.string.search_result_layout_horizontal),
                     selected = selected == SearchSettings.SearchLayout.Horizontal,
                     onClick = {
                         expanded = false
@@ -134,7 +134,7 @@ internal fun LayoutSwitchAction(
                 )
                 LayoutSwitchCard(
                     iconRes = R.drawable.ic_layout_vertical,
-                    label = stringResource(R.string.search_layout_vertical),
+                    label = stringResource(R.string.search_result_layout_vertical),
                     selected = selected == SearchSettings.SearchLayout.Vertical,
                     onClick = {
                         expanded = false

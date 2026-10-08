@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.dp
 import com.github.tvbox.osc.R
 import com.github.tvbox.osc.bean.Movie
 import com.github.tvbox.osc.ui.components.VodCard
+import com.github.tvbox.osc.ui.components.VodCardStyle
 import com.github.tvbox.osc.ui.theme.filterChipColors
 
 @Composable
@@ -145,6 +146,7 @@ internal fun SearchListResults(
                             onClick = { onCardClick(video) },
                             onLongClick = { onCardLongClick(video) },
                             modifier = Modifier.width(110.dp),
+                            style = VodCardStyle.Stacked,
                         )
                     }
                 }

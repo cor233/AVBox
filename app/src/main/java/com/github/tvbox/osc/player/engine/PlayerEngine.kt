@@ -38,6 +38,7 @@ import com.github.tvbox.osc.player.TrackInfoBean
 import com.github.tvbox.osc.player.effect.PictureEffects
 import com.github.tvbox.osc.player.effect.RedrawPolicy
 import com.github.tvbox.osc.player.effect.ReplayableCacheVideoRenderer
+import com.github.tvbox.osc.player.state.KernelPlayback
 import com.github.tvbox.osc.util.LOG
 import okhttp3.OkHttpClient
 import java.util.ArrayList
@@ -120,6 +121,8 @@ class PlayerEngine(
 
     var playbackStateListener: ((Int) -> Unit)? = null
 
+    var kernelSignalListener: (() -> Unit)? = null
+
     var retryAsHlsListener: (() -> Unit)? = null
 
     fun interface ErrorListener {
@@ -166,6 +169,18 @@ class PlayerEngine(
                 trackSelection.markSubtitleSelectionClosed()
             }
             playbackStateListener?.invoke(playbackState)
+        }
+
+        override fun onIsPlayingChanged(isPlaying: Boolean) {
+            kernelSignalListener?.invoke()
+        }
+
+        override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+            kernelSignalListener?.invoke()
+        }
+
+        override fun onPlaybackSuppressionReasonChanged(playbackSuppressionReason: Int) {
+            kernelSignalListener?.invoke()
         }
 
         override fun onVideoSizeChanged(videoSize: VideoSize) {
@@ -382,6 +397,26 @@ class PlayerEngine(
                 Player.STATE_BUFFERING, Player.STATE_READY -> exo.playWhenReady
                 else -> false
             }
+        }
+
+    val kernelPlayback: KernelPlayback
+        get() = when (internalPlayer?.playbackState) {
+            Player.STATE_BUFFERING -> KernelPlayback.BUFFERING
+            Player.STATE_READY -> KernelPlayback.READY
+            Player.STATE_ENDED -> KernelPlayback.ENDED
+            else -> KernelPlayback.IDLE
+        }
+
+    val kernelPlayWhenReady: Boolean
+        get() = internalPlayer?.playWhenReady == true
+
+    val kernelIsPlaying: Boolean
+        get() = internalPlayer?.isPlaying == true
+
+    val kernelSuppressed: Boolean
+        get() {
+            val exo = internalPlayer ?: return false
+            return exo.playbackSuppressionReason != Player.PLAYBACK_SUPPRESSION_REASON_NONE
         }
 
     val currentPosition: Long

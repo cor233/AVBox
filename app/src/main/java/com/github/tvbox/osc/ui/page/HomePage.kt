@@ -327,7 +327,7 @@ fun HomePage(
                         onRefresh = { vm.reload() },
                     ),
                 contentPadding = PaddingValues(
-                    start = navStart,
+                    start = 0.dp,
                     top = 0.dp,
                     bottom = 88.dp + navBottom,
                 ),
@@ -377,6 +377,7 @@ fun HomePage(
                     HomeCategoryChips(
                         sorts = sorts,
                         onOpenSort = { sort -> PartitionListActivity.startForPartition(context, sort) },
+                        modifier = Modifier.padding(start = navStart),
                     )
                 }
                 if (rec.state != HomeViewModel.PartitionState.Empty &&
@@ -391,6 +392,7 @@ fun HomePage(
                             onLoadMore = {},
                             onCardClick = { video -> handleCardClick(vm, video, context) },
                             onCardLongClick = { video -> vodMenu.show(video) },
+                            modifier = Modifier.padding(start = navStart),
                         )
                     }
                 }
@@ -399,6 +401,7 @@ fun HomePage(
                         Row(
                             modifier = Modifier
                                 .fillParentMaxWidth()
+                                .padding(start = navStart)
                                 .padding(horizontal = 16.dp, vertical = 8.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
@@ -426,6 +429,7 @@ fun HomePage(
                             PartitionListActivity.startForPartition(context, p.sort)
                         },
                         onRetry = { vm.retryPartition(p) },
+                        modifier = Modifier.padding(start = navStart),
                     )
                 }
             }
@@ -624,8 +628,9 @@ private fun PartitionSection(
     onOpenAll: (() -> Unit)? = null,
     onRetry: (() -> Unit)? = null,
     cardWidth: Dp = 110.dp,
+    modifier: Modifier = Modifier,
 ) {
-    Column(modifier = Modifier.padding(vertical = 8.dp)) {
+    Column(modifier = modifier.padding(vertical = 8.dp)) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -719,9 +724,10 @@ private fun PartitionSection(
 private fun HomeCategoryChips(
     sorts: List<MovieSort.SortData>,
     onOpenSort: (MovieSort.SortData) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     if (sorts.isEmpty()) return
-    Column(modifier = Modifier.padding(top = 24.dp, bottom = 12.dp)) {
+    Column(modifier = modifier.padding(top = 24.dp, bottom = 12.dp)) {
         Text(
             text = stringResource(R.string.home_all_categories),
             style = MaterialTheme.typography.titleLarge,

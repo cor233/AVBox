@@ -4904,3 +4904,87 @@ new-instance v2, Lorg/json/JSONArray;  invoke-direct {v2, v1}      # new JSONArr
 **审查修复轮(同批,`skill/review/review-20261008-batch1.md`)**:按 `skill/avbox-code-review-spec.md` 审本批未提交 diff(26 文件 / +464 −25),出 4 条中级 + 6 条低级,无阻断无高级。已修 2 条中级:①`KernelPlayer.detachVideoSurface()` 由 `open { setSurface(null) }` 改 `abstract`(原默认实现会经 `setVideoSurface(null)` 置 `videoOutputInvalid` ⇒ 禁用渲染器,与"不改启用态"契约相反);②`EngineSurfaceRenderView.surfaceDestroyed` 由 `clearDisplay()` 改 `detachVideoSurface()`,与切页路径统一(实测容器重挂时 `echo-surface: destroyed` 0 次,本就不触发;`addDisplay()` 的 `clearDisplay()` 保留作音乐页退出的开关守卫)。**#3 为审查者误报,已驳回并恢复 WIP 原样**:我依据 `PlaybackSession.playbackKey()` 含 `vod.id` 推断"原条件已覆盖 WIP 注释所述场景",漏掉运行时路径 —— 音乐页的 `setMusicAudioOnly(true)` 会强制 audio-only,`MusicSessionDelegate:201` 因而把 `audioOnlyConfirmed` 置 true(即使内容带视频轨);"从音乐页返回同一内容"时 `playbackKey` 相同、原条件不清 ⇒ 被弹回音乐页(真机复现"进入视频就会重新进入音乐播放页")。WIP 的"每次 `startSession` 都清"正是修这个的。**#9 决定不改并留档**:给接管分支的 `contentUrl` 播种加 `scheduler.webPlayUrl()` 比对会在"线路地址 ≠ 播放器实际地址"时误判不一致 ⇒ 不播种 ⇒ 进度条卡 0 复发。P2 六项(`applyRendererEnablement` 与 `EngineTrackSelection` 双写 `rendererDisabled`、`PlayerBottomBar` 文件级 `lastDrawnProgress`、热路径诊断日志常开、`release()` 未清两个 renderer 列表、`detachVideoSurface` 无输出面仍解码、播种缺一致性校验)留到提交前一次性处理。
 
 **文档同步**:`skill/avbox-playback-service-spec.md` §3.8 新增两条约束(「输出面解绑与渲染器开关解耦」「`videoOutputInvalid` 一旦置真必须有确定复位路径」)、§7.4 补 5 行缺陷、§8 补修订记录;`.codebuddy` / `.trae` 两镜像已同步。方案档(本地 `文档/playback-surface-race-fixes.md`)含完整日志锚点、与旧版的逐项对照表、走查判据。
+
+## 2026-10-08｜切音轨/视轨后 UI 卡在暂停态（命令直调 + 状态回声 → 内核订阅 + 纯函数派生）
+
+**现象**：播放中切换音轨后屏幕中央常驻暂停态大 ▶，画面与声音正常；切视轨为同源变体（多一次 seek，常被缓冲事件顺手带出，落点多停在 BUFFERED）。
+
+**根因**：`ui/player/TrackSelectorDelegate` 直调内核（`pause()` / `setTrack()` / `start()`，音轨 63/74、视轨 111/118），绕过 `AppPlayerView` 的 `reportPlayState()`；UI 播放态只是「命令回声 + 去重」投影（`mLastReportedPlayState`），内核侧 `playWhenReady` 翻转（200ms 后的 start）没有任何回调 ⇒ 永久停在 PAUSED ⇒ `pauseOverlayVisible` 成立。PAUSED 进 UI 的唯一通道是换轨重缓冲触发的 `MEDIA_INFO_BUFFERING_*`。
+
+**三片改动**：
+- A 状态通道：`PlayState.kt` 新增 `KernelPlayback` 与纯函数 `deriveKernelPlayState(kernel, playWhenReady, isPlaying, suppressed)`（被 suppression 压制时返回 null、不落 PAUSED）、`PlaybackStateMachine.alignWithKernel(next)`（真变化才返回 true，并同步 `pausedBeforeSeek`）；`PlayerEngine` 订阅 media3 `onIsPlayingChanged` / `onPlayWhenReadyChanged` / `onPlaybackSuppressionReasonChanged`，暴露 `kernelPlayback` / `kernelPlayWhenReady` / `kernelIsPlaying` / `kernelSuppressed` 快照；`ExoPlayer.alignKernelPlayState()`（`awaitingPrepared` 与 IDLE/START_ABORT/ERROR 豁免）经 `KernelPlayer.Listener.onKernelPlayStateChanged()` 让 `AppPlayerView.reportPlayState()` 重新投影。
+- B 命令单入口：`KernelPlayer` 增 `getTrackInfo()` / `setTrack()`（`ExoPlayer` override），`AppPlayerView.selectTrack(track)` = 换轨 + 上报（不动 `playWhenReady`、不碰音频焦点）；`TrackSelectorDelegate` 删 4 处直调、200ms 延迟与 `trackSwitchSeq`，只留弹窗与选中回调（回调内重新取 `host.player()`，不再捕获旧内核）。
+- C 清病原：`onBufferingEnd(playing)` 由 `playWhenReady` 派生成 PLAYING/BUFFERED（`BUFFERED` 保留给「缓冲完成但未在播」）；拆掉 pause→start dance；删 `TrackSelectorDelegate.invalidatePendingSwitch()` 与 `PlayContainer.hostDestroy()` 的调用。
+
+**副作用面（已核）**：`BUFFERED` 的全部消费方（`PlayerUiState.playbackActive`、`PlaybackPreload`、`PlaybackController.isStartedPlayState`、`DanmuLoadController`、`MusicPlayerActivity`、`LiveOverlayController`、`DetailActivity`）同时接受 `PLAYING`；直播链路共用同一 `PlaybackStateMachine`，无落点丢失；`applyPlayState(PAUSED)` 的 `savePlaybackProgress(notifyHistory = true)` 只在真变化时触发（`alignWithKernel` 返回 false 即不派发）。
+
+**验证**：`.\gradlew.bat :app:assembleDebug :app:testDebugUnitTest` BUILD SUCCESSFUL；新增 `KernelPlayStateDerivationTest`（6 例）、`PlaybackStateMachineTest` 增 4 例（缓冲结束恢复 PLAYING / 无播放态保持 BUFFERED / 内核对齐真变化 / 对齐清暂停记忆）；新增门脚本 `.codebuddy/tools/check_player_state_gate.py`（ui 层禁止 `.mediaPlayer` 的 pause|start|stop|seekTo|abortStart|reset|prepareAsync|setOptions|setSpeed|setVolume|setLooping，现 0 命中）；设备未在线，未装机。
+
+**真机走查判据**：① 播放态切音轨/视轨后中央无 ▶ 常驻；② 暂停态切轨不自动续播；③ 来电/通知音/拔耳机不出假暂停覆盖层；④ 200ms 内连点两次只生效最后一次；⑤ 切轨后立刻转屏、退出再进状态正常。
+
+## 2026-10-08｜内封多字幕换集记忆退化到第一条（字幕指纹补 `Format.id`）
+
+**现象**（用户报）：部分片源（如 mp4 内封 8 条 `application/x-quicktime-tx3g` 字幕，无语言标签、显示名只差序号）在「切换内置字幕」里选第 N 条，切集后回到第一条（默认）。
+
+**根因**：`TrackMemory.textFingerprint` 只取「归一化语言 + 编码」两维 ⇒ 这类同质字幕指纹全同 ⇒ `TrackMemory.pick` 精确匹配命中候选第一条。media3 实际给每条轨写了唯一 `Format.id`（mp4 = `BoxParser.parseTextSampleEntry` 写入的 tkhd track id；mkv = `MatroskaExtractor` 的轨道号；结论由本地 media3 1.11.1 字节码 javap 核对），我们的指纹把它丢了。参考实现 fongmi 的 `TrackUtil.describeFormat` 用 Format 全字段（含 id）拼身份串，故不撞车。
+
+**改动**（3 文件，未提交）：字幕指纹 `T/语言/编码` → `T/语言/id/标签/编码`（`TrackMemory.textFingerprint` 增 `id`/`label` 参数；`EngineTrackSelection.formatKey` 字幕分支传 `fmt.id`/`fmt.label`）。音轨/视轨指纹与 `pick` 语义不变（语言字段仍在第 2 段，退化匹配不受影响）；老 3 段记录与新格式不等 ⇒ 精确 miss 后仍按唯一语言退化，平滑降级（重选一次即完成升级）。
+
+**口径**：精确匹配命中多条时按候选顺序取第一条（撞车只发生在轨无 id 的极端情形，已由 `TrackMemoryTest` 固化）；退化分支维持「歧义不选」。若走查日志发现 fp 的 id 段为空或重复（真撞车），再上「同指纹组内序号」兜底（方案 A，未实施）。
+
+**验证**：`.\\gradlew.bat :app:testDebugUnitTest :app:assembleDebug` BUILD SUCCESSFUL；754 例 0 失败（`TrackMemoryTest` 新增 7 例：id 区分 / label 区分 / 无 id 退化 / id miss 按唯一语言退化 / 歧义 miss / 老格式兼容 / 指纹格式断言）；`TrackMemoryTest` 已由 Java 迁 Kotlin（`app/src/test` 的 Java 测试 12→11，用例与语义不变；迁移规范里「12 个 Java 测试不在范围」属历史表述）；设备未在线，未装机。
+
+**真机走查判据**：多同质内封字幕的片源里选「字幕N」→ 切集后仍为字幕N；`echo-track-memory save text=` 与 `restore text fp=` 两端一致且含 id 段。
+
+**文档同步**：活规范「轨道/字幕记忆」条目已更新（指纹字段 + 精确匹配多条取第一条），`.codebuddy` / `.trae` 两镜像同位置同步；`history/features.md` 两份镜像各落后一条既有记录，按既有欠账口径未补。
+
+**审查轮（同批，`skill/review/review-20261008-batch3.md`）**：R1 主审（消费方全量核对）+ R2 独立只读子代理，**无阻断 / 无高**，判可收尾。已修 2 条低：活规范「唯一 Java 存量 12 个测试文件」→11（两镜像同步）、测试补「老记录 + 语言空/歧义 → miss」2 断言。1 条中登记为**走查观察项**：`label` 参与精确键，若跨集漂移会 miss 回落默认（最坏 = 修复失效、不劣于改前）；判据 = `restore text fp=` 与 save 端一致且 id 段非空，见反例则把 label 移出精确键。1 条低登记不改：老 3 段记录升级后首次播放回默认（一次性，重选即升级）。**755 例 / 0 失败**（`TrackMemoryTest` 23 例）。
+
+## 2026-10-08｜搜索页布局菜单文案改「横向展示 / 竖向展示」（首页保持「沉浸 / 普通」）
+
+**需求**（用户）：搜索页三点弹出菜单两项改名 —— 沉浸→横向展示、普通→竖向展示；**首页 bottomsheet 弹窗不动**。
+
+**口径（key 分离，不共用文案）**：`search_layout_horizontal/vertical`（值「沉浸/普通」）实为**首页 `SearchSettingsSheet` 的 `HomeSettings.HomeLayout` 分段标签**，被搜索页菜单顺手复用；本次不改共用 key，而是新增 `search_result_layout_horizontal` =「横向展示」、`search_result_layout_vertical` =「竖向展示」，只改搜索页 `ui/activity/SearchScreens.kt` 的 `LayoutSwitchAction`（两点菜单）；首页 `ui/components/SearchSettingsSheet.kt` 与其 key 一字未动。两个选项的实际布局未动（Horizontal = 横向卡片流 `SearchListResults`、Vertical = 来源栏 + 竖向行 `RailResults`），图标未动。
+
+**i18n（三语落齐 + HK 回落基础层）**：`values` 横向展示/竖向展示、`values-en` Horizontal/Vertical、`values-b+zh+Hant` 橫向展示/縱向展示；`values-zh-rHK` 无港台用词差异、按 §9-12 回落基础层。校验：`i18n_check_keys.py` **549/549**（无未用 / 无未声明 / 无重复文案）、`i18n_align.py en` PASS、`i18n_align.py b+zh+Hant` PASS、`i18n_align.py zh-rHK --subset` PASS、`i18n_gate.py` ui 层 0 处；`:app:assembleDebug` BUILD SUCCESSFUL（文案小改，按口径不跑单测）。
+
+## 2026-10-08｜搜索页「横向展示」卡片改标题在卡片正下方居中（对齐首页 / 收藏）
+
+**需求**（用户，含截图）：搜索页三点菜单「横向展示」模式下的海报卡片，标题原本叠在海报内，改为「卡片正下方居中」，与收藏页、首页一致。
+
+**改动**（1 文件）：`ui/activity/SearchListScreens.kt` 的 `SearchListResults` 里 `VodCard` 由默认 `Overlay` 改 `style = VodCardStyle.Stacked`（+ import）。`Stacked` 与首页分区卡（`HomePage` 默认 `cardWidth = 110.dp` + Stacked）和收藏卡（`CollectPage.CollectCard`：标题同为 `titleSmall` / 居中 / `top 6dp`）一致，宽度 110dp 不变。**年份/地区 meta 随 Overlay 一起不再显示**（首页/收藏本就只有标题）；评分角标保留。竖向模式（`RailResults` 行式卡）、详情页相关推荐（`DetailSections` 仍 Overlay）、首页与收藏页均未动。
+
+**验证**：`:app:assembleDebug` BUILD SUCCESSFUL（纯样式小改，按口径不跑单测）。
+
+## 2026-10-08｜移除外部播放器出口（MX / Reex / Kodi / VLC；保留「附近TVBox」推送）
+
+**需求**（用户）：不要外接播放器，删掉 manifest 里那 5 条包可见性声明。
+
+**口径（为什么不是"只删声明"）**：只删 `<queries>` 在 **Android 10 及以下无效**（包可见性限制是 API 30+），而播放器列表（设置页「播放内核」/ 播放器面板 / 底栏按钮循环切换）**完全由 `getExistPlayerTypes()` 的检测结果驱动** ⇒ 只删声明会留下"代码还在、旧系统仍可选、历史配置选了外部播放器后 `releasePlayer()` 后不回落"的三重残留。故按**彻底移除**实施。
+
+**改动（6 文件 + 三语 i18n + 文档）**：
+- `AndroidManifest.xml`：删 5 条 `<package>`（`com.mxtech.videoplayer.pro`/`.ad`、`xyz.re.player.ex`、`org.xbmc.kodi`、`org.videolan.vlc`），保留 `<intent scheme=https>`。
+- 删 `player/thirdparty/` 四个适配类（`MXPlayer`/`ReexPlayer`/`Kodi`/`VlcPlayer`）；**保留 `RemoteTVBox`**（投屏推送；不在声明里，`CastSheet` / `SortLoader` 也在用）。
+- `player/PlayerHelper.kt`：`getPlayersExistInfo()` 只留 `2` 与 `13`；`getPlayerName()` 只留 13/else；`runExternalPlayer()` 只留 13 分支；`getPlayersInfo()` 枚举改 `[2, 13]`（该方法无调用点、属既有死代码，本次仅修正内容未删）。
+- `player/PlaybackConfigDelegate.kt`：`pl` 归一化追加 `|| !PlayerHelper.getPlayerExist(configuredType)` ⇒ 历史 `pl` 与源站声明的外部播放器类型一律回落 `2`（一处收口）。
+- `player/PlaybackStarter.kt`：外部播放器分支加 `&& PlayerHelper.getPlayerExist(playerType)` 双保险（防未经归一化的路径）。
+- `ui/page/PlaySettingsPage.kt`：设置页「播放内核」的显示值 / 高亮下标对历史 `PLAY_TYPE` 归一化（不存在 → 按 2 显示，避免"显示 Media3、高亮却落到另一项"）。
+- i18n：删 `player_mx` / `player_reex` / `player_kodi` / `player_vlc` × 三语（HK 差异层本就无这四条）；`player_nearby_tvbox` 与 `player_call_external_*`（13 仍走该路径）保留。
+
+**验证**：`:app:assembleDebug` BUILD SUCCESSFUL、`:app:testDebugUnitTest` **755 例 / 0 失败**；`i18n_check_keys` **545/545**（无未用 / 无未声明 / 无重复文案）、`i18n_align` en / b+zh+Hant / zh-rHK --subset 全 PASS、`i18n_gate` ui 层 0 处。活规范两处同步（`avbox-mobile-ui-spec`：播放设置页置灰条件、播放器列表构成；`avbox-playback-service-spec`：功能清单、走查清单 18）+ `.codebuddy` / `.trae` 镜像。
+
+**走查判据**：① 设置页「播放内核」只有「Media3」（探测到 TVBox 时多一项「附近TVBox」）；② 播放器参数面板「播放器」组、底栏播放器按钮循环切换均无 MX/Reex/Kodi/VLC；③ 曾选过外部播放器的老片源起播直接走内置、不再弹"调用外部播放器…失败"、不黑屏；④ 装了 MX/Kodi/VLC 的设备上列表也不出现它们（含 Android 10 及以下）；⑤ 投屏面板「附近TVBox」照常可用。
+
+**审查轮（同批，`skill/review/review-20261008-batch4.md`）**：R1 主审 + R2 独立只读子代理，**无阻断 / 无高**，判可收尾。**已修 4 条**：① 历史 `PLAY_TYPE=10..14` 时设置页「播放内核」显示与置灰不一致（`App.initParams` 启动期归一化，`>2 && !=13` 归 2；设置页两行 `enabled` 改用归一化后的 `currentPlayType`）；② 三语文案「调用外部播放器…」→「推送到 %1$s …」（该 key 唯一用途已是附近TVBox 推送，key 名保留）；③ 删死方法 `PlayerHelper.getPlayersInfo()`（全仓无调用方）；④ 活规范置灰判据同步（+ 两镜像）。**登记 3 条**：TVBox 推送"假成功"（**既有被放大**：`RemoteTVBox.run` 无条件返回 true + `PlaybackStarter` 先 `releasePlayer()` 再推送 ⇒ 设备离线时内播被停仍报成功；备选修法见报告 §4）、设置页归一化只落渲染层（`PLAY_TYPE=13` 且无 `REMOTE_TVBOX` 时显示/KV 分叉，刻意不写回以保留用户选择）、仅 `[2]` 时内核行点击无变化（可选置灰）。**755 例 / 0 失败**；`i18n_check_keys` 545/545、align 三语全 PASS、`i18n_gate` ui 0 处。
+
+## 2026-10-09｜直播页状态面重构（反射桥 / 计数器 / Activity 参透 → 单一 `LivePlayUiState` + 切片传参）
+
+**触发**：Composable 直接读 Activity 可变属性、`VmVar` 用反射做桥、裸表达式计数器触发重组。核查后确认病灶不是反射（产物里确有 kotlin-reflect，但本页没有 60fps 级读取者），而是"组合期做非纯计算 + 失效语义手工维护 + 状态面双轨"。方案档 `文档/live-page-state-refactor-plan.md`（本地不入库）。
+
+**落地（5 片全部实施完，未提交）**：① 片 1 删 `VmVar`/`VmVal` 反射桥 → 28 个显式 get/set（字节码证据：`LivePlayActivity$VmVar`/`$VmVal` 类消失，常量池只剩 `viewModels()` 的 `getOrCreateKotlinClass`）；② 片 2 EPG/回看簇进 `LiveEpgUi`/`LiveTimeshiftUi`，删 `epgVersion`（9 个写入点逐点核过"同点必有其它 state 变化"）；③ 片 3 频道列表簇进 `LiveChannelListUi`，行列表推导降为纯函数 `LiveChannelRows`（只在展开集/锁定集变化时重算，`assertSame` 锁住"选中更新不动 rows"），删 `channelName`（合并进 `currentLiveChannelItem`）、`channelVersion`、`scrollTick`（→ `scrollRequestId`）；④ 片 4 设置簇进 `LiveSettingsUi`，`LiveSettingsSource` 收口 KV/ApiConfig/规则，快照由纯函数 `LiveSettingsSnapshot` 在开表/改设置/删历史时重算，删 `settingsVersion` 与 6 个组合期查询方法（组合期零 KV 读）；⑤ 片 5 外壳与控制器收敛：`LivePageFrame`/`LivePlayerUi`/`LiveOverlayUi` + `channelInfo`/`passwordDialogTarget` 进壳，18 个 facade 收成 `private`，`LiveScreen(state, actions)`（`collectAsStateWithLifecycle` 只在 `setContent` 一次），三个控制器改 `(vm, host, …)`（平台面收进 `liveHost` 组合匿名对象），控制器与外壳改 `lateinit` + `init()` 内构造（`by viewModels()` 在属性初始化期会抛 "not yet attached"）。
+
+**关键坑**：设置快照必须把标题/勾选/选中**拷进 UI 对象**，否则组合期仍在读可变 bean；`ChannelInfoSection` 的「回看中」徽标必须读切片（进回看时 `updateChannelInfoUi` 会因 `isSHIYI` 提前 return，靠 `channelInfoUi` 触发重组的写法会让徽标不出现）；组 6 的长按删除**不看** `lineMode`（仓模式仍要弹"不能单独删除"）；`liveSettingItems == null` 的组要整组不渲染。
+
+**验证**：`:app:assembleDebug` 绿、`:app:testDebugUnitTest` **794 例 / 0 失败**（新增 `LiveChannelRowsTest` 9 / `LivePlayViewModelChannelListTest` 7 / `LiveSettingsSnapshotTest` 12 / `LivePlayViewModelSettingsTest` 5 / `LivePlayUiStateTest` 5）；门脚本 `.codebuddy/tools/live_state_gate.py` **4/5**（判据 1 反射桥零、2 计数器与裸表达式零、3 组合期零 IO、5 Composable 签名零；判据 4 行数未达标，另立拆分项）；活规范 §6.2 与 §4.5 已改写 + `.codebuddy`/`.trae` 镜像同步。
+
+**待办**：真机走查（片 1–5 合并一次，判据见方案档 §5 六条 + 各片专项）；两个宿主文件按簇拆分（方案档 D10）。

@@ -33,6 +33,23 @@ enum class PlayState {
         }
 }
 
+enum class KernelPlayback { IDLE, BUFFERING, READY, ENDED }
+
+fun deriveKernelPlayState(
+    kernel: KernelPlayback,
+    playWhenReady: Boolean,
+    isPlaying: Boolean,
+    suppressed: Boolean,
+): PlayState? = when {
+    suppressed -> null
+    kernel == KernelPlayback.IDLE -> null
+    kernel == KernelPlayback.ENDED -> PlayState.COMPLETED
+    !playWhenReady -> PlayState.PAUSED
+    kernel == KernelPlayback.BUFFERING -> PlayState.BUFFERING
+    isPlaying -> PlayState.PLAYING
+    else -> null
+}
+
 class PlaybackStateMachine {
 
     private val _state = MutableStateFlow(PlayState.IDLE)
@@ -61,8 +78,19 @@ class PlaybackStateMachine {
         applyUnlessPausedBeforeSeek(PlayState.BUFFERING)
     }
 
-    fun onBufferingEnd() {
-        applyUnlessPausedBeforeSeek(PlayState.BUFFERED)
+    fun onBufferingEnd(playing: Boolean) {
+        applyUnlessPausedBeforeSeek(if (playing) PlayState.PLAYING else PlayState.BUFFERED)
+    }
+
+    fun alignWithKernel(next: PlayState): Boolean {
+        if (_state.value == next) return false
+        when (next) {
+            PlayState.PAUSED -> pausedBeforeSeek = true
+            PlayState.PLAYING -> pausedBeforeSeek = false
+            else -> Unit
+        }
+        _state.value = next
+        return true
     }
 
     fun onPlayRequested() {

@@ -272,6 +272,8 @@
     <string name="search_home_poster">首頁海報</string>
     <string name="search_layout_horizontal">沉浸</string>
     <string name="search_layout_vertical">普通</string>
+    <string name="search_result_layout_horizontal">橫向展示</string>
+    <string name="search_result_layout_vertical">縱向展示</string>
     <string name="search_exact">精準搜尋</string>
     <string name="search_sites">搜尋站點</string>
     <string name="search_sites_none_hint">未選擇站點，將搜尋不到結果</string>
@@ -306,11 +308,7 @@
     <string name="toast_source_in_use">正在使用的源不能刪除</string>
 
     <string name="player_exo">Media3</string>
-    <string name="player_mx">MX播放器</string>
-    <string name="player_reex">Reex播放器</string>
-    <string name="player_kodi">Kodi</string>
     <string name="player_nearby_tvbox">附近TVBox</string>
-    <string name="player_vlc">VLC</string>
     <string name="player_decode_hard">硬解</string>
     <string name="player_decode_soft">軟解</string>
     <string name="player_scale_fill">填滿</string>
@@ -501,8 +499,8 @@
     <string name="player_play_url_empty">取得播放位址為空</string>
     <string name="player_play_error_retry">播放出錯，自動重試</string>
     <string name="player_decode_fallback_tip">硬解失敗，已切換軟解重試</string>
-    <string name="player_call_external_play">呼叫外部播放器%1$s進行播放</string>
-    <string name="player_call_external_result">呼叫外部播放器%1$s%2$s</string>
+    <string name="player_call_external_play">推送到%1$s進行播放</string>
+    <string name="player_call_external_result">推送到%1$s%2$s</string>
 
     <string name="player_lock">鎖定螢幕</string>
     <string name="player_rotate_landscape">旋轉到橫向</string>

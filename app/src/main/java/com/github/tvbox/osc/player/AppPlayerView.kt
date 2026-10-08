@@ -322,6 +322,10 @@ open class AppPlayerView @JvmOverloads constructor(
             }
         }
 
+        override fun onKernelPlayStateChanged() {
+            reportPlayState()
+        }
+
         override fun onInfo(what: Int, extra: Int) {
             when (what) {
                 KernelPlayer.MEDIA_INFO_BUFFERING_START -> reportPlayState()
@@ -386,6 +390,11 @@ open class AppPlayerView @JvmOverloads constructor(
         if (isInPlaybackState()) {
             mMediaPlayer?.seekTo(pos)
         }
+    }
+
+    open fun selectTrack(track: TrackInfoBean) {
+        mMediaPlayer?.setTrack(track)
+        reportPlayState()
     }
 
     open val isPlaying: Boolean

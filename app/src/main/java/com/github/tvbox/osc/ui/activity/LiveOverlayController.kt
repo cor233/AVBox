@@ -3,6 +3,8 @@ package com.github.tvbox.osc.ui.activity
 import android.graphics.Bitmap
 import android.os.Handler
 import com.github.tvbox.osc.R
+import com.github.tvbox.osc.bean.Epginfo
+import com.github.tvbox.osc.player.MyVideoView
 import com.github.tvbox.osc.player.PlaybackTimes
 import com.github.tvbox.osc.player.PlayerHelper
 import com.github.tvbox.osc.player.state.PlayState
@@ -10,16 +12,24 @@ import com.github.tvbox.osc.util.HawkConfig
 import com.github.tvbox.osc.util.KV
 import com.github.tvbox.osc.util.LOG
 import java.text.SimpleDateFormat
-import java.util.ArrayList
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 
 internal class LiveOverlayController(
-    private val activity: LivePlayActivity,
+    private val vm: LivePlayViewModel,
+    private val host: Host,
     private val handler: Handler,
 ) {
+
+    internal interface Host {
+        fun text(resId: Int, vararg args: Any): String
+
+        fun videoView(): MyVideoView?
+
+        fun cachedEpg(channelName: String): List<Epginfo>?
+    }
 
     companion object {
         private const val RESOLUTION_INFO_MAX_RETRY = 10
@@ -32,12 +42,12 @@ internal class LiveOverlayController(
     private var resolutionInfoRetryCount = 0
     private var resolutionInfoPending = false
 
-    private val hideOverlayRun = Runnable { activity.overlayVisible = false }
+    private val hideOverlayRun = Runnable { vm.updateOverlay { it.copy(visible = false) } }
 
-    private val hideGestureHintRun = Runnable { activity.gestureHintText = null }
+    private val hideGestureHintRun = Runnable { vm.updatePlayer { it.copy(gestureHintText = null) } }
 
     private val hideResolutionInfoRun = Runnable {
-        activity.resolutionVisible = false
+        vm.updatePlayer { it.copy(resolutionVisible = false) }
     }
 
     fun scheduleOverlayHide() {
@@ -46,8 +56,8 @@ internal class LiveOverlayController(
     }
 
     fun showGestureHint(isBrightness: Boolean, percent: Int) {
-        val label = activity.getString(if (isBrightness) R.string.live_brightness else R.string.live_volume)
-        activity.gestureHintText = activity.getString(R.string.live_gesture_hint, label, percent)
+        val label = host.text(if (isBrightness) R.string.live_brightness else R.string.live_volume)
+        vm.updatePlayer { it.copy(gestureHintText = host.text(R.string.live_gesture_hint, label, percent)) }
         handler.removeCallbacks(hideGestureHintRun)
         handler.postDelayed(hideGestureHintRun, GESTURE_HINT_HIDE_DELAY)
     }
@@ -55,17 +65,15 @@ internal class LiveOverlayController(
     fun showSwitchChannelSnapshot() {
         var bitmap: Bitmap? = null
         try {
-            bitmap = activity.mVideoView?.doScreenShot()
+            bitmap = host.videoView()?.doScreenShot()
         } catch (ignored: Throwable) {
             LOG.d("LiveOverlayController", "doScreenShot failed, switch-channel snapshot skipped")
         }
-        activity.snapshotBitmap = bitmap
-        activity.snapshotVisible = true
+        vm.updatePlayer { it.copy(snapshotBitmap = bitmap, snapshotVisible = true) }
     }
 
     fun hideSwitchChannelSnapshot() {
-        activity.snapshotVisible = false
-        activity.snapshotBitmap = null
+        vm.updatePlayer { it.copy(snapshotVisible = false, snapshotBitmap = null) }
     }
 
     fun onPlaybackStarted() {
@@ -80,15 +88,14 @@ internal class LiveOverlayController(
     fun showResolutionAfterChannelSwitch() {
         resolutionInfoPending = true
         resolutionInfoRetryCount = 0
-        activity.resolutionText = ""
-        activity.resolutionVisible = false
+        vm.updatePlayer { it.copy(resolutionText = "", resolutionVisible = false) }
         handler.removeCallbacks(hideResolutionInfoRun)
         handler.removeCallbacks(updateResolutionInfoRun)
         handler.postDelayed(updateResolutionInfoRun, RESOLUTION_INFO_RETRY_DELAY)
     }
 
     private val updateResolutionInfoRun = Runnable {
-        val videoView = activity.mVideoView ?: return@Runnable
+        val videoView = host.videoView() ?: return@Runnable
         if (videoView.playState != PlayState.PREPARED &&
             videoView.playState != PlayState.BUFFERED &&
             videoView.playState != PlayState.PLAYING
@@ -99,8 +106,12 @@ internal class LiveOverlayController(
         val videoSize = videoView.videoSize
         if (videoSize != null && videoSize.size >= 2 && videoSize[0] > 0 && videoSize[1] > 0) {
             resolutionInfoPending = false
-            activity.resolutionText = videoSize[0].toString() + " x " + videoSize[1]
-            activity.resolutionVisible = true
+            vm.updatePlayer {
+                it.copy(
+                    resolutionText = videoSize[0].toString() + " x " + videoSize[1],
+                    resolutionVisible = true,
+                )
+            }
             handler.removeCallbacks(hideResolutionInfoRun)
             handler.postDelayed(hideResolutionInfoRun, RESOLUTION_INFO_HIDE_DELAY)
             return@Runnable
@@ -112,42 +123,46 @@ internal class LiveOverlayController(
         if (resolutionInfoPending && resolutionInfoRetryCount++ < RESOLUTION_INFO_MAX_RETRY) {
             handler.postDelayed(updateResolutionInfoRun, RESOLUTION_INFO_RETRY_DELAY)
         } else {
-            activity.resolutionVisible = false
+            vm.updatePlayer { it.copy(resolutionVisible = false) }
         }
     }
 
     fun showTime() {
-        activity.showTimeOn = KV.get(HawkConfig.LIVE_SHOW_TIME, false)
+        val showTimeOn = KV.get(HawkConfig.LIVE_SHOW_TIME, false)
+        vm.updateOverlay { it.copy(showTimeOn = showTimeOn) }
         handler.removeCallbacks(updateTimeRun)
-        if (activity.showTimeOn) handler.post(updateTimeRun)
+        if (showTimeOn) handler.post(updateTimeRun)
     }
 
     private val updateTimeRun = object : Runnable {
         override fun run() {
-            activity.timeText = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
+            vm.updateOverlay { it.copy(timeText = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())) }
             handler.postDelayed(this, 1000)
         }
     }
 
     fun showNetSpeed() {
-        activity.showNetSpeedOn = KV.get(HawkConfig.LIVE_SHOW_NET_SPEED, false)
+        val showNetSpeedOn = KV.get(HawkConfig.LIVE_SHOW_NET_SPEED, false)
+        vm.updateOverlay { it.copy(showNetSpeedOn = showNetSpeedOn) }
         handler.removeCallbacks(updateNetSpeedRun)
-        if (activity.showNetSpeedOn) handler.post(updateNetSpeedRun)
+        if (showNetSpeedOn) handler.post(updateNetSpeedRun)
     }
 
     private val updateNetSpeedRun = object : Runnable {
         override fun run() {
-            val videoView = activity.mVideoView ?: return
-            activity.netSpeedText = PlayerHelper.getDisplaySpeed(videoView.tcpSpeed, true)
+            val videoView = host.videoView() ?: return
+            val speedText = PlayerHelper.getDisplaySpeed(videoView.tcpSpeed, true)
+            vm.updateOverlay { it.copy(netSpeedText = speedText) }
             handler.postDelayed(this, 1000)
         }
     }
 
     private val updateTimeshiftRun = object : Runnable {
         override fun run() {
-            val videoView = activity.mVideoView ?: return
-            if (!activity.isSHIYI) return
-            activity.tsPosition = PlaybackTimes.safeTimeMs(videoView.currentPosition)
+            val videoView = host.videoView() ?: return
+            if (!vm.state.value.timeshift.isShiyi) return
+            val position = PlaybackTimes.safeTimeMs(videoView.currentPosition)
+            vm.updateTimeshift { it.copy(position = position) }
             handler.postDelayed(this, 1000)
         }
     }
@@ -162,39 +177,35 @@ internal class LiveOverlayController(
     }
 
     fun onTimeshiftSeek(progress: Float) {
-        val videoView = activity.mVideoView ?: return
-        val target = progress.toInt().coerceIn(0, activity.tsDuration.coerceAtLeast(1))
+        val videoView = host.videoView() ?: return
+        val target = progress.toInt().coerceIn(0, vm.state.value.timeshift.duration.coerceAtLeast(1))
         videoView.seekTo(target.toLong())
-        activity.tsPosition = target
+        vm.updateTimeshift { it.copy(position = target) }
         scheduleOverlayHide()
     }
 
     fun onTimeshiftTogglePlay() {
-        val videoView = activity.mVideoView ?: return
+        val videoView = host.videoView() ?: return
         if (videoView.isPlaying) videoView.pause() else videoView.start()
         scheduleOverlayHide()
     }
 
     fun updateChannelInfoUi() {
-        if (activity.isSHIYI) return
-        val channel = activity.channelName ?: return
+        if (vm.state.value.timeshift.isShiyi) return
+        val channel = vm.state.value.channelList.playingChannel ?: return
         val name = channel.channelName ?: return
         var ui = ChannelInfoUi(name = name, num = channel.channelNum)
         ui = if (channel.sourceNum <= 0) {
             ui.copy(sourceText = "1/1")
         } else {
-            ui.copy(sourceText = activity.getString(R.string.live_line_index, channel.sourceIndex + 1, channel.sourceNum))
+            ui.copy(sourceText = host.text(R.string.live_line_index, channel.sourceIndex + 1, channel.sourceNum))
         }
         var current = ""
         var currentTitle = ""
         var next = ""
         var nextTitle = ""
-        val arrayList = activity.epgController.cachedEpg(name)
-        if (arrayList != null && arrayList.isNotEmpty()) {
-            activity.epgdata = arrayList
-        } else {
-            activity.epgdata = ArrayList()
-        }
+        val cached = host.cachedEpg(name)
+        vm.updateEpg { it.copy(epgList = if (cached.isNullOrEmpty()) emptyList() else cached) }
         val timeZone = TimeZone.getTimeZone("GMT+8:00")
         val currentStart = Calendar.getInstance(timeZone)
         currentStart.set(Calendar.MINUTE, 0)
@@ -206,7 +217,7 @@ internal class LiveOverlayController(
         val timeFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
         timeFormat.timeZone = timeZone
         var hasInfo = false
-        val list = activity.epgdata
+        val list = vm.state.value.epg.epgList
         if (list.isNotEmpty()) {
             val date = Date()
             var size = list.size - 1
@@ -222,7 +233,7 @@ internal class LiveOverlayController(
                         nextTitle = list[size + 1].title.orEmpty()
                     } else {
                         next = info.end + "-23:59"
-                        nextTitle = activity.getString(R.string.live_epg_hot_no_info)
+                        nextTitle = host.text(R.string.live_epg_hot_no_info)
                     }
                     hasInfo = true
                     break
@@ -233,16 +244,17 @@ internal class LiveOverlayController(
         }
         if (!hasInfo) {
             current = timeFormat.format(currentStart.time) + "-" + timeFormat.format(currentEnd.time)
-            currentTitle = activity.getString(R.string.live_epg_hot)
+            currentTitle = host.text(R.string.live_epg_hot)
             next = timeFormat.format(nextStart.time) + "-" + timeFormat.format(nextEnd.time)
-            nextTitle = activity.getString(R.string.live_epg_no_info)
+            nextTitle = host.text(R.string.live_epg_no_info)
         }
-        activity.channelInfoUi = ui.copy(
-            currentEpgTime = current,
-            currentEpgTitle = currentTitle,
-            nextEpgTime = next,
-            nextEpgTitle = nextTitle,
+        vm.updateChannelInfo(
+            ui.copy(
+                currentEpgTime = current,
+                currentEpgTitle = currentTitle,
+                nextEpgTime = next,
+                nextEpgTitle = nextTitle,
+            ),
         )
-        activity.epgVersion++
     }
 }

@@ -8,11 +8,7 @@ import com.github.tvbox.osc.player.engine.SourcePolicy
 import com.github.tvbox.osc.player.host.EngineSurfaceRenderViewFactory
 import com.github.tvbox.osc.player.host.EngineTextureRenderViewFactory
 import com.github.tvbox.osc.player.host.PlayerRenderViewFactory
-import com.github.tvbox.osc.player.thirdparty.Kodi
-import com.github.tvbox.osc.player.thirdparty.MXPlayer
-import com.github.tvbox.osc.player.thirdparty.ReexPlayer
 import com.github.tvbox.osc.player.thirdparty.RemoteTVBox
-import com.github.tvbox.osc.player.thirdparty.VlcPlayer
 import com.github.tvbox.osc.util.AppContextHolder
 import com.github.tvbox.osc.util.HawkConfig
 import com.github.tvbox.osc.util.KV
@@ -81,22 +77,9 @@ object PlayerHelper {
     @JvmStatic
     fun getPlayerName(playType: Int): String {
         return when (playType) {
-            10 -> str(R.string.player_mx)
-            11 -> str(R.string.player_reex)
-            12 -> str(R.string.player_kodi)
             13 -> str(R.string.player_nearby_tvbox)
-            14 -> str(R.string.player_vlc)
             else -> str(R.string.player_exo)
         }
-    }
-
-    @JvmStatic
-    fun getPlayersInfo(): HashMap<Int, String> {
-        val playersInfo = HashMap<Int, String>()
-        for (type in intArrayOf(2, 10, 11, 12, 13, 14)) {
-            playersInfo[type] = getPlayerName(type)
-        }
-        return playersInfo
     }
 
     private var mPlayersExistInfo: HashMap<Int, Boolean>? = null
@@ -111,11 +94,7 @@ object PlayerHelper {
         if (mPlayersExistInfo == null) {
             val playersExist = HashMap<Int, Boolean>()
             playersExist[2] = true
-            playersExist[10] = MXPlayer.getPackageInfo() != null
-            playersExist[11] = ReexPlayer.getPackageInfo() != null
-            playersExist[12] = Kodi.getPackageInfo() != null
             playersExist[13] = RemoteTVBox.getAvalible() != null
-            playersExist[14] = VlcPlayer.getPackageInfo() != null
             mPlayersExistInfo = playersExist
         }
         return mPlayersExistInfo!!
@@ -152,20 +131,8 @@ object PlayerHelper {
     fun runExternalPlayer(playerType: Int, activity: Activity, url: String, title: String, subtitle: String, headers: HashMap<String, String>?, progress: Long): Boolean {
         var callResult = false
         when (playerType) {
-            10 -> {
-                callResult = MXPlayer.run(activity, url, title, subtitle, headers)
-            }
-            11 -> {
-                callResult = ReexPlayer.run(activity, url, title, subtitle, headers)
-            }
-            12 -> {
-                callResult = Kodi.run(activity, url, title, subtitle, headers)
-            }
             13 -> {
                 callResult = RemoteTVBox.run(activity, url, title, subtitle, headers)
-            }
-            14 -> {
-                callResult = VlcPlayer.run(activity, url, title, subtitle, progress)
             }
         }
         return callResult

@@ -272,6 +272,8 @@
     <string name="search_home_poster">Home posters</string>
     <string name="search_layout_horizontal">Immersive</string>
     <string name="search_layout_vertical">Standard</string>
+    <string name="search_result_layout_horizontal">Horizontal</string>
+    <string name="search_result_layout_vertical">Vertical</string>
     <string name="search_exact">Exact search</string>
     <string name="search_sites">Search sites</string>
     <string name="search_sites_none_hint">No sites selected — searches will return nothing</string>
@@ -306,11 +308,7 @@
     <string name="toast_source_in_use">The source in use cannot be deleted</string>
 
     <string name="player_exo">Media3</string>
-    <string name="player_mx">MX Player</string>
-    <string name="player_reex">Reex Player</string>
-    <string name="player_kodi">Kodi</string>
     <string name="player_nearby_tvbox">Nearby TVBox</string>
-    <string name="player_vlc">VLC</string>
     <string name="player_decode_hard">Hardware Decoding</string>
     <string name="player_decode_soft">Software Decoding</string>
     <string name="player_scale_fill">Fill</string>
@@ -501,8 +499,8 @@
     <string name="player_play_url_empty">Playback URL is empty</string>
     <string name="player_play_error_retry">Playback error. Retrying automatically</string>
     <string name="player_decode_fallback_tip">Hardware decoding failed. Retrying with software decoding</string>
-    <string name="player_call_external_play">Launching external player %1$s</string>
-    <string name="player_call_external_result">External player %1$s: %2$s</string>
+    <string name="player_call_external_play">Casting to %1$s</string>
+    <string name="player_call_external_result">Cast to %1$s: %2$s</string>
 
     <string name="player_lock">Lock</string>
     <string name="player_rotate_landscape">Rotate to landscape</string>

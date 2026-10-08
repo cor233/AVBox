@@ -1,15 +1,12 @@
 package com.github.tvbox.osc.ui.activity
 
 import android.graphics.Bitmap
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateListOf
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import com.github.tvbox.osc.R
 import com.github.tvbox.osc.api.ApiConfig
 import com.github.tvbox.osc.base.App
+import com.github.tvbox.osc.bean.Epginfo
+import com.github.tvbox.osc.bean.LiveChannelGroup
 import com.github.tvbox.osc.bean.LiveChannelItem
 import com.github.tvbox.osc.player.state.PlayState
 import com.github.tvbox.osc.util.BootGuard
@@ -18,7 +15,10 @@ import com.github.tvbox.osc.util.HistoryHelper
 import com.github.tvbox.osc.util.KV
 import com.github.tvbox.osc.util.LanguageManager
 import com.google.gson.JsonArray
-import java.util.ArrayList
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 
 internal enum class PageState { LOADING, EMPTY, READY }
 
@@ -32,7 +32,165 @@ internal data class ChannelInfoUi(
     val nextEpgTitle: String = "",
 )
 
+internal data class LiveEpgUi(
+    val sheetVisible: Boolean = false,
+    val channelName: String = "",
+    val epgList: List<Epginfo> = emptyList(),
+    val lookBackIndex: Int = -1,
+    val canCatchup: Boolean = false,
+)
+
+internal data class LiveTimeshiftUi(
+    val position: Int = 0,
+    val duration: Int = 0,
+    val isShiyi: Boolean = false,
+    val isBackState: Boolean = false,
+)
+
+internal data class LiveChannelListUi(
+    val rows: List<LiveListRow> = emptyList(),
+    val tappedGroupIndex: Int = 0,
+    val playingGroupIndex: Int = 0,
+    val playingChannelIndex: Int = -1,
+    val playingChannel: LiveChannelItem? = null,
+    val expandedGroups: Set<Int> = emptySet(),
+    val lockedGroups: Set<Int> = emptySet(),
+    val confirmedPasswordGroups: Set<Int> = emptySet(),
+    val scrollRequestId: Long = 0,
+)
+
+internal data class LivePageFrame(
+    val pageState: PageState = PageState.LOADING,
+    val fullScreen: Boolean = false,
+    val rotating: Boolean = false,
+    val landscapeNow: Boolean = false,
+) {
+    val isFullBox: Boolean get() = if (rotating) landscapeNow else fullScreen
+}
+
+internal data class LivePlayerUi(
+    val playState: PlayState = PlayState.IDLE,
+    val snapshotVisible: Boolean = false,
+    val snapshotBitmap: Bitmap? = null,
+    val resolutionText: String = "",
+    val resolutionVisible: Boolean = false,
+    val gestureHintText: String? = null,
+)
+
+internal data class LiveOverlayUi(
+    val visible: Boolean = false,
+    val showTimeOn: Boolean = false,
+    val showNetSpeedOn: Boolean = false,
+    val timeText: String = "",
+    val netSpeedText: String = "",
+)
+
+internal data class LivePlayUiState(
+    val frame: LivePageFrame = LivePageFrame(),
+    val player: LivePlayerUi = LivePlayerUi(),
+    val overlay: LiveOverlayUi = LiveOverlayUi(),
+    val channelInfo: ChannelInfoUi = ChannelInfoUi(),
+    val passwordDialogTarget: Pair<Int, Int>? = null,
+    val epg: LiveEpgUi = LiveEpgUi(),
+    val timeshift: LiveTimeshiftUi = LiveTimeshiftUi(),
+    val channelList: LiveChannelListUi = LiveChannelListUi(),
+    val settings: LiveSettingsUi = LiveSettingsUi(),
+)
+
 internal class LivePlayViewModel : ViewModel() {
+
+    private val _state = MutableStateFlow(LivePlayUiState())
+    val state: StateFlow<LivePlayUiState> = _state.asStateFlow()
+
+    internal fun updateEpg(transform: (LiveEpgUi) -> LiveEpgUi) {
+        _state.update { it.copy(epg = transform(it.epg)) }
+    }
+
+    internal fun updateTimeshift(transform: (LiveTimeshiftUi) -> LiveTimeshiftUi) {
+        _state.update { it.copy(timeshift = transform(it.timeshift)) }
+    }
+
+    internal fun updateFrame(transform: (LivePageFrame) -> LivePageFrame) {
+        _state.update { it.copy(frame = transform(it.frame)) }
+    }
+
+    internal fun updatePlayer(transform: (LivePlayerUi) -> LivePlayerUi) {
+        _state.update { it.copy(player = transform(it.player)) }
+    }
+
+    internal fun updateOverlay(transform: (LiveOverlayUi) -> LiveOverlayUi) {
+        _state.update { it.copy(overlay = transform(it.overlay)) }
+    }
+
+    internal fun updateChannelInfo(info: ChannelInfoUi) {
+        _state.update { it.copy(channelInfo = info) }
+    }
+
+    internal fun updatePasswordDialogTarget(target: Pair<Int, Int>?) {
+        _state.update { it.copy(passwordDialogTarget = target) }
+    }
+
+    private var channelGroups: List<LiveChannelGroup> = emptyList()
+
+    internal fun updateChannelList(transform: (LiveChannelListUi) -> LiveChannelListUi) {
+        _state.update { current ->
+            val list = transform(current.channelList)
+            val locked = LiveChannelRows.lockedGroups(channelGroups, list.confirmedPasswordGroups)
+            val structureChanged = list.expandedGroups != current.channelList.expandedGroups ||
+                locked != current.channelList.lockedGroups
+            current.copy(
+                channelList = if (structureChanged) {
+                    list.copy(lockedGroups = locked, rows = LiveChannelRows.of(channelGroups, list.expandedGroups, locked))
+                } else {
+                    list.copy(lockedGroups = locked)
+                },
+            )
+        }
+    }
+
+    internal fun onChannelGroupsChanged(groups: List<LiveChannelGroup>) {
+        channelGroups = groups
+        _state.update { current ->
+            val locked = LiveChannelRows.lockedGroups(channelGroups, current.channelList.confirmedPasswordGroups)
+            current.copy(
+                channelList = current.channelList.copy(
+                    lockedGroups = locked,
+                    rows = LiveChannelRows.of(channelGroups, current.channelList.expandedGroups, locked),
+                ),
+            )
+        }
+    }
+
+    internal fun updateSettings(transform: (LiveSettingsUi) -> LiveSettingsUi) {
+        _state.update { it.copy(settings = transform(it.settings)) }
+    }
+
+    private var settingsSource: LiveSettingsSource? = null
+
+    internal fun attachSettingsSource(source: LiveSettingsSource) {
+        settingsSource = source
+    }
+
+    internal fun onSettingsOpened() {
+        refreshSettingsSnapshot()
+        _state.update { it.copy(settings = it.settings.copy(sheetVisible = true)) }
+    }
+
+    internal fun onSettingsInputsChanged() {
+        if (!_state.value.settings.sheetVisible) return
+        refreshSettingsSnapshot()
+    }
+
+    internal fun onSettingRemoved(itemIndex: Int, host: Host) {
+        host.removeConfigHistory(itemIndex)
+        refreshSettingsSnapshot()
+    }
+
+    private fun refreshSettingsSnapshot() {
+        val source = settingsSource ?: return
+        val groups = LiveSettingsSnapshot.of(source, _state.value.channelList.playingChannel)
+        _state.update { it.copy(settings = it.settings.copy(groups = groups)) }
+    }
 
     private fun str(resId: Int, vararg args: Any): String {
         val app = App.getInstance() ?: return ""
@@ -62,41 +220,14 @@ internal class LivePlayViewModel : ViewModel() {
 
         fun setEmptyChannelList(releasePlayer: Boolean)
 
+        fun removeConfigHistory(itemIndex: Int)
+
         fun toast(msg: String)
 
         fun isFinishing(): Boolean
 
         fun postToMain(action: Runnable)
     }
-
-    var pageState by mutableStateOf(PageState.LOADING)
-    var playState by mutableStateOf(PlayState.IDLE)
-    var snapshotVisible by mutableStateOf(false)
-    var snapshotBitmap by mutableStateOf<Bitmap?>(null)
-    var fullScreen by mutableStateOf(false)
-    var rotating by mutableStateOf(false)
-    var overlayVisible by mutableStateOf(false)
-    var isBackState by mutableStateOf(false)
-    var epgSheetVisible by mutableStateOf(false)
-    var settingsSheetVisible by mutableStateOf(false)
-    var passwordDialogTarget by mutableStateOf<Pair<Int, Int>?>(null)
-    var settingsVersion by mutableIntStateOf(0)
-    var channelVersion by mutableIntStateOf(0)
-    var epgVersion by mutableIntStateOf(0)
-    var scrollTick by mutableIntStateOf(0)
-    var resolutionText by mutableStateOf("")
-    var resolutionVisible by mutableStateOf(false)
-    var showTimeOn by mutableStateOf(false)
-    var showNetSpeedOn by mutableStateOf(false)
-    var timeText by mutableStateOf("")
-    var netSpeedText by mutableStateOf("")
-    var gestureHintText by mutableStateOf<String?>(null)
-    var tsPosition by mutableIntStateOf(0)
-    var tsDuration by mutableIntStateOf(0)
-    var channelInfoUi by mutableStateOf(ChannelInfoUi())
-    val expandedGroups = mutableStateListOf<Int>()
-    var currentChannelGroupIndex by mutableIntStateOf(0)
-    var currentLiveChannelIndex by mutableIntStateOf(-1)
 
     private var liveConfigRequestId = 0
 
@@ -202,7 +333,7 @@ internal class LivePlayViewModel : ViewModel() {
                 })
             }
         }
-        settingsVersion++
+        refreshSettingsSnapshot()
     }
 
     private fun preferredRefreshChannelName(host: Host): String? {

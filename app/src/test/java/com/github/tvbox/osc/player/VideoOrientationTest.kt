@@ -27,4 +27,13 @@ class VideoOrientationTest {
     fun notPortraitWhenSquare() {
         assertFalse(VideoOrientation.isPortrait(1080, 1080))
     }
+
+    @Test
+    fun usableSizeRequiresBothDimensions() {
+        assertTrue(VideoOrientation.isUsableSize(1080, 1920))
+        assertTrue(VideoOrientation.isUsableSize(1920, 1080))
+        assertFalse(VideoOrientation.isUsableSize(0, 0))
+        assertFalse(VideoOrientation.isUsableSize(0, 1920))
+        assertFalse(VideoOrientation.isUsableSize(1080, 0))
+    }
 }

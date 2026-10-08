@@ -51,7 +51,7 @@
 
 ## 技术栈实况（审查清单以此为准，勿套通用模板）
 
-- 语言构成：自有源码已**全量 Kotlin**（`app/src/main/java` 0 Java / 375 Kotlin；`app/src/python/java`（Chaquopy sourceSet）0 Java / 5 Kotlin）；唯一 Java 存量 = `app/src/test` 的 12 个测试文件（不在迁移范围）
+- 语言构成：自有源码已**全量 Kotlin**（`app/src/main/java` 0 Java / 375 Kotlin；`app/src/python/java`（Chaquopy sourceSet）0 Java / 5 Kotlin）；唯一 Java 存量 = `app/src/test` 的 11 个测试文件（不在迁移范围；`TrackMemoryTest` 已于 2026-10-08 迁为 Kotlin，原 12 个）
 - 模块：`app`（宿主，含 api/base/bean/data/dlna/event/player/receiver/server/sourcedata/subtitle/ui/util；原 `cache` 包已于 2026-09-28 并入 `data`，原 `viewmodel` 包已于 2026-10-01 改名 `sourcedata`）、`pyramid`、`quickjs`（JS 脚本引擎）、`libs`（backdrop 等第三方）。原 `player` 模块（doikki `xyz.doikki` 骨架）已于 2026-10-06（M10）整体删除
 - UI：View 体系与 Jetpack Compose（Material3）共存；Compose 集中在 `app` 的 ui/page、ui/components、navbar、glass 系列，以及播放器 ui 层
 - 播放内核：media3/ExoPlayer（唯一内置内核，2026-09-29 起；外部播放器 MX/VLC/Kodi/Reex 仍可选用）；播放层为 app 内自研 Kotlin 栈（`osc.player` + `osc.player.engine`，M7 起 / D12 路线），预载走 `PreloadManagerHolder` / `PreloadCoordinator` 链路
