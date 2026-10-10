@@ -4,13 +4,15 @@ package com.github.tvbox.osc.ui.activity
 
 import android.content.res.Configuration
 import android.widget.Toast
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.ContainedLoadingIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -19,28 +21,40 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import com.github.tvbox.osc.R
+import com.github.tvbox.osc.ui.components.HomeBackdrop
+import com.github.tvbox.osc.ui.components.ImagePalette
 import com.github.tvbox.osc.ui.components.LoadState
 import com.github.tvbox.osc.ui.components.LoadStateBox
 import com.github.tvbox.osc.ui.components.PosterBackdrop
 import com.github.tvbox.osc.ui.components.VodCardMenu
 import com.github.tvbox.osc.ui.components.rememberVodCardMenuState
 import com.github.tvbox.osc.ui.theme.AppThemeState
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import com.github.tvbox.osc.ui.page.jumpToSearch
+
+private const val EntrySlideDurationMs = 300
+private const val ContentSlideRatio = 0.2f
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -53,21 +67,36 @@ fun DetailScreen(activity: DetailActivity, vm: DetailViewModel) {
     val playSignal by vm.playSignal.collectAsState()
     val toast by vm.toastEvent.collectAsState()
     val finish by vm.finishEvent.collectAsState()
+    val enteringFullscreen by vm.enteringFullscreen.collectAsState()
+    val exitingFullscreen by vm.exitingFullscreen.collectAsState()
     val vodMenu = rememberVodCardMenuState()
 
     val configuration = LocalConfiguration.current
     val isLandscapeNow = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
-    val fullBox = if (rotating) isLandscapeNow else full
+    val fullBox = DetailFullScreenFrame.fullBox(rotating, full, isLandscapeNow)
+    val inTransition = enteringFullscreen || exitingFullscreen
+    var slideWidthPx by remember { mutableFloatStateOf(0f) }
 
     val container = activity.playContainer
+    val scope = rememberCoroutineScope()
     var backdropPic by remember { mutableStateOf("") }
     var backdropSeed by remember { mutableStateOf<Int?>(null) }
+    val pendingPic = vm.pendingPicture
+    val backdropSource = backdropPic.ifEmpty { pendingPic }
+    val backdropSeedArgb = backdropSeed ?: HomeBackdrop.seedOf(pendingPic)
     val darkTheme = AppThemeState.isDark(isSystemInDarkTheme())
-    val colorScheme = backdropSeed?.let { argb ->
+    val colorScheme = backdropSeedArgb?.let { argb ->
         remember(argb, darkTheme) {
             AppThemeState.customScheme(argb, darkTheme, AppThemeState.config.style)
         }
     } ?: MaterialTheme.colorScheme
+
+    LaunchedEffect(pageState) {
+        if (pageState is DetailViewModel.PageState.Loading) {
+            backdropPic = ""
+            backdropSeed = null
+        }
+    }
 
     LaunchedEffect(full, playSignal) {
         if (activity.playContainer == null && (full || playSignal > 0)) activity.ensurePlayContainer()
@@ -108,6 +137,33 @@ fun DetailScreen(activity: DetailActivity, vm: DetailViewModel) {
         }
     }
 
+    val slideAnim = remember { Animatable(0f) }
+
+    fun slideProgress(): Float = if (inTransition) slideAnim.value else if (full) 1f else 0f
+
+    LaunchedEffect(enteringFullscreen, exitingFullscreen) {
+        when {
+            exitingFullscreen -> {
+                slideAnim.animateTo(0f, tween(EntrySlideDurationMs, easing = FastOutSlowInEasing))
+                try {
+                    vm.onExitSlideFinished()
+                } finally {
+                    activity.settleRotationAfterExit()
+                }
+            }
+
+            enteringFullscreen -> {
+                activity.settleRotationAfterExit()
+                slideAnim.animateTo(1f, tween(EntrySlideDurationMs, easing = FastOutSlowInEasing))
+                vm.onEntrySlideFinished()
+            }
+        }
+    }
+
+    LaunchedEffect(inTransition, container) {
+        activity.setPlayerTouchBlocked(inTransition)
+    }
+
     LaunchedEffect(full) {
         activity.applyFullscreen(full)
     }
@@ -130,65 +186,92 @@ fun DetailScreen(activity: DetailActivity, vm: DetailViewModel) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
+                .onSizeChanged { slideWidthPx = it.width.toFloat() }
                 .background(MaterialTheme.colorScheme.surface),
         ) {
-            PosterBackdrop(pic = backdropPic)
+            PosterBackdrop(
+                pic = backdropSource,
+                onImage = { image ->
+                    scope.launch {
+                        val seed = withContext(Dispatchers.Default) { ImagePalette.seedOf(image) }
+                        if (seed != null && backdropSeed == null) backdropSeed = seed
+                    }
+                },
+            )
 
-            Box(modifier = Modifier.fillMaxSize()) {
-                Column(modifier = Modifier.fillMaxSize()) {
-                    Box(
-                        modifier = if (fullBox) {
-                            Modifier.fillMaxSize().background(Color.Black)
-                        } else {
-                            Modifier.fillMaxWidth().height(0.dp)
-                        },
-                    ) {
-                        val playerContainer = container
-                        if (playerContainer != null) {
-                            AndroidView(
-                                factory = { playerContainer },
-                                modifier = Modifier.fillMaxSize(),
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .offset {
+                        IntOffset((-slideProgress() * slideWidthPx * ContentSlideRatio).toInt(), 0)
+                    },
+            ) {
+                if (!fullBox || exitingFullscreen) {
+                    when (val state = pageState) {
+                        is DetailViewModel.PageState.Loading -> {
+                            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                ContainedLoadingIndicator(Modifier.size(64.dp))
+                            }
+                        }
+
+                        is DetailViewModel.PageState.Empty -> {
+                            Column(modifier = Modifier.fillMaxSize()) {
+                                LoadStateBox(
+                                    state = LoadState.Empty,
+                                    emptyText = state.msg ?: stringResource(R.string.detail_empty_source),
+                                    errorText = "",
+                                    retryText = "",
+                                    modifier = Modifier.weight(1f),
+                                )
+                                SourceSection(vm, currentSourceName = null, revision = revision)
+                            }
+                        }
+
+                        is DetailViewModel.PageState.Ready -> {
+                            DetailContent(
+                                activity = activity,
+                                vm = vm,
+                                revision = revision,
+                                onPosterPic = { backdropPic = it },
+                                onSeed = { argb -> if (argb != null) backdropSeed = argb },
+                                onCardLongClick = { vodMenu.show(it) },
                             )
                         }
                     }
-
-                    if (!fullBox) {
-                        when (val state = pageState) {
-                            is DetailViewModel.PageState.Loading -> {
-                                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                    ContainedLoadingIndicator(Modifier.size(64.dp))
-                                }
-                            }
-
-                            is DetailViewModel.PageState.Empty -> {
-                                Column(modifier = Modifier.fillMaxSize()) {
-                                    LoadStateBox(
-                                        state = LoadState.Empty,
-                                        emptyText = state.msg ?: stringResource(R.string.detail_empty_source),
-                                        errorText = "",
-                                        retryText = "",
-                                        modifier = Modifier.weight(1f),
-                                    )
-                                    SourceSection(vm, currentSourceName = null, revision = revision)
-                                }
-                            }
-
-                            is DetailViewModel.PageState.Ready -> {
-                                DetailContent(
-                                    activity = activity,
-                                    vm = vm,
-                                    revision = revision,
-                                    onPosterPic = { backdropPic = it },
-                                    onSeed = { argb -> if (argb != null) backdropSeed = argb },
-                                    onCardLongClick = { vodMenu.show(it) },
-                                )
-                            }
-                        }
-                    }
                 }
-                if (!fullBox) {
+                if (!fullBox || exitingFullscreen) {
                     DetailTopScrim(modifier = Modifier.align(Alignment.TopCenter))
                 }
+            }
+
+            val playerContainer = container
+            if (playerContainer != null) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .offset {
+                            IntOffset(((1f - slideProgress()) * slideWidthPx).toInt(), 0)
+                        },
+                ) {
+                    AndroidView(
+                        factory = { playerContainer },
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
+            }
+
+            if (inTransition) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .pointerInput(Unit) {
+                            awaitPointerEventScope {
+                                while (true) {
+                                    awaitPointerEvent().changes.forEach { it.consume() }
+                                }
+                            }
+                        },
+                )
             }
         }
 

@@ -60,8 +60,9 @@ class DetailViewModel : ViewModel() {
     val revision = MutableStateFlow(0)
     val fullScreen = MutableStateFlow(false)
     val rotating = MutableStateFlow(false)
+    val enteringFullscreen = MutableStateFlow(false)
+    val exitingFullscreen = MutableStateFlow(false)
     val playSignal = MutableStateFlow(0)
-    val portraitResolved = MutableStateFlow(false)
     val collected = MutableStateFlow(false)
     val follow = MutableStateFlow<VodFollow?>(null)
     val qualityOptions = MutableStateFlow<List<String>>(emptyList())
@@ -87,6 +88,8 @@ class DetailViewModel : ViewModel() {
     private var vodName = ""
     private var vodPicture = ""
     private var fromCollect = false
+
+    val pendingPicture: String get() = vodPicture
 
     private val sourceViewModel = SourceViewModel()
     private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
@@ -204,7 +207,6 @@ class DetailViewModel : ViewModel() {
         toastEvent.value = null
         finishEvent.value = false
         pageState.value = PageState.Loading
-        portraitResolved.value = false
         fallbackEpisode = null
         fallbackEpisodeIndex = -1
         usedSourceKeys.clear()
@@ -222,10 +224,12 @@ class DetailViewModel : ViewModel() {
                 toastEvent.value = reason
                 return
             }
+            enterFullscreen()
+            return
         }
-        val (full, rotating) = DetailPlaybackCommands.fullScreenState(requested, facts)
-        fullScreen.value = full
-        this.rotating.value = rotating
+        val next = DetailFullScreenSlide.exit(slideState()) ?: return
+        applySlideState(next)
+        rotating.value = DetailPlaybackCommands.exitFullScreenState(facts).second
     }
 
     fun bumpRevision() {
@@ -243,18 +247,39 @@ class DetailViewModel : ViewModel() {
 
     internal fun applyPlaybackEntry(entry: DetailPlaybackEntry, resumable: Boolean = false) {
         val plan = DetailPlaybackPolicy.plan(entry, resumable)
-        if (plan.enterFullScreen) {
-            fullScreen.value = true
-            rotating.value = false
-            portraitResolved.value = false
-        }
+        if (plan.enterFullScreen) enterFullscreen()
         if (plan.startPlayback) playSignal.value += 1
     }
 
-    fun onVideoSizeResolved(portraitVideo: Boolean) {
-        if (portraitResolved.value) return
-        portraitResolved.value = true
-        LOG.i("echo-player detail size resolved: portrait=$portraitVideo full=${fullScreen.value}")
+    private fun enterFullscreen() {
+        val next = DetailFullScreenSlide.enter(slideState()) ?: return
+        applySlideState(next)
+    }
+
+    fun onEntrySlideFinished() {
+        val next = DetailFullScreenSlide.entryFinished(slideState()) ?: return
+        applySlideState(next)
+    }
+
+    fun onExitSlideFinished() {
+        applySlideState(DetailFullScreenSlide.exitFinished(slideState()))
+    }
+
+    fun cancelEntrySlide() {
+        val next = DetailFullScreenSlide.cancelEntry(slideState()) ?: return
+        applySlideState(next)
+    }
+
+    private fun slideState() = DetailFullScreenSlideState(
+        fullScreen = fullScreen.value,
+        entering = enteringFullscreen.value,
+        exiting = exitingFullscreen.value,
+    )
+
+    private fun applySlideState(state: DetailFullScreenSlideState) {
+        fullScreen.value = state.fullScreen
+        enteringFullscreen.value = state.entering
+        exitingFullscreen.value = state.exiting
     }
 
     private fun consumeManualLineSwitch(): Boolean {

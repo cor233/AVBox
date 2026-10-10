@@ -71,8 +71,9 @@ class PlayerEngine(
     val mediaSources = MediaSources(appContext, config.okHttpClient)
 
     private val videoRenderers = ArrayList<Renderer>()
-
     private val videoRendererIndices = ArrayList<Int>()
+
+    private var audioRenderersFactory: EngineRenderersFactory? = null
 
     private val trackSelector = DefaultTrackSelector(appContext)
 
@@ -112,6 +113,9 @@ class PlayerEngine(
     private val mainHandler = Handler(Looper.getMainLooper())
     private var lastOutputWidth = 0
     private var lastOutputHeight = 0
+    private var pendingOutputWidth = 0
+    private var pendingOutputHeight = 0
+    private var outputSurfacePresent = false
     private var redrawScheduled = false
     private var audioOnlyRequested = false
     private var videoOutputInvalid = false
@@ -226,15 +230,17 @@ class PlayerEngine(
     }
 
     private fun createPlayer(): ExoPlayer {
-        val renderersFactory = EngineRenderersFactory(
+        val factory = EngineRenderersFactory(
             appContext,
             { trackSelection.subtitleDelayUs },
             videoRenderers,
             videoRendererIndices,
             config.dynamicScheduling,
         )
-            .setEnableDecoderFallback(true)
-            .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
+        factory.setEnableDecoderFallback(true)
+        factory.setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
+        val renderersFactory = factory
+        audioRenderersFactory = renderersFactory
         renderersFactory.forceDisableMediaCodecAsynchronousQueueing()
         LOG.i("echo-exo-disable-async-codec-queue")
         LOG.i("echo-exo-video-dynamic-scheduling: ${config.dynamicScheduling}")
@@ -387,6 +393,9 @@ class PlayerEngine(
         audioOnlyRequested = false
         videoOutputInvalid = false
         videoRenderersDisabled = false
+        pendingOutputWidth = 0
+        pendingOutputHeight = 0
+        outputSurfacePresent = false
         speedPlaybackParameters = null
     }
 
@@ -432,17 +441,35 @@ class PlayerEngine(
         get() = internalPlayer?.playbackState ?: Player.STATE_IDLE
 
     fun setVideoSurface(surface: Surface?) {
+        val invalid = surface == null || !surface.isValid
+        LOG.i(
+            "echo-surface-bind: valid=" + (surface != null && surface.isValid)
+                + " invalid=" + invalid + " disabled=" + videoRenderersDisabled,
+        )
         internalPlayer?.setVideoSurface(surface)
-        setVideoOutputInvalid(surface == null || !surface.isValid)
+        outputSurfacePresent = !invalid
+        setVideoOutputInvalid(invalid)
+        resendPendingOutputResolution()
+    }
+
+    private fun resendPendingOutputResolution() {
+        if (!outputSurfacePresent) return
+        val width = if (pendingOutputWidth > 0) pendingOutputWidth else lastOutputWidth
+        val height = if (pendingOutputHeight > 0) pendingOutputHeight else lastOutputHeight
+        pendingOutputWidth = 0
+        pendingOutputHeight = 0
+        if (width > 0 && height > 0) sendOutputResolution(width, height)
     }
 
     fun clearVideoOutput() {
         internalPlayer?.clearVideoSurface()
+        outputSurfacePresent = false
         setVideoOutputInvalid(true)
     }
 
     fun detachVideoSurface() {
         internalPlayer?.clearVideoSurface()
+        outputSurfacePresent = false
         LOG.i("echo-exo-detach-surface: renderers kept")
     }
 
@@ -556,6 +583,12 @@ class PlayerEngine(
     val videoDecoderName: String
         get() = PlayerCodecStats.videoDecoderName
 
+    val audioCodecChoice: AudioCodecChoice?
+        get() = AudioCodecProbe.liveInfo(audioRenderersFactory?.audioRenderer)
+
+    val audioRendererName: String?
+        get() = AudioCodecProbe.rendererClassName(audioRenderersFactory?.audioRenderer)
+
     val lastErrorKind: Int
         get() = lastErrorKindValue
 
@@ -593,6 +626,26 @@ class PlayerEngine(
         val sizeChanged = width != lastOutputWidth || height != lastOutputHeight
         lastOutputWidth = width
         lastOutputHeight = height
+        LOG.i(
+            "echo-output-size: ${width}x$height changed=$sizeChanged" +
+                " renderers=" + videoRenderers.size + " effects=" + videoEffectsOpen +
+                " outputInvalid=" + videoOutputInvalid + " surfacePresent=" + outputSurfacePresent,
+        )
+        if (!outputSurfacePresent) {
+            pendingOutputWidth = width
+            pendingOutputHeight = height
+            return
+        }
+        pendingOutputWidth = 0
+        pendingOutputHeight = 0
+        sendOutputResolution(width, height)
+        if (RedrawPolicy.shouldRedrawOnGeometry(sizeChanged, isPlaying, redrawReady())) {
+            redrawVideoFrame()
+        }
+    }
+
+    private fun sendOutputResolution(width: Int, height: Int) {
+        val exo = internalPlayer ?: return
         for (renderer in videoRenderers) {
             try {
                 exo.createMessage(renderer)
@@ -602,9 +655,6 @@ class PlayerEngine(
             } catch (th: Throwable) {
                 LOG.e("PlayerEngine", "echo-picture-output-resolution failed", th)
             }
-        }
-        if (RedrawPolicy.shouldRedrawOnGeometry(sizeChanged, isPlaying, redrawReady())) {
-            redrawVideoFrame()
         }
     }
 

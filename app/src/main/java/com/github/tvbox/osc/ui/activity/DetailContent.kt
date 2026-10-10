@@ -70,6 +70,7 @@ internal fun DetailContent(
 
     val currentSource = ApiConfig.get().getSource(vm.firstsourceKey)
     val displaySourceName = currentSource?.name ?: vm.firstsourceKey
+    val heroRollPaused by vm.fullScreen.collectAsState()
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -92,6 +93,7 @@ internal fun DetailContent(
                 onCast = { activity.openCast() },
                 onCollect = { vm.toggleCollect() },
                 onFollow = { followScheduleOpen = true },
+                rollPaused = heroRollPaused,
             )
         }
 
@@ -136,6 +138,36 @@ internal fun DetailContent(
                             modifier = Modifier
                                 .size(20.dp)
                                 .rotate(if (descExpanded) 180f else 0f),
+                        )
+                    }
+                }
+            }
+        }
+
+        item(key = "tmdb_info") {
+            TmdbInfoSection(info.name, info.year)
+        }
+
+        if (episodes.isNotEmpty()) {
+            item(key = "episodes") {
+                EpisodeRow(vm, info, episodes, playIndex, currentFlag)
+            }
+        }
+
+        if (qualityOptions.size > 1) {
+            item(key = "quality") {
+                ChipRow(
+                    title = stringResource(R.string.detail_quality),
+                    leading = { SectionTitleIcon(painterResource(R.drawable.ic_detail_quality)) },
+                ) {
+                    itemsIndexed(qualityOptions) { index, option ->
+                        FilterChip(
+                            selected = index == qualitySelected,
+                            onClick = { vm.onQualityClick(index, activity.playbackFacts()) },
+                            label = { Text(option) },
+                            shape = RoundedCornerShape(20.dp),
+                            border = detailChipBorder(selected = index == qualitySelected),
+                            colors = detailChipColors(),
                         )
                     }
                 }
@@ -188,32 +220,6 @@ internal fun DetailContent(
                         }
                     }
                 }
-            }
-        }
-
-        if (qualityOptions.size > 1) {
-            item(key = "quality") {
-                ChipRow(
-                    title = stringResource(R.string.detail_quality),
-                    leading = { SectionTitleIcon(painterResource(R.drawable.ic_detail_quality)) },
-                ) {
-                    itemsIndexed(qualityOptions) { index, option ->
-                        FilterChip(
-                            selected = index == qualitySelected,
-                            onClick = { vm.onQualityClick(index, activity.playbackFacts()) },
-                            label = { Text(option) },
-                            shape = RoundedCornerShape(20.dp),
-                            border = detailChipBorder(selected = index == qualitySelected),
-                            colors = detailChipColors(),
-                        )
-                    }
-                }
-            }
-        }
-
-        if (episodes.isNotEmpty()) {
-            item(key = "episodes") {
-                EpisodeRow(vm, info, episodes, playIndex, currentFlag)
             }
         }
 

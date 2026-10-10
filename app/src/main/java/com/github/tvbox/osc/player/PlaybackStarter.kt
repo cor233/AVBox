@@ -48,6 +48,8 @@ class PlaybackStarter(private val host: Host) {
 
         fun startedProgressKey(): String?
 
+        fun isSameContentRestart(): Boolean
+
         fun subtitleCacheKey(): String?
 
         fun setProgressKey(key: String?)
@@ -128,7 +130,8 @@ class PlaybackStarter(private val host: Host) {
         if (!prepareOnly) {
             st.switchingPlayback = true
             st.audioPlayback = false
-            host.view()?.onNewPlayStarted()
+            val sameContentRestart = !reset && host.isSameContentRestart()
+            host.view()?.onNewPlayStarted(sameContentRestart)
             host.view()?.clearArtwork()
         }
         val vs = host.currentSeries(host.vod()!!.playFlag, host.vod()!!.playIndex)
@@ -175,7 +178,7 @@ class PlaybackStarter(private val host: Host) {
         host.setProgressKey(host.vod()!!.sourceKey + host.vod()!!.id + host.vod()!!.playFlag + host.vod()!!.playIndex + vs.name)
         if (!prepareOnly) {
             WatchProgressStore.onPlayStart(host.progressKey())
-            PlaybackProgress.onEpisodeStartNoScroll()
+            PlaybackProgress.onEpisodeStartNoScroll(host.vod())
         }
         host.startResolvePlayUrlTimeout()
         if (st.pendingInheritProgress > 0 && !TextUtils.isEmpty(st.pendingInheritKey)) {
@@ -280,6 +283,12 @@ class PlaybackStarter(private val host: Host) {
     }
 
     fun goPlayUrl(url: String, headers: HashMap<String, String>?) {
+        val st = host.attemptState()
+        if (st.castAborted) {
+            LOG.i("echo-cast abort: drop late play url")
+            host.cancelPlayTimeout()
+            return
+        }
         LOG.i("echo-goPlayUrl:" + url)
         if (TextUtils.isEmpty(url)) {
             host.handleResolvePlayUrlFailed(PlaybackController.str(R.string.player_play_url_empty))
@@ -287,12 +296,16 @@ class PlaybackStarter(private val host: Host) {
         }
         val bridge = host.view()
         if (bridge == null || !bridge.isPageAlive()) return
-        val st = host.attemptState()
         playUrlGeneration = host.resolverCurrentGen()
         val finalUrl = url
         bridge.runOnUi(Runnable {
             if (st.switchStopPending) {
                 LOG.i("echo-ignore goPlayUrl while source switching")
+                return@Runnable
+            }
+            if (st.castAborted) {
+                LOG.i("echo-cast abort: drop late play url")
+                host.cancelPlayTimeout()
                 return@Runnable
             }
             if (playUrlGeneration != host.resolverCurrentGen()) {

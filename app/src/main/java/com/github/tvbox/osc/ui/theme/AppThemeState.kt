@@ -1,10 +1,18 @@
 package com.github.tvbox.osc.ui.theme
 
+import android.content.Context
+import android.content.res.Configuration
+import android.os.Build
 import androidx.compose.material3.ColorScheme
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.dynamicDarkColorScheme
+import androidx.compose.material3.dynamicLightColorScheme
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import com.github.tvbox.osc.util.HawkConfig
 import com.materialkolor.PaletteStyle
 import com.materialkolor.dynamicColorScheme
@@ -58,6 +66,25 @@ object AppThemeState {
         ThemeMode.DARK -> true
         else -> systemDark
     }
+
+    fun resolveScheme(context: Context, config: ThemeConfig, dark: Boolean): ColorScheme = when {
+        config.source == ThemeSource.CUSTOM -> customScheme(config.seedArgb, dark, config.style)
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ->
+            if (dark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+        dark -> darkColorScheme()
+        else -> lightColorScheme()
+    }
+
+    fun windowSurfaceArgb(context: Context): Int {
+        val dark = isDark(isSystemDark(context))
+        val scheme = resolveScheme(context, current, dark)
+        val resolved = if (dark && current.pureBlack) scheme.toPureBlack() else scheme
+        return resolved.surface.toArgb()
+    }
+
+    private fun isSystemDark(context: Context): Boolean =
+        (context.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
+            Configuration.UI_MODE_NIGHT_YES
 
     private val schemeCache = ConcurrentHashMap<Triple<Int, Boolean, PaletteStyle>, ColorScheme>()
 

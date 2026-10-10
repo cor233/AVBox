@@ -50,6 +50,7 @@ class PlaybackService : Service() {
 
     private var foregroundDenied: Boolean = false
     private var foregroundRetryLogged: Boolean = false
+    private var releaseEngineOnDestroy: Boolean = false
 
     override fun attachBaseContext(newBase: Context) {
         super.attachBaseContext(LanguageManager.wrap(newBase))
@@ -64,12 +65,14 @@ class PlaybackService : Service() {
         super.onCreate()
         instance = this
         pendingStart = false
+        releaseEngineOnDestroy = false
         LOG.i(TAG + " host onCreate (engine=" + (if (engine == null) "none" else "alive") + ")")
         createNotificationChannel()
         createMediaSession()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        releaseEngineOnDestroy = false
         val action = intent?.action
         if (ACTION_UPDATE == action) {
             startForegroundSafely()
@@ -89,6 +92,7 @@ class PlaybackService : Service() {
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         LOG.i(TAG + " host onTaskRemoved → release engine")
+        releaseEngineOnDestroy = true
         stopPlaybackSession()
         stopSelf()
         super.onTaskRemoved(rootIntent)
@@ -98,7 +102,13 @@ class PlaybackService : Service() {
         LOG.i(TAG + " host onDestroy")
         instance = null
         stopPlaybackSession()
-        releaseEngine()
+        if (releaseEngineOnDestroy) {
+            releaseEngineOnDestroy = false
+            releaseEngine()
+            LOG.i(TAG + " engine released (task removed)")
+        } else {
+            engine?.keepKernelAfterServiceDestroy()
+        }
         super.onDestroy()
     }
 
@@ -558,6 +568,10 @@ class PlaybackService : Service() {
         ) {
             if (!isSupported(context)) return
             if (engine == null) return
+            if (engine?.isServiceLostKept() == true) {
+                LOG.i(TAG + " session update skipped: kernel kept after service destroyed")
+                return
+            }
             owner = WeakReference(host)
             val ctx = context ?: return
             val intent = Intent(ctx, PlaybackService::class.java).setAction(ACTION_UPDATE)

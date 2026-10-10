@@ -64,6 +64,7 @@ class PlaybackController {
         if (contentChanged) {
             progress.clearStartedPlaybackKey()
         }
+        if (st.castAborted) LOG.i("echo-cast abort clear: new playback session")
         st.beginSession()
         clearM3u8ProxyUrl()
         vod = session.vod()
@@ -346,9 +347,13 @@ class PlaybackController {
     fun isCastPrepareOnly(): Boolean = st.castPrepareOnly
 
     fun closeCastPrepare() {
-        st.castPrepareOnly = false
+        st.abortCastSession()
         resolver.nextGen()
-        LOG.i("echo-cast prepare closed: drop in-flight resolve results")
+        LOG.i("echo-cast abort set: drop in-flight resolve results")
+    }
+
+    fun clearCastAbort() {
+        if (st.clearCastAbort()) LOG.i("echo-cast abort clear")
     }
 
     fun markStoppedForSourceSwitch() {
@@ -508,6 +513,11 @@ class PlaybackController {
 
     fun startedPlaybackKey(): String? = progress.startedPlaybackKey()
 
+    fun startedProgressKey(): String? = progress.startedProgressKey()
+
+    fun isSameContentRestart(): Boolean =
+        ProgressSampling.sameContentRestart(progress.startedPlaybackKey(), currentSession?.playbackKey())
+
     fun isSameStartedContent(): Boolean = progress.isSameStartedContent()
 
     fun initFetch() {
@@ -547,6 +557,7 @@ class PlaybackController {
     }
 
     fun doParse(pb: ParseBean) {
+        clearCastAbort()
         resolver.doParse(pb)
     }
 
@@ -601,6 +612,8 @@ class PlaybackController {
         override fun progressOwner(): String? = this@PlaybackController.progressOwner()
 
         override fun startedProgressKey(): String? = progress.startedProgressKey()
+
+        override fun isSameContentRestart(): Boolean = this@PlaybackController.isSameContentRestart()
 
         override fun subtitleCacheKey(): String? = this@PlaybackController.subtitleCacheKey()
 
@@ -702,6 +715,7 @@ class PlaybackController {
     })
 
     fun play(reset: Boolean) {
+        clearCastAbort()
         starter.play(reset)
     }
 
@@ -850,6 +864,7 @@ class PlaybackController {
     }
 
     fun selectQuality(position: Int): Boolean {
+        clearCastAbort()
         return music.selectQuality(position)
     }
 

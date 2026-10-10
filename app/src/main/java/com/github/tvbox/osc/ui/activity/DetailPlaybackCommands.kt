@@ -15,23 +15,46 @@ sealed interface PlaybackCommand {
 
 data class DetailPlaybackFacts(
     val landscape: Boolean,
-    val portraitVideo: Boolean,
 )
 
 internal object DetailPlaybackCommands {
 
-    fun fullScreenState(
-        requested: Boolean,
-        facts: DetailPlaybackFacts,
-    ): Pair<Boolean, Boolean> {
-        val landscapeTarget = requested && !facts.portraitVideo
-        return requested to (landscapeTarget != facts.landscape)
-    }}
+    fun exitFullScreenState(facts: DetailPlaybackFacts): Pair<Boolean, Boolean> = false to facts.landscape
+}
 
-internal object DetailPlaybackOrientation {
+internal object DetailFullScreenFrame {
 
-    enum class Target { Portrait, Landscape }
+    fun fullBox(rotating: Boolean, fullScreen: Boolean, landscapeNow: Boolean): Boolean =
+        if (rotating) landscapeNow else fullScreen
 
-    fun target(sizeReady: Boolean, portraitVideo: Boolean): Target =
-        if (sizeReady && !portraitVideo) Target.Landscape else Target.Portrait
+    fun playerFullScreen(rotating: Boolean, fullScreen: Boolean, landscapeNow: Boolean): Boolean =
+        if (rotating) !landscapeNow else fullScreen
+}
+
+internal data class DetailFullScreenSlideState(
+    val fullScreen: Boolean = false,
+    val entering: Boolean = false,
+    val exiting: Boolean = false,
+)
+
+internal object DetailFullScreenSlide {
+
+    fun enter(state: DetailFullScreenSlideState): DetailFullScreenSlideState? =
+        if (state.fullScreen || state.entering) null
+        else state.copy(entering = true, exiting = false)
+
+    fun exit(state: DetailFullScreenSlideState): DetailFullScreenSlideState? =
+        if (state.exiting || (!state.fullScreen && !state.entering)) null
+        else state.copy(fullScreen = false, entering = false, exiting = true)
+
+    fun cancelEntry(state: DetailFullScreenSlideState): DetailFullScreenSlideState? =
+        if (state.exiting || !state.entering) null
+        else state.copy(entering = false, exiting = true)
+
+    fun entryFinished(state: DetailFullScreenSlideState): DetailFullScreenSlideState? =
+        if (!state.entering) null
+        else state.copy(entering = false, fullScreen = !state.exiting)
+
+    fun exitFinished(state: DetailFullScreenSlideState): DetailFullScreenSlideState =
+        state.copy(exiting = false)
 }

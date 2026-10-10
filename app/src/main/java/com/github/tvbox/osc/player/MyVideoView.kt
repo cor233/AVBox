@@ -133,6 +133,24 @@ class MyVideoView : AppPlayerView, DrawHandler.Callback {
         addDisplay()
     }
 
+    fun rebuildRenderView(renderType: Int) {
+        LOG.i("echo-render-rebuild: type=$renderType")
+        setRenderViewFactory(
+            if (renderType == 1) {
+                EngineSurfaceRenderViewFactory.create()
+            } else {
+                EngineTextureRenderViewFactory.create()
+            },
+        )
+        addDisplay()
+        renderView()?.let { render ->
+            render.setScaleType(mCurrentScreenScaleType)
+            if (mVideoSize[0] > 0 && mVideoSize[1] > 0) {
+                render.setVideoSize(mVideoSize[0], mVideoSize[1])
+            }
+        }
+    }
+
     fun ensureRenderViewMatchesConfig() {
         // 内核已释放时渲染视图为 null，此时正是需要按配置重建视图的时机，不能因为没内核就跳过。
         if (renderView() == null || mMediaPlayer == null) {

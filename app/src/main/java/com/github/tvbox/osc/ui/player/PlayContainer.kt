@@ -8,6 +8,7 @@ import android.os.Looper
 import android.text.TextUtils
 import android.view.KeyEvent
 import android.view.LayoutInflater
+import android.view.MotionEvent
 import android.view.ViewGroup
 import android.webkit.WebView
 import android.widget.FrameLayout
@@ -28,7 +29,7 @@ import com.github.tvbox.osc.player.PlaybackViewBridge
 import com.github.tvbox.osc.player.PlayerHelper
 import com.github.tvbox.osc.player.PreloadCoordinator
 import com.github.tvbox.osc.player.VideoOrientation
-import com.github.tvbox.osc.player.controller.ComposeVideoController
+import com.github.tvbox.osc.player.controller.VideoPlayerController
 import com.github.tvbox.osc.player.controller.PlayerControlApi
 import com.github.tvbox.osc.player.danmu.DanmuLoadController
 import com.github.tvbox.osc.player.state.CastSheetState
@@ -75,10 +76,13 @@ class PlayContainer(activity: Activity) : FrameLayout(activity), CustomAdapt, Pl
 
     private var videoSizeReadyListener: ((Boolean) -> Unit)? = null
 
+    private var touchBlocked = false
+
     private var lifecyclePaused: Boolean = false
     private var ownedPlaybackKey: String? = null
     private var handedOver: Boolean = false
     private var castPrepareOnly: Boolean = false
+    private var hostSuspended: Boolean = false
 
     var mVideoView: MyVideoView? = null
     lateinit var mController: PlayerControlApi
@@ -141,6 +145,13 @@ class PlayContainer(activity: Activity) : FrameLayout(activity), CustomAdapt, Pl
         videoSizeReadyListener = listener
     }
 
+    fun setTouchBlocked(blocked: Boolean) {
+        touchBlocked = blocked
+    }
+
+    override fun onInterceptTouchEvent(ev: MotionEvent): Boolean =
+        touchBlocked || super.onInterceptTouchEvent(ev)
+
     private fun notifyVideoSizeReady(portraitVideo: Boolean) {
         val deliver = Runnable {
             val listener = videoSizeReadyListener
@@ -153,7 +164,19 @@ class PlayContainer(activity: Activity) : FrameLayout(activity), CustomAdapt, Pl
     override fun hostResume() {
         mExitingPreview = false
         if (mController != null) mController.setLifecyclePaused(false)
+        LOG.i(
+            "echo-p2 hostResume claimed=" + hasClaimedPlayback()
+                + " owns=" + ownsEngineContent()
+                + " playing=" + (mVideoView?.isPlaying ?: false)
+                + " lifecyclePaused=" + lifecyclePaused
+                + " suspended=" + hostSuspended
+                + " handedOver=" + handedOver,
+        )
+        val resumedFromBackground = hostSuspended && !handedOver
+        hostSuspended = false
         reattachIfOwnedByOther()
+        if (resumedFromBackground) rebuildRenderViewAfterBackground()
+        engine?.consumeServiceLostKeep(ownsEngineContent())
         if (mVideoView != null && lifecyclePaused) {
             lifecyclePaused = false
             if (ownsEngineContent()) {
@@ -162,13 +185,24 @@ class PlayContainer(activity: Activity) : FrameLayout(activity), CustomAdapt, Pl
         }
     }
 
+    private fun rebuildRenderViewAfterBackground() {
+        val view = mVideoView ?: return
+        if (view.mediaPlayer == null) return
+        if (engine?.attachedPage() !== this) return
+        if (TextUtils.isEmpty(scheduler.startedPlaybackKey())) return
+        val cfg = scheduler.playerCfg() ?: return
+        if (cfg.optInt("pr", 1) != 1) return
+        view.rebuildRenderView(1)
+        LOG.i("echo-p2 rebuild render view after background")
+    }
+
     private fun reattachIfOwnedByOther() {
+        handedOver = false
         if (engine == null || surfaceSlot == null) return
         if (engine!!.attachedPage() === this) return
         if (engine!!.isReleased()) return
         if (engine!!.isLiveMode()) engine!!.exitLive()
         engine!!.attach(this)
-        handedOver = false
         if (!ownsEngineContent() && mVideoView != null) {
             mVideoView!!.saveCurrentProgress()
         }
@@ -189,10 +223,26 @@ class PlayContainer(activity: Activity) : FrameLayout(activity), CustomAdapt, Pl
     }
 
     override fun hostPause() {
+        LOG.i(
+            "echo-p2 hostPause playing=" + (mVideoView?.isPlaying ?: false)
+                + " exiting=" + mExitingPreview,
+        )
+        hostSuspended = true
         if (mVideoView != null && !mExitingPreview && !scheduler.isConfirmedAudioOnly()) {
             lifecyclePaused = mVideoView!!.isPlaying
             if (mController != null) mController.setLifecyclePaused(lifecyclePaused)
             mVideoView!!.pause()
+        }
+    }
+
+    fun ensurePlaybackActive() {
+        clearCastAbort()
+        val view = mVideoView ?: return
+        if (view.isPlaying) return
+        when (view.playState) {
+            PlayState.IDLE, PlayState.COMPLETED, PlayState.ERROR -> play(true)
+            PlayState.PREPARING, PlayState.START_ABORT -> Unit
+            else -> view.resume()
         }
     }
 
@@ -271,8 +321,8 @@ class PlayContainer(activity: Activity) : FrameLayout(activity), CustomAdapt, Pl
             false
         }
         surfaceSlot = findViewById(R.id.surfaceSlot)
-        mController = ComposeVideoController(mActivity!!)
-        (mController as? ComposeVideoController)?.onVideoSizeReady = { width, height ->
+        mController = VideoPlayerController(mActivity!!)
+        (mController as? VideoPlayerController)?.onVideoSizeReady = { width, height ->
             if (VideoOrientation.isUsableSize(width, height)) {
                 notifyVideoSizeReady(VideoOrientation.isPortrait(width, height))
             }
@@ -318,11 +368,16 @@ class PlayContainer(activity: Activity) : FrameLayout(activity), CustomAdapt, Pl
         scheduler.setCastPrepareOnly(true)
     }
 
+    fun clearCastAbort() {
+        scheduler.clearCastAbort()
+    }
+
     fun endCastPrepare() {
         if (!castPrepareOnly && !scheduler.isCastPrepareOnly()) return
         castPrepareOnly = false
         scheduler.closeCastPrepare()
         scheduler.stopParse()
+        scheduler.cancelPlayTimeout()
         LOG.i("echo-cast prepare end")
     }
 
@@ -448,6 +503,12 @@ class PlayContainer(activity: Activity) : FrameLayout(activity), CustomAdapt, Pl
                 return
             }
         }
+        LOG.i(
+            "echo-p2 setData: key=" + session.playbackKey()
+                + " sameOwned=" + (!castPrepareOnly && isSamePlaybackOwned(session))
+                + " mediaPlayer=" + (mVideoView?.mediaPlayer != null)
+                + " state=" + mVideoView?.playState,
+        )
         if (!castPrepareOnly && isSamePlaybackOwned(session)) {
             LOG.i("echo-p3 take over same playback: " + session.playbackKey())
             engine!!.setData(session)
@@ -491,6 +552,7 @@ class PlayContainer(activity: Activity) : FrameLayout(activity), CustomAdapt, Pl
     }
 
     fun replayCurrentAddress() {
+        clearCastAbort()
         overlays.reloadDanmuForPlayback()
         val url = scheduler.webPlayUrl()
         if (url != null && !url.isEmpty()) {

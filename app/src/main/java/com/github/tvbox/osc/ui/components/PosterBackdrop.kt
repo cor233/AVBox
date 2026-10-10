@@ -11,7 +11,9 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
+import coil3.Image
 import coil3.compose.AsyncImage
+import coil3.compose.AsyncImagePainter
 
 private const val BackdropScale = 1.3f
 
@@ -20,13 +22,20 @@ private val BackdropBlurRadius = 56.dp
 private val BackdropScrimAlphas = listOf(0.22f, 0.5f, 0.88f)
 
 @Composable
-internal fun PosterBackdrop(pic: String?, modifier: Modifier = Modifier) {
+internal fun PosterBackdrop(
+    pic: String?,
+    modifier: Modifier = Modifier,
+    onImage: ((Image) -> Unit)? = null,
+) {
     Box(modifier = modifier.fillMaxSize()) {
         if (!pic.isNullOrEmpty()) {
             AsyncImage(
                 model = pic,
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
+                onState = { state ->
+                    if (state is AsyncImagePainter.State.Success) onImage?.invoke(state.result.image)
+                },
                 modifier = Modifier
                     .fillMaxSize()
                     .graphicsLayer {

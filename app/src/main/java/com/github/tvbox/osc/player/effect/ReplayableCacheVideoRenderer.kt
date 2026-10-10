@@ -2,6 +2,7 @@ package com.github.tvbox.osc.player.effect
 
 import android.content.Context
 import androidx.media3.common.C
+import androidx.media3.exoplayer.Renderer
 import androidx.media3.exoplayer.mediacodec.MediaCodecAdapter
 import androidx.media3.exoplayer.video.MediaCodecVideoRenderer
 import androidx.media3.exoplayer.video.PlaybackVideoGraphWrapper
@@ -41,5 +42,28 @@ class ReplayableCacheVideoRenderer(
         super.onCodecInitialized(name, configuration, initializedTimestampMs, initializationDurationMs)
         PlayerCodecStats.videoDecoderName = name
         LOG.i("echo-exo-codec-init: name=$name preferSoft=${CodecPreferences.isPreferSoftwareDecode()}")
+    }
+
+    override fun onEnabled(joining: Boolean, mayRenderFirstFrame: Boolean) {
+        super.onEnabled(joining, mayRenderFirstFrame)
+        LOG.i("echo-exo-renderer: enabled joining=$joining firstFrame=$mayRenderFirstFrame")
+    }
+
+    override fun onDisabled() {
+        LOG.i("echo-exo-renderer: disabled")
+        super.onDisabled()
+    }
+
+    override fun onReset() {
+        LOG.i("echo-exo-renderer: reset")
+        super.onReset()
+    }
+
+    override fun handleMessage(messageType: Int, message: Any?) {
+        if (messageType == Renderer.MSG_SET_VIDEO_OUTPUT_RESOLUTION && getSurface() == null) {
+            LOG.i("echo-exo-renderer: drop output-size (surface null)")
+            return
+        }
+        super.handleMessage(messageType, message)
     }
 }

@@ -73,10 +73,15 @@ class PlaybackAttemptState {
     @JvmField
     var castPrepareOnly: Boolean = false
 
+    @JvmField
+    @Volatile
+    var castAborted: Boolean = false
+
     fun beginSession() {
         playbackStarted = false
         switchStopPending = false
         autoSwitchedDecodeOld = null
+        castAborted = false
     }
 
     fun beginNewPlay() {
@@ -153,5 +158,16 @@ class PlaybackAttemptState {
     fun clearSessionFlags() {
         switchingPlayback = false
         audioPlayback = false
+    }
+
+    fun abortCastSession() {
+        castPrepareOnly = false
+        castAborted = true
+    }
+
+    fun clearCastAbort(): Boolean {
+        if (!castAborted) return false
+        castAborted = false
+        return true
     }
 }

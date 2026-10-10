@@ -321,6 +321,8 @@ class LivePlayActivity : BaseActivity() {
         if (fullScreen) super.hideSysBar()
     }
 
+    override fun keepStatusBarHidden(): Boolean = fullScreen
+
     override fun init() {
         enableTransparentEdgeToEdge()
         applyStatusBarAppearance()
@@ -499,7 +501,8 @@ class LivePlayActivity : BaseActivity() {
         } else {
             overlayVisible = false
             val controller = WindowCompat.getInsetsController(window, window.decorView)
-            controller.show(WindowInsetsCompat.Type.systemBars())
+            controller.show(WindowInsetsCompat.Type.navigationBars())
+            applyHideStatusBarPref()
             applyStatusBarAppearance()
             window.decorView.postDelayed({
                 if (!isFinishing && !isDestroyed) applyStatusBarAppearance()

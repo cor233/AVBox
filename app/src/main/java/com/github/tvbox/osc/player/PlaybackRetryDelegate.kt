@@ -131,7 +131,18 @@ class PlaybackRetryDelegate(private val host: Host) {
         return true
     }
 
+    private fun dropRetryIfCastAborted(reason: String): Boolean {
+        val st = host.attemptState()
+        if (!st.castAborted) return false
+        LOG.i("echo-cast abort: drop retry ($reason)")
+        host.cancelPlayRequest()
+        host.stopParse()
+        host.cancelPlayTimeout()
+        return true
+    }
+
     fun retryAfterStartedError(): Boolean {
+        if (dropRetryIfCastAborted("retryAfterStartedError")) return false
         val st = host.attemptState()
         if (st.hasRetriedAfterStart) return false
         if (TextUtils.isEmpty(host.webPlayUrl())) return false
@@ -164,6 +175,7 @@ class PlaybackRetryDelegate(private val host: Host) {
     }
 
     fun autoRetry(): Boolean {
+        if (dropRetryIfCastAborted("autoRetry")) return false
         val st = host.attemptState()
         if (retryWithFreshResolve("autoRetry")) return true
         val currentTime = System.currentTimeMillis()
@@ -286,6 +298,11 @@ class PlaybackRetryDelegate(private val host: Host) {
     }
 
     fun handleResolvePlayUrlTimeout() {
+        if (dropRetryIfCastAborted("resolveTimeout")) {
+            host.stopMusicSessionForFailedPlayback()
+            showErrorTip(PlaybackController.str(R.string.player_get_url_timeout))
+            return
+        }
         val st = host.attemptState()
         if (abortIfCastPrepare("resolveTimeout")) return
         if (retryWithFreshResolve("resolveTimeout")) return
@@ -305,6 +322,11 @@ class PlaybackRetryDelegate(private val host: Host) {
     }
 
     fun handleResolvePlayUrlFailed(err: String) {
+        if (dropRetryIfCastAborted("resolveFailed")) {
+            host.stopMusicSessionForFailedPlayback()
+            showErrorTip(err)
+            return
+        }
         val st = host.attemptState()
         LOG.i("echo-resolvePlayUrl failed, try next line: $err")
         if (abortIfCastPrepare(err)) return
@@ -324,6 +346,11 @@ class PlaybackRetryDelegate(private val host: Host) {
     }
 
     fun handleSwitchLinePlayTimeout() {
+        if (dropRetryIfCastAborted("switchLineTimeout")) {
+            host.stopMusicSessionForFailedPlayback()
+            showErrorTip(PlaybackController.str(R.string.player_play_timeout))
+            return
+        }
         val st = host.attemptState()
         val view = host.view()
         val state = view?.playState()

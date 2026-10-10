@@ -115,7 +115,7 @@ class EngineTextureRenderView(
     override fun doScreenShot(): Bitmap? = bitmap
 
     override fun release() {
-        mediaPlayer?.clearDisplay()
+        mediaPlayer?.detachVideoSurface()
         mediaPlayer = null
         releaseRetiredSurface()
         surface?.release()

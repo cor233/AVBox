@@ -96,6 +96,8 @@ class DetailActivity : BaseActivity(), PageHost {
         if (fullScreen) super.hideSysBar()
     }
 
+    override fun keepStatusBarHidden(): Boolean = fullScreen
+
     private fun applyStatusBarAppearance() {
         val systemDark = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
             Configuration.UI_MODE_NIGHT_YES
@@ -111,6 +113,12 @@ class DetailActivity : BaseActivity(), PageHost {
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 val container = playContainer
+                if (vm.enteringFullscreen.value) {
+                    vm.cancelEntrySlide()
+                    container?.stopForExitFullscreen()
+                    return
+                }
+                if (vm.exitingFullscreen.value) return
                 if (fullScreen) {
                     if (container != null && container.onBackPressed()) return
                     if (DetailPlaybackPolicy.plan(DetailPlaybackEntry.ExitFullscreen).stopPlayback) {
@@ -159,7 +167,6 @@ class DetailActivity : BaseActivity(), PageHost {
 
     fun playbackFacts(): DetailPlaybackFacts = DetailPlaybackFacts(
         landscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE,
-        portraitVideo = playContainer?.isPortraitVideo() == true,
     )
 
     private fun releasePlayContainer() {
@@ -193,6 +200,7 @@ class DetailActivity : BaseActivity(), PageHost {
         val container = ensurePlayContainer()
         cancelCastWait()
         container.endCastPrepare()
+        container.clearCastAbort()
         val session = vm.preparePlaySession()
         if (session == null) {
             container.clearSourceSwitchTip()
@@ -203,7 +211,11 @@ class DetailActivity : BaseActivity(), PageHost {
 
     fun ensurePlaying(): PlayContainer {
         val container = ensurePlayContainer()
-        if (!engineOwnsDetailContent()) playCurrent()
+        if (!engineOwnsDetailContent()) {
+            playCurrent()
+        } else {
+            container.ensurePlaybackActive()
+        }
         return container
     }
 
@@ -334,21 +346,17 @@ class DetailActivity : BaseActivity(), PageHost {
         playContainer?.setAutoSwitchLineEnabled(!full)
         if (fullScreen == full) return
         fullScreen = full
-        requestedOrientation = if (full) {
-            val container = ensurePlayContainer()
-            when (DetailPlaybackOrientation.target(container.hasVideoSize(), container.isPortraitVideo())) {
-                DetailPlaybackOrientation.Target.Portrait -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
-                DetailPlaybackOrientation.Target.Landscape -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-            }
-        } else {
-            orientationPolicyValue()
-        }
+        requestedOrientation = orientationPolicyValue()
         if (full) {
             armVideoSizeWatch()
             hideSysBar()
         } else {
+            videoSizeWatchArmed = false
+            playContainer?.setVideoSizeReadyListener(null)
+            window.decorView.removeCallbacks(videoSizeTimeoutRunnable)
             val controller = WindowCompat.getInsetsController(window, window.decorView)
-            controller.show(WindowInsetsCompat.Type.systemBars())
+            controller.show(WindowInsetsCompat.Type.navigationBars())
+            applyHideStatusBarPref()
             applyStatusBarAppearance()
             window.decorView.postDelayed({
                 if (!isFinishing && !isDestroyed) applyStatusBarAppearance()
@@ -357,18 +365,13 @@ class DetailActivity : BaseActivity(), PageHost {
         syncFullBoxSideEffects()
     }
 
-    fun applyPlaybackOrientation(portraitVideo: Boolean) {
-        if (!fullScreen) return
-        requestedOrientation = if (portraitVideo) {
-            ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
-        } else {
-            ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-        }
-    }
-
     private fun armVideoSizeWatch() {
         val container = playContainer ?: return
-        if (container.hasVideoSize()) return
+        if (container.hasVideoSize()) {
+            applyVideoOrientation(container.isPortraitVideo())
+            return
+        }
+        if (videoSizeWatchArmed) return
         videoSizeWatchArmed = true
         container.setVideoSizeReadyListener { portraitVideo -> onVideoSizeReady(portraitVideo) }
         window.decorView.postDelayed(videoSizeTimeoutRunnable, VIDEO_SIZE_WATCH_TIMEOUT_MS)
@@ -379,19 +382,32 @@ class DetailActivity : BaseActivity(), PageHost {
         videoSizeWatchArmed = false
         window.decorView.removeCallbacks(videoSizeTimeoutRunnable)
         playContainer?.setVideoSizeReadyListener(null)
-        vm.onVideoSizeResolved(portraitVideo)
-        applyPlaybackOrientation(portraitVideo)
+        applyVideoOrientation(portraitVideo)
+    }
+
+    private fun applyVideoOrientation(portraitVideo: Boolean) {
+        if (!fullScreen || portraitVideo) return
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
+        settleRotationAfterExit()
+    }
+
+    fun settleRotationAfterExit() {
+        if (!vm.rotating.value) return
         vm.rotating.value = false
         syncFullBoxSideEffects()
     }
 
+    fun setPlayerTouchBlocked(blocked: Boolean) {
+        playContainer?.setTouchBlocked(blocked)
+    }
+
     fun isFullBox(): Boolean {
         val landNow = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
-        return if (vm.rotating.value) !landNow else fullScreen
+        return DetailFullScreenFrame.playerFullScreen(vm.rotating.value, fullScreen, landNow)
     }
 
     private fun syncFullBoxSideEffects() {

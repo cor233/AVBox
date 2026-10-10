@@ -368,7 +368,7 @@ interface 'com.github.catvod.spider.merge.Pu' in call to
 ## 竖屏详情页:进度行播放/暂停钮 + 双击暂停(2026-09-13,附截图要求)
 
 - **诉求(「竖屏详情页面应该支持双击播放器区域两次把视频暂停」。
-- **落地 1 - 暂停钮(`PlayerBottomBar.kt`)**:预览态(`state.previewMode`)进度行行首插入 `PreviewPlayPauseButton` —— 触摸盒 **40dp**、`player_ic_pause/play` 图形 **22dp**、`ColorFilter.tint(White 90%)`,与详情页右下角全屏入口(`DetailActivity`:40dp 盒 + 9dp padding + 90% 白 tint = 22dp 图形)完全同款;点击走 `actions.onPlayPauseClicked()`(带 500ms 防抖);图标状态判定含 `BUFFERING/BUFFERED`(同 `PlayerCenterControls`,dkplayer 缓冲结束停在 STATE_BUFFERED)。
+- **落地 1 - 暂停钮(`PlayerBottomBar.kt`)**:预览态(`state.previewMode`)进度行行首插入 `PreviewPlayPauseButton` —— 触摸盒 **40dp**、`player_ic_pause/play` 图形 **22dp**、`ColorFilter.tint(White 90%)`,与详情页右下角全屏入口(`DetailActivity`:40dp 盒 + 9dp padding + 90% 白 tint = 22dp 图形)完全同款;点击走 `actions.onPlayPauseClicked()`(**该路径的 500ms 防抖已于 2026-10-10 整体删除**,见本页末尾「播放器覆盖层:删 500ms 点击防抖 + 零涟漪按压弹性」);图标状态判定含 `BUFFERING/BUFFERED`(同 `PlayerCenterControls`,dkplayer 缓冲结束停在 STATE_BUFFERED)。
 - **落地 2 - 三者同一水平线(关键计算)**:行高从 `vs_30`(≈24dp)变 40dp(按钮盒决定),若底距仍 16dp 则行中心上移 8dp、与全屏入口错位。故预览态底距改为 `16dp + playerDim(vs_30)/2 - 40dp/2`(= **DetailActivity 全屏入口 `bottom` 偏移的同一式子**) → 行中心 = 16 + vs_30/2,与全屏入口中心、以及**改动前进度条的中心线完全一致**(进度条只是被 40dp 盒垂直居中,自身位置未动)。⚠️ 两处式子必须同步改。
 - **落地 3 - 双击暂停(`ComposeVideoController.kt`)**:`onDoubleTap` 去掉 `if (previewMode) return false` 提前返回(守卫 `isDoubleTapTogglePlayEnabled && !isLocked() && isInPlaybackState()` 保留),`onTouch` 的预览态分支注释同步更新。**副作用(固有)**:GestureDetector 语义下单击显隐要等双击窗口超时(~300ms)才 `onSingleTapConfirmed`;预览态滑动/长按仍不响应。
 - **验证**:`.\gradlew :app:installDebug --console=plain` → BUILD SUCCESSFUL(35s),已装 `V2425A - 16`;read_lints 无诊断。
@@ -3876,6 +3876,24 @@ echo-exo-player-error: code=ERROR_CODE_UNSPECIFIED, msg=Unexpected runtime error
 
 **验证**:`read_lints` 0;`assembleDebug` BUILD SUCCESSFUL(UI 小改不跑单测);装机 `06:07:35`;新增/改动文件行尾统一 LF(同目录既有 drawable 的 CRLF 是既有状态,未动)。**待走查**:图标+文字在半宽按钮内的观感(横竖屏)。代码未提交。
 
+### 进度统计收敛为引擎级单写入者(2026-10-11,步 1 + 步 2)
+
+**背景(用户报告)**:音乐播放页听歌 → 页内换集 → 历史记录百分比从不统计。根因 = 历史百分比(`PlaybackProgress`)的唯一写入方是**页面级** `VideoPlayerController` 的进度心跳,而音乐页不装该控制器(详情页移交音乐页时 `PlaybackEngine.detach(keepPlayback=true)` 里 `videoView.releaseController()` 已把它摘掉);换集时 `PlaybackStarter.play()` 又会先 `PlaybackProgress.onEpisodeStartNoScroll()` 清百分比 ⇒ 换集后连残留值都没有。附带确认:续播位置(`WatchProgressStore`)不受影响,坏的只是"历史百分比"这一路。
+
+**步 1(单写入者)**:新增 `player/PlaybackProgressSampler.kt`(引擎持有)—— `onPlayStateChanged` 由引擎的 `playStateFlow` 收集器驱动:`PLAYING` 立即采样 + 之后每 5s 一次(同一份样本同时写位置与百分比);`PAUSED`/`IDLE` flush 并按需发 `TYPE_HISTORY_REFRESH`;`COMPLETED` `markFinished`;直播态不采样。引擎 `progressSink`(`AppPlayerView.saveCurrentProgress` 的显式落盘点:切集前 / detach / release / 同址重播前 / onSaveInstanceState / onCompletion 清 0)改为转交采样器 ⇒ **四条落盘时点与清 0 语义不变**。`VideoPlayerController` 的 `PlaybackProgress` 调用、`savePlaybackProgress`、`saveGestureProgress` 及 `PlayerActionsDelegate` / `VideoGestureActionsImpl` 的连带调用整体删除(控制器只留 UI 心跳)。音乐页与无页面(无头)起播因此**自动**被统计,页面零改动。
+
+**步 2(存储口径)**:`PlaybackProgress` 写入口改显式 `vod: VodInfo?` 入参(不再经 `PlaybackPorts.currentVod` 归属,统计归属回到"引擎当前 session");KV 值从纯 int 升为 `{"p","d","t"}`(读取兼容旧 int;超限淘汰按 `t` 升序、旧格式视为 0 先淘汰,`pickEvictions` 抽出可单测);`onEpisodeStart` 增无痕早退(无痕不再删/改既有数据);`LIMIT` 与 `EpisodeTotals` 统一引用 `WatchProgressIndex.MAX_TITLES`。
+
+**与最初计划的两处偏差(有意)**:①**"起播清百分比"仍留在 `PlaybackStarter`**(引擎侧单一入口,不是页面)—— 改成"采样器检测 key 变化即清"会漏掉"同集重播/重试"这类 key 不变的场景(旧百分比会先被显示到 30s 门槛才涨),且异步清与起播不同步;②**未把百分比并进位置存储** —— "播完清续播点(=0)"与"显示已看完(=100%)"在语义上必须分开(所以纯派生方案自相矛盾),保留为"单写入者产出的投影",读取成本也更低(历史页一次 KV 读 vs 每片一次缓存读)。
+
+**审查(两轮只读)**:第一轮 1 高 3 中已修 —— ① `onSinkSave` 补 `ProgressSampling.switchInFlight(startedKey, progressKey)` 门禁(切换在途拒写:防把 A 内容的位置/百分比写到 B 内容的键上;任一 key 为 null 放行,保住"进直播前 detach 落盘""投屏只解析"等既有语义);② `markFinished` 同门禁(自动连播时同步链已清掉百分比,避免再写回 100% 残留;无下一集 key 未变仍写 100%);③ `PlaybackEngine.HeadlessView.startVideoPlayback` 补齐 `videoView.setProgressKey(...)` 并与两个页面桥同序(顺带修 `if (isSameStartedContent())` 在 `markContentStarted()` 之后恒真的同义反复,以及"无页面起播没有续播点");④ 超限淘汰按 `t`。第二轮 0 中/高,遗留 3 条低:队列写可能把同步 flush 的值回退 1%(旧代码同构)、`START_ABORT`/`ERROR` 不 flush(与旧控制器一致)、`switchInFlight` 与 `KernelReusePolicy.isCrossContentSwitch` 两套"切换"判据并存(更严格者用在写入点,统一留待后续)。
+
+**验证**:`.\gradlew.bat :app:assembleDebug :app:testDebugUnitTest` BUILD SUCCESSFUL;**915 用例 / 0 失败 0 错误 1 跳过**(新增 `PlaybackProgressSamplerTest` 5 条、`PlaybackProgressTest` +4 条)。**装机未做**:2026-10-11 `adb devices` 为空(设备未在线),APK 已就绪 `app/build/outputs/apk/debug/AVBox_debug.apk`。代码未提交。
+
+**走查判据**见 `avbox-playback-service-spec.md` §4-21。
+
+**当日走查反馈补丁(用户报告"拖到 20 分钟立刻退出,历史百分比还是旧值 / 感觉要停留 5 秒才统计")**:根因两条、都在本次重构里 ——① **误删了"seek 立即落档"**:旧 `VideoPlayerController.savePlaybackProgress(seekTargetMs)` / `saveGestureProgress` 会让拖动结束时立刻写库,重构后只剩"播中每 5s"与"退出落档",于是拖动后立刻退出要靠退出那次写、且界面不刷新;**修法** = 拖动结束(进度条 / 手势 / 音乐页 seek)后页面调 `view.saveCurrentProgress()`(仍走 `ProgressSink` → 采样器,不引入页面写库),百分比写成功即发 `TYPE_HISTORY_REFRESH`;② **暂停/停止的 flush 只在"百分比变化时才发历史刷新事件"**(二轮审查把它记成"无可见影响",实测可见:值已写但历史页不刷新 ⇒ 看起来"没统计") —— 改为**采到有效样本就无条件发**(与旧控制器 `notifyHistory` 同义);sink 侧写成功也发。`echo-progress flush` 日志补 `written=` 便于走查。915 用例绿、`assembleDebug` 绿;仍未装机/未提交。
+
 ### 收藏页布局(三列/双列) + 偏好设置新增一项(2026-09-30)
 
 **现状**:收藏页列数 = `WindowSize.gridColumns(availableWidth, minColumns = 2)`(按宽度算、下限 2)⇒ 手机档恒双列。
@@ -4988,3 +5006,541 @@ new-instance v2, Lorg/json/JSONArray;  invoke-direct {v2, v1}      # new JSONArr
 **验证**：`:app:assembleDebug` 绿、`:app:testDebugUnitTest` **794 例 / 0 失败**（新增 `LiveChannelRowsTest` 9 / `LivePlayViewModelChannelListTest` 7 / `LiveSettingsSnapshotTest` 12 / `LivePlayViewModelSettingsTest` 5 / `LivePlayUiStateTest` 5）；门脚本 `.codebuddy/tools/live_state_gate.py` **4/5**（判据 1 反射桥零、2 计数器与裸表达式零、3 组合期零 IO、5 Composable 签名零；判据 4 行数未达标，另立拆分项）；活规范 §6.2 与 §4.5 已改写 + `.codebuddy`/`.trae` 镜像同步。
 
 **待办**：真机走查（片 1–5 合并一次，判据见方案档 §5 六条 + 各片专项）；两个宿主文件按簇拆分（方案档 D10）。
+
+## 2026-10-09｜音乐页往返后画面卡/黑数秒 + 两渲染模式播放报错（修复 + 音乐页方案反转）
+
+**现象（用户报告）**：surface 渲染 + 开调色/Anime4K 播放中进音乐播放页 → 退出 → 点播放进全屏，画面卡住/黑屏 4~10 秒后自愈（有声音）；改用 texture 渲染重走同一路径则**播放报错**（`Unexpected runtime error` → 自动重播）。
+
+**取证**：`files/preload_debug.log` + `logcat`。①"卡住"= 帧心跳空洞 4~10s，空洞期系统 GL 层 `EglImage dataspace changed` **0 条**（恢复瞬间 21 条）⇒ 视频管线真停着；②报错栈 = `MediaCodecVideoRenderer.handleMessage:1285 → Preconditions.checkNotNull` ⇒ 两条路径都是"输出面尺寸信令抢跑（空输出面）"。
+
+**根因与修法**：
+1. **音乐页停视频解码**（`setAudioOnlyMode` → 禁用视频渲染器 + 切 TextureView + 容器搬进 1x1 `renderSlot`）⇒ 退出时渲染器重建、解码器从当前位置继续但未对齐关键帧，只能干等下一个 I 帧（4~10s）。**修法（用户拍板）= 音乐页不再停解码、容器不再搬进 1x1 槽位**：`setMusicAudioOnly` 只维护标志；`ensureAudioOnlyRender` 删"音乐页强制切 Texture"分支（纯音频仍切，2026-09-13 洞穿修复保留）；`PlaybackEngine.attach` 对音乐页跳过 `attachContainerTo`。
+2. **输出面尺寸信令抢跑** ⇒ media3 对空输出面 `checkNotNull` 打 NPE。**修法（双层）**：`PlayerEngine` 新增 `outputSurfacePresent`（与 `videoOutputInvalid` 解耦——后者语义是"渲染器禁用"，`detachVideoSurface()` 刻意不置它）+ 面未就绪时记账、`setVideoSurface(有效)` 后补发；`ReplayableCacheVideoRenderer.handleMessage` 对空面消息兜底丢弃（日志 `drop output-size (surface null)`）。
+
+**验证**：`assembleDebug` 绿、`testDebugUnitTest` **794 例 / 0 失败**（1 skipped）。装机实测（NPE 修复与补发机制）：音乐页往返不再有 `player-error`，`drop output-size (surface null)` 与 `surfacePresent=false → true` 补发按预期命中。**待真机走查**：surface / texture 各走一遍音乐页往返（预期退出零 `codec-init`）；纯音频源进音乐页仍应 `create TextureView`、退后台快照不变白；听歌期间多耗一点电属预期代价。
+
+**文档**：`avbox-playback-service-spec.md` §3.8（取消"音乐页例外"、新增"输出面尺寸信令必须晚于输出面设置"）+ §7.4 两行 + §8 修订记录；`.codebuddy` / `.trae` 两镜像同步。
+
+## 2026-10-09｜服务被系统回收导致内核丢失（按预热开关决定保留，含两轮审查修复；用户拍板）
+
+**现象（用户报告）**：暂停态退后台约 40 秒再回前台，视频重新缓冲。用户追问"要不要把内核复用也做到这个场景、会不会打回已修的 bug"。
+
+**取证**：`files/preload_debug.log`。13:44:53 退后台 → **13:45:16 `echo-p2 host onDestroy`**（服务被系统回收；日志文件时间连续 ⇒ 进程活着、排除进程被杀）→ 13:45:35 `echo-p2 engine create` → 13:45:36 `codec-init`。同期日志有 `idle release suppressed: kernel prewarm on` ⇒ **用户开着内核预热**：detach 路径本就不释放内核，唯独"服务回收"这条 `onDestroy → releaseEngine()` 无视预热强杀，语义自相矛盾。
+
+**修法（终版，六条）**：
+1. `PlaybackService.onDestroy` 不再无条件 `releaseEngine()`，停会话后调 `PlaybackEngine.keepKernelAfterServiceDestroy()`；轻量清理**仅** `stopParse()` + `stopLoadWebView(true)`（WebView 有懒重建）—— `releaseFetch()`/`destroyPreload()` **刻意不调**（二者无重建路径，只有 `PlaybackEngine.init` 会 `initFetch`/`initPreload`，调了会让回前台起播的取流结果无处投递、预载永久失效）；也不调 `page.onServiceStopped()`、不清 `sessionFlags`（否则页面会放弃活引擎引用）；`PlaybackService.updateSession` 遇 `isServiceLostKept()` 跳过：防 `pause()` 派发的状态更新把刚被回收的服务**反向拉起**（Android 12+ 抛 FGS 异常 / 留下 `pendingStart`）；
+2. **总闸 = 预热开关**（与空闲释放同口径）：预热关或直播态 `liveMode` ⇒ 完整释放（日志 `engine released (service destroyed, keep off)`）；预热开 ⇒ 保留内核。原"15 分钟兜底计时"经审查后**整体删除**（会在页面存活时释放引擎、音乐页无复活入口；回收改由页面 `detach`→60s 空闲收敛）；保留前**先 `pause()`**（否则服务已撤通知却仍出声），恢复点记在 `serviceLostWasPlaying`；
+3. `onTaskRemoved`（划掉任务）置标志，`onDestroy` 走 `releaseEngine()` **完整释放**（取证 `engine released (task removed)`），与"系统回收"区分；
+4. 页面回来调 `consumeServiceLostKeep(resumePlayback)`（`PlayContainer.hostResume` 传 `ownsEngineContent()`、音乐页 `MusicHost.hostResume` 传 `true`）：复位标记 + 按需恢复被停播放 + 触发一次会话更新让服务/通知重建（回前台那次 `session update with no live service` 属**预期**）；新页面 `attach` 也清标记但**不**恢复播放；`enterLiveState()`/`release()` 一并清标记；`PlayContainer.hostResume` 中该调用排在"重建渲染视图"**之后**（先换面、后起播）。
+
+**审查轮（两轮子代理只读审查 + 复核）**：第一轮 1 高 4 中全部闭合 —— 高 = `pause()` 反向拉起服务（由修法 1 的 `updateSession` 守卫闭合）；中 = live 被冻结且计时失效、兜底计时造成"页面存活时释放引擎且音乐页无复活入口"、标志复位时机、恢复播放无所有权校验（分别由修法 2/3/4 闭合）。第二轮 3 中 + 1 中待证 —— ① §4-19 判据与实现冲突（回前台那次 `session update with no live service` 是预期）→ 已改判据；② `attach` 与 `hostResume` 双消费者顺序耦合 → 复核判定**伪问题**（`reattachIfOwnedByOther` 在 `attachedPage() === this` 时早退，仅"引擎被别的页面接管"才 attach，那时本不应恢复播放）；③ `enterLive*` 漏清标记 → 已修；④ 恢复播放排在"重建渲染视图"之前 → 已交换为"先换面、后起播"。剩余低项（`pendingStart` 残留致通知一闪[既有]、`onEngineReleased` 日志措辞、`updateMusicSession` 所有权、非主线程分支）登记不修。第三轮（收尾判定）：**无阻断/无高**；1 条中级为**既有**（预热关 + 服务回收时音乐页无引擎复活入口，`onServiceStopped` 仅撤回调）→ 转文档已知限制（§4-19 / R10）；顺带补 `enterLive()` 清标记（与 `enterLiveState()` 对称）；其余低项登记（同帧双换渲染面[既有]、`PlaybackEngine.hostResume` 死代码[既有]、保留态回前台"新建 Surface→`surfaceCreated`"窗口内起播的真机首帧确认）。
+
+**实施前审查（对照已修 bug）**：① 离屏层黑屏修复（`rebuildRenderViewAfterBackground` 守卫 `view.mediaPlayer == null`）——内核保留后守卫不成立，重建视图**照常执行且比现状更完整**；② 残留容器（`release()` 内 `detachContainerFromHost`）——保留内核时不触发该路径；③ 画面开关旧效果链（`requireKernelRebuild` 判定独立于内核存活期）。三条均**不受影响**；无 Activity 泄漏（引擎内部统一 `applicationContext`、`pageRef` 是 `WeakReference`、视图用 `ContextThemeWrapper(appContext)` 创建）。
+
+**验证**：`assembleDebug` 绿、`testDebugUnitTest` **794 例 / 0 失败**；已装机。**待真机走查**（§4-19）：预热开时暂停态退后台等 `host onDestroy` → 回前台直接续播、无 `engine create`/`codec-init`、且 `session update with no live service` **恰好一次**（回前台那次属预期）；预热关同一路径见 `engine released (service destroyed, keep off)`；划掉任务见 `engine released (task removed)`。
+
+**文档**：`avbox-playback-service-spec.md` §1 + §3.3「服务被系统回收时的内核去留」+ §4-19 + R10 + §8；`.codebuddy` / `.trae` 两镜像已同步。
+
+## 2026-10-09｜投屏「只解析」加固（castAborted：收摊后迟到地址与自动重试一律拒绝）
+
+**触发**：用户报告"影视海报页点投屏，有概率出现该资源的声音"（当日无法复现，属预防性加固）。方案档 `文档/cast-resolve-only-hardening-plan.md`（本地不入库）。
+
+**窗口分析（静态）**：投屏等待窗口只有 5 秒（250ms × 20 轮询），超时即 `endCastPrepare()` 撤掉唯一门禁 `castPrepareOnly`；而解析超时（15s）/起播超时（20s）定时器**不随之取消**，已启动的 M3U8 净化也可能晚于收摊交付 ⇒ 四条漏声链：W1 15s 解析超时 → `tryNextLine` → 重新解析起播；W2 迟到解析失败 → 同族换线；W3 20s 起播超时 → `autoRetry`（嗅探 / 原样重播 / 软解 / 重解析）；W4 净化完成晚于收摊 → 此时 `goPlayUrl` 的门禁已被撤。形态 = 详情页未进全屏、容器 0 高 ⇒ **有声无画**。
+
+**修法（三刀，全部落地）**
+
+1. **刀 A｜会话级 `castAborted`**：`PlaybackAttemptState.castAborted`（**置位点唯一** = `PlaybackController.closeCastPrepare()`，含"正常拿到地址"那一次）；`PlaybackStarter.goPlayUrl` 丢弃迟到地址（入口 + UI Runnable 内各一次，后者堵"入口判定通过后收摊"的竞态，与同处 `switchStopPending` 守卫同因），两处都 `cancelPlayTimeout()` 防定时器补枪；清除点 = `PlaybackAttemptState.beginSession()`（每轮 `setData` 必经，放状态类里保证不漏）+ 用户起播漏斗（`DetailActivity.playCurrent()`、`PlayContainer.ensurePlaybackActive()` —— 护住"同片续播 / 音乐入口不走 `setData`"的路径）。
+2. **刀 B｜自动重试入口统一"只提示不重试"**：`PlaybackRetryDelegate.dropRetryIfCastAborted(reason)`（`cancelPlayRequest` + `stopParse` + `cancelPlayTimeout`）接入 5 个入口 —— `handleResolvePlayUrlTimeout` / `handleResolvePlayUrlFailed` / `handleSwitchLinePlayTimeout` / `autoRetry` + **`retryAfterStartedError`**（计划外第 5 个：音乐页 `MusicSessionDelegate` 与错误浮层 `errorWithRetry` 也会自动调它，不拦就是新窗口）；`tryNextLine` / `retryWithFreshResolve` / `trySoftDecodeFallback` 在 `autoRetry` 下游自然覆盖。
+3. **刀 C｜收摊补齐定时器取消**：`PlayContainer.endCastPrepare()` 补 `scheduler.cancelPlayTimeout()`（此前只有 `abortIfCastPrepare` 那条有）。
+
+**刻意不做**：① 不用 gen 值比对 —— `startSession()` 每轮 `resetGen()`，某一轮涨到同值会误丢正常起播；② 不在 `beginNewPlay()` / `stoppedForSourceSwitch()` 清标记 —— 自动重试会走这些同会话复位路径，清了等于开门（`PlaybackCastAbortStateTest` 锁住该不变量）。
+
+**验证**：`:app:assembleDebug` 绿、`:app:testDebugUnitTest` **800 例 / 0 失败**（原 794 + 新增 `PlaybackCastAbortStateTest` 6 例：初值 / 置位与清除 / `beginSession()` 清除 / 同会话复位不清 / 不动 `playbackStarted`）。`LOG.FILE_LOG_PREFIXES` 补 `echo-cast`（vivo 吞 logcat，应用内文件日志才是可读通道；既有的 `echo-cast prepare ...` 同样一直读不到）。
+
+**行为变化（走查勿当回归）**：① 投屏 + 净化开时投屏地址回落源地址（与 `getCastUrl` 现有还原一致）；② 投屏放弃/超时后不再自动换线，只给提示；③ 因刀 C 取消定时器，慢源投屏不再出现 15s 超时提示，而是 5 秒到点弹设备列表 + `toast_no_cast_url`。
+
+**待真机走查**（§4-20）：海报页投屏三种（普通源 / M3U8 净化开 / 附近TVBox 推送）能拿到地址并推成功；全屏与音乐页投屏成功后本地暂停；投屏后手点播放、关弹窗后手点播放均能正常起播；专项 = 自动换线开 + 慢源（解析 >15 秒）投屏**无声音**且日志见 `echo-cast abort ...` / `drop late play url` 而**无** `echo-goPlayUrl:`。设备未在线，APK 未装。
+
+**文档**：`avbox-playback-service-spec.md` §3.9 + §4-20 + §8；`.codebuddy` / `.trae` 两镜像同步。
+
+**审查修复轮（同日，两轮只读子代理审查 + 逐条复核）**
+
+- **中级（本次引入）：清除点漏项** —— 投屏收摊后，不经过 `setData` / `playCurrent` / `ensurePlaybackActive` 的 4 类"用户显式起播"入口会被 `goPlayUrl` 门禁**静默**吞掉：① 详情页画质胶囊（`DetailPlaybackPolicy.Quality` → `DetailViewModel.onQualityClick` → `PlayContainer.selectQuality` → `MusicSessionDelegate.selectQuality` → `host.playUrl`/`initParse`）；② 全屏「刷新 / 换内核 / 换软解」（`PlayerActionsDelegate.onRefreshClicked` → `replay(false)` → `replayCurrentAddress` → 直调 `goPlayUrl`）；③ 上一集 / 下一集（控制栏与通知栏 NEXT/PREV，`playNext/playPrevious` → `playViaScheduler` → `play()`）；④ 换解析接口（`changeParse` → `doParse`）。修法 = 4 处一行清除：`PlaybackController.play()`、`PlaybackController.selectQuality()`（**先清再转调**：净化关时它同步走到 `goPlayUrl`，后置清除来不及）、`PlaybackController.doParse()`、`PlayContainer.replayCurrentAddress()`。**清点依据**：穷举核对 `autoRetry` / `tryNextLine` / `tryNextLineIfEnabled` / `retryWithFreshResolve` / `trySoftDecodeFallback` / `retryAfterStartedError` 的全部调用方，自动路径能到达 `play()` 的只有那 5 个已拦入口的下游，故 `play()` 可安全当"用户起播"入口（`ensurePlaybackActive` 顺带统一走容器转发方法）。走查前未清标记时，画质胶囊 / 全屏刷新 / 上下集 / 换解析都是"点了没反应"，属用户可见回归。
+- **低（本次引入，登记不修）**：① 三处 drop 分支附带 `stopMusicSessionForFailedPlayback()` + 超时提示 —— M3U8 净化分支（`PlaybackStarter.playUrl` 先武装 20s、净化交付不经 `goPlayUrl`）在净化不交付时 20s 后可达，当前路径下无对象可撤会话，仅一次多余提示；② `castAborted` 非 volatile（写点全主线程，读点可来自嗅探 / Thunder 回调线程，无实测判据；与既有 `castPrepareOnly` 同风格）；③ `clearCastAbort()` 不作废在途净化交付（有 `PlayLoader` seq 与 jx/嗅探 gen 兜底，且被接受地址通常正是用户当下要播的内容）；④ `PlaybackFetch.handlePlayResult` 不在拦截面（收摊后预载通道的一次交付仍会执行 `setWebPlayUrl(null)` 等副作用，起播本身已拦）；⑤ 新增不变量"用户起播入口必须先清 abort"无静态判据，已改写进 §4-20 必走清单替代。
+- **文档同步**：§3.9 重写（清除点清单 + 五入口"统一不重试（提示由调用方决定）"措辞改正 + 日志前缀写全 + 说明 `abort set` 在投屏成功路径同样打印，判"放弃"要看有没有 `keep playback off`）；§4-20 补"放弃投屏后逐个走一遍用户起播入口"必走清单；§8 补修订行；`LOG.FILE_LOG_PREFIXES` 再补 `echo-resolvePlayUrl` / `echo-playM3u8`（归因侧证据，原判据只依赖 `echo-cast` / `echo-goPlayUrl` / `echo-autoRetry`）。
+- **验证**：`:app:assembleDebug` 绿 + `:app:testDebugUnitTest` **800 例 / 0 失败**（本修复轮未加单测：清除点是调用点，纯 JVM 不可覆盖，判据交给 §4-20 真机走查）。
+
+**第二轮审查（同日，独立只读 ×2 + 文档对账，结论：可收尾）**
+
+- **代码侧无阻断/无高/无中**：5 个清除点的全部调用方逐条追溯后确认"无非用户自动路径能清 `castAborted`"（`PlaybackHostApi` / 通知栏 / 媒体会话 / 音频焦点 / 内核 ERROR 自恢复 / HLS 切片重试 / 预载完成 / 直播接管 / DLNA 出口逐个排除；重试链 `host.play(false)` 的两处上游守卫逐条列出）；每个清除点都是"先清后判"；上游入口穷举后无"不清且可达"的新遗漏；上一轮四类入口全部闭合。
+- **本轮修掉两条低项**：① `castAborted` 加 `@Volatile`（`goPlayUrl` 入口判定可在 `PlayUrlResolver` 的线程池执行，本类其它字段只在主线程读；不加则存在"后台线程读到旧值 → 空 URL 分支 → `play(false)` 在后台把标记写回 false"的理论链）；② 单测 `abortSurvivesPlayLevelResets` 补 `userSelfRescue()`。
+- **文档判据修 3 处（第二轮主要产出，均为本轮自己写错）**：① §3.9 "自动地址一律在 `goPlayUrl` 被拦"收窄 —— 净化**启动**分支与无页面 `HeadlessView` / 音乐页桥的交付不经 `goPlayUrl`（投屏窗口内页面必在 ⇒ 不可达，登记为脆弱点）；② §4-20 删掉"伴随 `echo-resolvePlayUrl timeout` / `echo-autoRetry`"——收摊（刀 C）已取消 15s/20s 定时器、drop 闸门又在重试入口之前，这些行**不应**出现；③ `echo-goPlayUrl:` 判据改为"其后不得有起播证据（`echo-setDataSource` / `codec-init`）"——它打在入口判定之前，竞态下会与 `drop late play url` 同时出现。另：§4.4（UI 活规范）补 §3.9 交叉引用、`SKILL.md` 文档地图 §4 编号补 19/20、方案档 §7.3 判据改写。
+- **登记不修（低）**：错误浮层的"重试"入口与自动重试共用方法被一并拦（有播放胶囊/刷新/画质三条替代路径）；净化启动/无页面交付不在拦截面；三处 drop 分支附带的提示与会话收摊；`clearCastAbort()` 不作废在途净化交付；`PlaybackFetch.handlePlayResult` 不在拦截面；无静态判据守"起播入口必清"；`.codebuddy/skills/android/features.md` 是 `history/features.md` 的多余顶层副本。
+- **验证**：`:app:assembleDebug` 绿 + `:app:testDebugUnitTest` **800 例 / 0 失败**。
+
+## 2026-10-09｜进播放改为「默认竖屏 + 播放器右滑入」（旋转方案弃用后的替代设计）
+
+**背景**：当日两版"整页旋转"尝试（复用系统 rotating / 应用内自绘）均被用户回退后，用户提出新方向："点击全屏后默认进入竖屏播放，播放器从右向左滑出，像系统 activity 转场"。选「同 Activity 内滑入」路线。
+
+**关键判断（修正早前结论）**：早前判断"SurfaceView 不参与 View 层动画"只对 **alpha / 缩放 / 旋转**成立；**纯平移会跟随**（Android 7+ surface 位置由 View 位置驱动）⇒ 用**布局偏移**（`Modifier.offset`）而不是 `graphicsLayer`，视频画面就能跟着滑入，无需切 TextureView、也无需独立 Activity/Dialog 窗口。
+
+**实现**
+1. **方向改默认竖屏**：`applyFullscreen` 只设 `orientationPolicyValue()`（手机 = 锁竖屏），删掉"按片源转横屏"与"尺寸监听纠正"整链（`DetailActivity` 的 `applyPlaybackOrientation`/`armVideoSizeWatch`/`onVideoSizeReady`/`videoSizeTimeoutRunnable`/`VIDEO_SIZE_WATCH_TIMEOUT_MS` + `DetailPlaybackOrientation` 对象 + 其测试文件）；容器侧随之无用的 `setVideoSizeReadyListener`/`notifyVideoSizeReady` 与 `ComposeVideoController.onVideoSizeReady` 一并删除（含两个 import）。横屏片源在竖屏里按比例适配，用户可用播放器自带旋转按钮手动转（`PlayerActionsDelegate.onRotateClicked` 直接改 `requestedOrientation`，与本次改动无耦合）。
+2. **播放器层提升为覆盖层 + 右滑入**：`DetailScreen` 结构从 `Column { 播放器盒子(0 高度/全屏) ; 内容 }` 改为「背景 → 内容层（可左移）→ 播放器覆盖层（可右移）→ 拦截层」；滑入用 `Modifier.offset { }`、300ms `FastOutSlowInEasing`，海报内容同步左移 20%；播放器层在非全屏时停在右侧屏外（容器保持全尺寸 ⇒ 起播与滑入并行、落位即出画，且**不改尺寸** ⇒ 不触发渲染面重建）。
+3. **状态与边界**：VM 新增 `enteringFullscreen`；滑入结束 `onEntrySlideFinished()` → `fullScreen = true` 切第二张脸；滑入期加交互拦截层；返回键 = `cancelEntrySlide()` + `stopForExitFullscreen()`（停播保内核）。`DetailPlaybackPolicy`、三条进播放的路、退全屏语义均不变（`rotating` 仅剩退全屏在用）。
+
+**验证**：`:app:assembleDebug` 绿 + `:app:testDebugUnitTest` **797 例 / 0 失败**（删除的 `DetailPlaybackOrientationTest` 3 例中 2 例与 `DetailPlaybackCommandsTest` 同构；1 例"尺寸未就绪 ⇒ 保持竖屏"**无等价覆盖**，该语义现由 `armVideoSizeWatch` 早退分支承担、无常驻单测）。设备未在线，未装机。
+
+**审查轮修复（同日；两路子代理只读审查 + 逐条复核）**
+- **真回归（已修）**：① **全屏内换集重放滑入** —— 播放器底栏「选集」→ 面板点集 → `applyPlaybackEntry(Episode)` → `enterFullscreen()` 缺"已在全屏"守卫，播放器被拽出屏外再滑回 300ms（改动前 `fullScreen.value = true` 是幂等的）；修法 = `enterFullscreen()` 加 `if (fullScreen.value || enteringFullscreen.value) return`。② **幻影全屏** —— `onEntrySlideFinished()` 无状态校验，与"滑入中取消"同帧时会把 `fullScreen` 置 true、停在"伪全屏 + 已停播"；修法 = 加 `if (!enteringFullscreen.value || exitingFullscreen.value) return`。③ **横屏退全屏露空底** —— `rotating=true` ⇒ `fullBox=true` ⇒ 海报内容层整层不渲染，滑出只揭开模糊底；修法 = 内容层与 TopScrim 可见条件改 `!fullBox || exitingFullscreen`。④ **滑出与方向切换并发致位移跳变** —— `slideWidth` 实时读 `LocalConfiguration`，系统旋转落地时按新宽度重算；修法 = 转场开始时快照宽度（`slideWidthDp`）。⑤ **退全屏未清尺寸 watch**（跨会话残留 listener/定时器，且 `if (videoSizeWatchArmed) return` 会静默跳过重新武装、10s 预算不刷新）—— 修法 = `applyFullscreen(false)` 里一起清 armed/listener/定时器。⑥ 退出入口加守卫：`onFullScreenToggleRequested(false, …)` 在"既不在全屏也不在滑入"时直接 return（收掉 `onNewIntent` 于海报页的无效退全屏路径）。
+- **驳回**：审查提出"滑入期 D-pad/键事件不被拦截" —— 本项目只面向手机用户、无遥控器输入，不适用。
+- **登记不修（低）**：滑入 300ms 内播放器仍是预览 chrome、落位帧才切全屏 chrome（用户走查已接受）；拦截层覆盖不到播放器原生 View 与选集面板（面板仅在全屏态打开，而全屏态已不再触发滑入，影响面收敛）；后台暂停期间尺寸回调仍可下方向（语义仍正确）；返回键三分支读"VM flag / Activity 字段 / VM flow"三个来源、存在 1 帧错判窗口（既有架构）；`DetailPlaybackFacts.portraitVideo` 在生产路径已成死值、其单测锁的是 `requested=true` 不可达分支；平板落位后仍会被硬转横屏（沿袭旧实现，已在 §4.4 标注）。
+- **验证**：`:app:assembleDebug` 绿 + `:app:testDebugUnitTest` **797 例 / 0 失败**。
+
+## 2026-10-10｜进播放过渡·第二轮审查修复（双真自锁 + 平板横屏退全屏空白）
+
+**触发**：用户要求"再审查一遍"。上一轮 6 处修复**未经真机验证**，本轮把它们本身当审查对象，并专扫真机未验的旁路与盲区（两路只读子代理 + 逐条复核）。
+
+**修掉 5 项（2 高 / 2 中 / 1 低，其中 2 项高被两路独立命中）**
+1. **`entering && exiting` 双真自锁（高；上一轮修复引入的回归）**：滑入中收到 `onNewIntent`（或滑出中点选集）→ 两 flag 同真 → `when` 里 entering 优先使 exiting 分支饿死、`onEntrySlideFinished` 又被守卫拦下且不清 entering ⇒ `slideAnim` 停在 1、拦截层常驻、`fullScreen=false`：播放器压住海报页且海报页全不可点，只能靠返回键脱出。修法 = **三处入口互斥收敛**（置 `exiting` 前清 `entering`、置 `entering` 前清 `exiting`、`onEntrySlideFinished` 先清 `entering` 再按 `exiting` 决定落位）+ `when` 改 **exiting 优先** + 进入分支去掉 `snapTo(0f)`（滑出中途再进入从当前进度续滑）。
+2. **≥600dp 设备横屏退全屏后内容层永久不渲染（高）**：`rotating` 只能被 `onConfigurationChanged` 清除，平板 `orientationPolicyValue()` = `UNSPECIFIED`、退全屏不产生配置变更 ⇒ `rotating` 永真 ⇒ `fullBox=true` 且播放器已滑出屏外 ⇒ 只剩模糊底。修法 = 滑出结束调 `DetailActivity.settleRotationAfterExit()`（清 `rotating` + `syncFullBoxSideEffects`，幂等；手机仍走既有 `onConfigurationChanged` 自愈）。
+3. **拦截层挡不住播放器原生 View（中）**：过渡 300ms 内点到播放器 = 直接触发手势（单击切控制栏、双击暂停、横滑 seek）。修法 = `PlayContainer.setTouchBlocked()` + 覆写 `onInterceptTouchEvent`，`LaunchedEffect(touchBlocked, container)` 跟随两 flag（异常路径随 flag 回收，不漏解锁）。
+4. **静止态快照不跟随窗口（中）**：平板转屏/分屏后播放器偏移量小于当前窗宽、停在屏内压住海报页。修法 = `LaunchedEffect(configuration.screenWidthDp)` 在非转场态刷新快照。
+5. **滑出中连按两次返回会直接离页（低）**：第二次落进 else 分支 → `backToPreviousTarget()`/`finish()`。修法 = `exiting` 期间吞掉返回。
+
+**登记不修（本轮新增）**：未声明配置变更（深色/字体/分屏/语言）会重建 Activity ⇒ 过渡丢失或重播、全屏态重建重新起播（既有；补 `configChanges` 会牵动全局主题响应，不在收尾轮做）；过渡中用户自己转屏导致快照语义失效；会话内换集方向不回转（`applyVideoOrientation` 单向）+ `armVideoSizeWatch` 早退分支沿用旧尺寸判方向；画质 chip 命令极端下可能被静默丢弃（今天不可达）；海报页常驻"满屏但在屏外"容器 ⇒ 真机看有无闪黑/黑边。
+
+**已核无问题**：LazyColumn/Coil 不抖动不重载；播放器层不遮挡海报页；音乐交接/投屏/rollback 无并发面；动画协程取消安全；三入口 plan 一致。
+
+**验证**：`:app:assembleDebug` 绿 + `:app:testDebugUnitTest` **797 例 / 0 失败**。设备未在线，未装机。
+
+**待真机走查（第二轮新增）**：① 滑入中切内容 / 滑出中点选集 → 不再"播放器压住海报页且全不可点"；② 平板/大屏（≥600dp）横屏退全屏 → 海报页正常出现；③ 过渡 300ms 内点播放器区域不触发暂停/seek；④ 过渡中连按返回不直接离页。
+
+**文档**：`skill/review/review-20261010-detail-entry-slide.md` 追加"第二轮审查"；规范 §4.4 该条补 ④ 状态互斥与兜底；`.codebuddy` / `.trae` 两镜像同步。
+
+## 2026-10-10｜进播放过渡·第三轮审查修复（状态机收进纯函数 + 两套形态判定定稿 + 宽度基准改实测）
+
+**触发**：用户按规范判定"连续两轮都有高，还不能收尾"（终止线 = 连续一轮无阻断/高/中）。本轮两路只读子代理换角度：① 状态机穷举 + 全量对账；② 规范↔实现逐句对账 + 测试缺口 + Compose/协程 + 重复代码。结论：**无阻断、无高，共 5 条中**（另有若干低/既有）。
+
+**修掉（5 中 + 3 低）**
+1. **`exiting` 无兜底出口（中）**：`settleRotationAfterExit()` 排在清 VM flag **之前**，它若抛异常则 `onExitSlideFinished()` 永不执行 ⇒ `exiting` 永真（返回键被吞 + 拦截层常驻 + 播放器触摸锁 = 无用户出口）。修法 = **先清 VM flag 再 settle** + `try/finally`；**滑入分支起始也调 `settleRotationAfterExit()`**（顺带修"滑出被重进打断 ⇒ `rotating` 残留 ⇒ 全屏态被按预览态处理"）。
+2. **`fullBox` 两份手写实现（中）**：`DetailScreen` 与 `DetailActivity.isFullBox()` 各自手写、旋转窗口取值相反。复核结论 = 两处语义本就不同（内容可见性 vs 播放器全屏形态），**故意相反、不可统一**（统一会让正常退全屏的滑出 300ms 内落成全屏 chrome）。修法 = 抽 `DetailFullScreenFrame.fullBox` / `playerFullScreen` 两个纯函数 + `DetailFullScreenFrameTest` 锁"故意相反"。
+3. **判据表死分支（中）**：`fullScreenState(requested=true, …)` 与 `facts.portraitVideo` 自 2026-10-09 起生产不可达（进入方向已归 `armVideoSizeWatch`），4 个单测锁的正是死语义。修法 = 收敛为 `DetailPlaybackCommands.exitFullScreenState(facts)`（`false to facts.landscape`），删 `portraitVideo` 字段与进入用例。
+4. **滑移基准与旋转叠加（中）**：`slideWidthDp` 快照在"转场中旋转落位/分屏改宽"时永久失配（播放器停在屏内压住海报页、海报位移 20%→44%）。修法 = **改实测宽度**（根 Box `onSizeChanged` 写 `slideWidthPx`，两处 `offset` 直读）—— 一并消掉"静止态快照不跟随""宽度 key 已消耗"两条登记。
+5. **本轮判定零单测（中）**：`entering/exiting` 全部转换收进纯函数表 `DetailFullScreenSlide`（`enter`/`exit`/`cancelEntry`/`entryFinished`/`exitFinished`，返回新态或 null=拒绝），VM 只做"取态→过表→写回"；`DetailFullScreenSlideTest` 穷举 8 态 × 5 转换 + 互斥不变量。
+6. **低项**：抽 `inTransition`（4 处重复）与 `slideProgress()`（2 处重复公式）；`cancelEntrySlide()` 加幂等守卫；`onConfigurationChanged` 改直调 `settleRotationAfterExit()`（消两行同体）。
+
+**附录 A 度量盘点（本轮补出）**：`DetailViewModel.kt` 1010 行 / `PlayContainer.kt` 821 行（文件 >500 阈值；既有上帝类）；`DetailScreen()` 顶层 Composable 222 行（方法 >100 阈值，本次改动持续增厚）；`entering||exiting` 同文件重复 4 次（本轮已抽）。
+
+**验证**：`:app:assembleDebug` 绿 + `:app:testDebugUnitTest` **805 例 / 0 失败**（797 → 805：删 6 例死语义、增 14 例）。设备未在线未装机。
+
+**结论**：本轮仍有"中"⇒ 按终止线**不可收尾**，需第四轮复核（换角度：本轮修复自身的副作用 + 尚未覆盖的维度）。
+
+## 2026-10-10｜我的页应用信息卡：AVBox → AudioVideoBox，删除标语
+
+**需求**：用户给出截图 ——"我的"页顶部应用信息卡标题 `AVBox` 改为 `AudioVideoBox`，并删除下方副标题「TVBox手机版」。
+
+**改动**：`ui/page/SettingsAppInfoCard.kt` —— 标题硬编码字符串改 `AudioVideoBox`（纯 ASCII 品牌名，不涉 i18n 硬编码闸门）；删除标语 `Text`（保留 `Column(Modifier.weight(1f))` 包装，标题仍不被徽章挤压）；三语资源 `settings_app_tagline`（`values` / `values-en` / `values-b+zh+Hant`，香港走 `b+zh+Hant` 继承）随之清理。未动 `app_name`（仍 AVBox）与投屏提示里的 AVBox 文案。
+
+**同日追加（用户报"目前字体多大"后按截图微调）**：标题加 `fontSize` **局部覆盖** —— 库默认 28sp（`Type.kt` 未覆盖该级）→ 26sp → **终值 24sp**；**26sp 时实测截图标题折行**（卡内可用宽约 184dp，13 字符放不下），24sp 装机复验为**单行** ✓。只改这一行，`Type.kt` 与其它 `headlineMedium` 消费点不动。
+
+**再追加**：版本胶囊内的版本值由 `titleLarge`(18sp) 局部覆盖 `fontSize = 16.sp`（截图观感偏大；标签「应用版本」保持 `bodyMedium` 14sp 不动）。
+
+**验证**：`i18n_check_keys.py` 复核 `UNUSED: []`、声明/引用 544/544 一致；`:app:assembleDebug` 绿 + `:app:testDebugUnitTest` **805 例 / 0 失败**。设备未在线未装机。
+
+**文档**：规范「顶部应用信息卡」条目同步改版说明；`.codebuddy` / `.trae` 两镜像同步。
+
+**待真机走查**：① 点播放 → 播放器从右滑入、海报页左移让位、落位即出画；② 进全屏后是**竖屏**播放（横屏片源上下黑边）；③ 播放器旋转按钮能手动转横屏、退全屏后方向恢复竖屏；④ 滑入期点返回 = 回海报页且停播保内核；⑤ 画质 chip / 选集入口行为一致。
+
+**文档**：`avbox-mobile-ui-spec.md` §4.4 新增「进播放 = 默认竖屏 + 播放器右滑入」条；`.codebuddy` / `.trae` 两镜像同步。
+
+**补充（同日，用户定稿后第二批）**
+1. **退全屏也做反向滑出**：新增 VM `exitingFullscreen`（退全屏入口 `onFullScreenToggleRequested(false, …)` 置位），`DetailScreen` 的进度值改为"进入 0→1 / 退出 1→0"，播放器右滑出 + 海报页从 20% 左偏滑回（300ms 同曲线）；进度值在全屏态停在 1、非全屏态停在 0（不再每次 `snapTo(0)`）；滑入中按返回 = `cancelEntrySlide()`（转入反向滑出）+ `stopForExitFullscreen()`；拦截层条件扩为 `enteringFullscreen || exitingFullscreen`。
+2. **方向定为 b（竖屏进入 + 落位后横屏片源自动转横屏）**：把上一批删掉的"尺寸监听"链恢复并**改语义**（`PlayContainer.setVideoSizeReadyListener`/`notifyVideoSizeReady`、`ComposeVideoController.onVideoSizeReady`、`DetailActivity` 的 `armVideoSizeWatch`/`onVideoSizeReady`），新 `applyVideoOrientation` **只在片源是横屏时**转 `SENSOR_LANDSCAPE`（竖屏片源保持竖屏）；容器已有尺寸则立即判、否则监听首次尺寸（10s 超时 + 防重复 arm）；用户手动旋转仍有效且不会被二次覆盖（监听一次即清）。`VideoOrientation.isUsableSize` 因复用该链而不再是死代码。
+
+**验证**：`:app:assembleDebug` 绿 + `:app:testDebugUnitTest` **797 例 / 0 失败**。设备未在线，未装机。
+
+## 2026-10-10｜我的页应用信息卡：恢复副标题「一款开源的视频播放器」
+
+**需求**：在应用名 `AudioVideoBox` 下方加副标题「一款开源的视频播放器」（当日早些时候刚按要求删掉旧标语「TVBox手机版」，本次按新文案恢复该行）。
+
+**改动**：`ui/page/SettingsAppInfoCard.kt` —— 标题 `Column` 内恢复副标题 `Text`：`R.string.settings_app_tagline`，样式 `bodyMedium` + `onPrimaryContainer` 75% alpha。样式选 14sp 而非旧标语的 `bodyLarge`（16sp）：新文案更长（中文 10 字 / 英文 25 字符），按标题列 ~184dp 可用宽推算，16sp 下英文 ≈205dp 必折行、中文 ≈160dp 余量仅 24dp；14sp 下英文 ≈160dp / 中文 ≈140dp，单行安全。
+
+**四语资源**（`settings_app_tagline` 按新文案重写）：`values`「一款开源的视频播放器」/ `values-en`「Open-source video player」（无冠词短标语控宽）/ `values-b+zh+Hant`「一款開源的影片播放器」（台湾用「影片」，与 `player_error_play`「影片播放」同口径）/ `values-zh-rHK`「一款開源的視頻播放器」（港层新增差异条目，用「視頻」，对齐 `player_menu_video_track`「視頻軌」）。
+
+**验证**：`:app:assembleDebug` 绿；`i18n_gate` ui 层 0 处（非 ui 37 处为既有登记项，本次未新增）；`i18n_check_keys` declared=referenced=545、无 UNUSED / 无 REFERENCED-BUT-NOT-DECLARED；`i18n_align` en 545=545 PASS、b+zh+Hant 545=545 PASS（S2T 提示仅语言名 endonym）、zh-rHK 子集 75 条 PASS（新增条目无 REDUNDANT 判）。**未装机**，真机走查（英文单行 / 深色、纯黑主题）待做。
+
+**文档**：规范 §4.3「顶部应用信息卡」条目同步；`.codebuddy` / `.trae` 两镜像同步。
+
+## 2026-10-10｜TMDB 支持:配置页 UI(阶段一,两轮走查已落地) + 海报替换(阶段二)
+
+**需求**:用户提出"支持 tmdb 海报"(输密钥后显示影视海报),随后扩展出"首页数据源"需求;拍板拆三阶段、先做配置页 UI(方案档 `文档/tmdb-support-plan.md`,本地不入库)。阶段一期间两轮真机走查意见已落地(样式行改弹出菜单、分段控件换 M3E Connected + 用户自备图标、面板改分组卡片、`CapsuleSegmentedButton` Connected 分支启用 `containerColor`)。
+
+**阶段一(配置管理页 TMDB tab)**:新增 `ui/page/ConfigTmdbPage.kt`(`ConfigTmdbScreen(state, actions, testing)`)+ `ConfigManageViewModel` 的 `ConfigTmdbState/Actions/TmdbTest`;`ConfigMode` 加 `Tmdb`(分段 2→3 项、`AnimatedContent` 方向改按 ordinal、顶部动作区按 tab 屏蔽);新组件 `SettingsTextFieldRow`(自绘 Surface + BasicTextField,掩码/清除/错误态)与 `SettingsTestButton`(primary 实心 + loading);新 `util/TmdbApi.kt`(`DefaultTmdbClient` 经 `tmdbClientFactory()` 注入:testApi= `/3/configuration` 判 `"images"`、testImage= 常量 poster w92 判 `Content-Type`;`normalizeBaseUrl`/`isValidBaseUrl`/`isBearerKey`);KV 5 键(`tmdb_enable/poster_style/api_key/api_base/image_base`)+ 2 默认值常量,`KVKeySpec` 已注册;三语 17 条 `tmdb_*` + `common_tmdb`;7 个图标(用户自备,`ic_config_vod/tmdb/live` + `ic_config_tmdb_on/off` + `ic_config_poster_style`)。偏差:§3.4.3 的 `AVBoxOptionSheet` 泛型重载未做,改用 `SettingsOptionMenuRow`(ordinal 值,文案分离);图片测试同样要求 API Key 非空;地址非法仍落库但标红。
+
+**阶段二(海报替换)**:
+1. `util/TmdbApi.kt` 扩展:`/3/search/multi`(`language` 随 `LanguageManager`;v3 `api_key` / v4 `eyJ` 前缀走 Bearer)、`/3/{media}/{id}/images`、`cleanTitle`(半角化/去标注/去「第X季」/取别名首段)、`normalizeForMatch`、`pickBest`(标题完全相等才采纳 + 年份最近)、`parseSearchHits`/`parseImagePaths`(JsonObject 手解析)、`imageUrl`(w342/w780)。`search`/`images` 走 `Http.getRaw` 并显式判 429(`HttpRawResponse` 新增 `code` 字段,`Http.kt` 唯一构造点同步)。
+2. 新 `util/TmdbPoster.kt`(门面):KV 键 `cache_tmdb_`(单图)/`cache_tmdb_images_`(多图)前缀,值为 `poster_path`,负缓存 7 天(`-<expireAt>`);内存 LRU 512;4 路信号量 + 同键 `Deferred` 去重 + 429 退避 60s(失败不写负缓存,仅"搜到但无匹配"写);`configEpoch`(StateFlow)供展示点重解析;`clearCachedPosters()` 已接进 `SettingsPage.clearCache()`(此前清缓存不清 KV ⇒ 会残留"清了缓存还是没海报")。
+3. `VodPoster` 注入:新参数 `year`/`sourceKey`/`resolveTmdb`,`tmdbPosterUrl` 工具(站点图先出、TMDB 命中替换,失败链 TMDB→站点大图→原图→色块;`sourceKey=="tmdb"` 跳过;underlay 不再回调 `onImage`,避免取色被站点图污染);调用点补参:`VodCard`×2、`SearchScreens`、`HistoryRow`、`FollowRow`、`CollectPage`、`HeroSpotlight`(上报"替换后 URL"给 `HomeHeroBackdrop`/`onPosterPic`;`HomeBackdrop` 键保持站点 `pic`)、`DetailHeroPoster`(`DetailHero` 内:三档样式,多图走 `/images` vote 降序前 10;固定档走单图;「随机」进页 `Random.nextInt` 一次并 `remember` 住;轮播 5s + `repeatOnLifecycle(STARTED)` 只在可见时跑 + Coil `enqueue` 预载下一张;取色/页面背景上报固定首图);`HeroCarousel`(无调用点)与音乐页封面不接。
+4. `VodImages.picClient()` 补挂 `OkGoHelper.getDefaultClient().dns`(原自建 client 没有自定义 DNS)。
+5. `ConfigManageViewModel` 的 setEnabled/setApiKey/commitApiBase/commitImageBase/setPosterStyle 调 `TmdbPoster.notifyConfigChanged()`(清内存 LRU + bump epoch,不清 KV —— 缓存与配置无关)。
+
+**验证**:`:app:assembleDebug` 绿 + `:app:testDebugUnitTest` **827 例 / 0 失败**(+22:新增 `TmdbApiTest` 16 例、`TmdbPosterTest` 6 例);已装机(vivo 10AF1J04JX0016G)。
+
+**文档**:规范 §6.21 新增「TMDB 海报替换」约束、§7 未决清单登记走查项;`.codebuddy` / `.trae` 两镜像同步。
+
+**待真机走查**:① 配置页 TMDB tab 各值存取与两个测试按钮;② 订阅源模式:列表/搜索/收藏/历史/追剧/首页 Hero/详情页 Hero 海报是否按 TMDB 命中替换、站点图先出无闪烁、未启用零变化;③ 三档样式 + 取色不跟随轮播 + 退后台轮播停;④ 清除缓存后不残留(清后回站点图、下次进入重查);⑤ 阶段三(首页数据源)未启动。
+
+## 2026-10-10｜TMDB 阶段二收尾批(走查修复 + webhtv 借鉴 + 轮播增强)
+
+**背景**:阶段二装机后连续多轮真机走查,踩出四类映射盲区与体验问题,逐一修复;期间对比 `示例文件/webhtv-main`(FongMi 系)的 TMDB 匹配实现(`TmdbMatcher`/`TmdbSeasonResolver`/`EpisodeSeasonPolicy`,子代理调研),借鉴两项低成本改进。
+
+**修复/增强(全部已装机,构建绿 + 852 例单测 / 0 失败)**:
+1. **电影剧照兜底**:站点"剧集形态"但 TMDB 只有 movie(功夫女足 30 集线路)→ 用 `/3/movie/{id}/images` backdrops(无文字优先/vote 降序/前 10,`cache_tmdb_stills_` 前缀,`TmdbClient.stills()` + `parseBackdropPaths` 纯函数)按集号**循环填充**选集缩略图;单集电影也有一张剧照;剧照取不到才回无图。
+2. **分集映射放宽**(`TmdbApi.mapEpisodes`):①单季且站点集数 < 该季 → 按序取前 N 集(凡人修仙传 194/206,美人余 4/28);②特别篇(season 0)并入:站点集数 ≤ 正片+特别篇总和 → 0 季按 TMDB 顺序在前并入,超出按序截断(斗罗大陆 266=2+264 全映射、265 缺 1 集取前 N);带季号提示不放宽;③分集映射各失败分支补 `echo-tmdb episodes skip reason=movie|nomatch|detail|map` 诊断日志(map 附季结构摘要)。
+3. **匹配质量(webhtv 借鉴)**:①`pickBest` 完全相等候选内决胜评分(年份距离 → 站点无年份取最早原版 → `original_language=="zh"` 优先 → id 稳定);`TmdbSearchHit` 加可空 `originalLanguage`,Gson 旧缓存缺字段=null 安全。②尾标签/括号词表大扩充(版本地区/修复/画质编码/帧率/更新至N集/完结/导演剪辑版等,长词在前);③解说类后缀清洗(空格冒号后段截断 + 尾词删,治「伟大的长征 深度解读」「凡人修仙传剧情揭秘」「仙逆杂谈」);④归一化折叠「剧场版→剧场」(治「仙逆剧场弑仙之战」↔「仙逆剧场版：弑仙之战」)。**刻意不抄**:分季变体防护(完全相等口径天然免疫,死代码)、Levenshtein 模糊评分(与"宁可少不要错"冲突)。
+4. **列表仅缓存模式**:`VodPoster(tmdbCacheOnly=true)` 7 个列表调用点(VodCard×2/SearchScreens/HistoryRow/FollowRow/CollectPage/HeroSpotlight 前景+背景)只读 `cachedPoster` 不发请求,未命中保持站点图;详情页保持解析 ⇒ "没进过详情页的片不触发 TMDB 请求"。cacheOnly 分支每次重组重读缓存(内存命中,代价可忽略)换取返回列表立即刷新。
+5. **详情页轮播增强**:①切换动画 `AnimatedContent` 新图右→左滑入 300ms(`HERO_ROLL_ANIM_MS`),预载保证无等待;②**全屏播放暂停轮播**:`DetailContent` collect `vm.fullScreen` → `DetailHero(rollPaused)` → `DetailHeroPoster(paused)`,定时器随 Hero 离组销毁(真机日志验证全屏期间零切换零预载;退出全屏从第 1 张重新开始,remember 不跨全屏保留,已确认可接受);③选集缩略图下方集数名居中(`textAlign=Center`)。
+6. **清缓存确认弹窗**:设置页「清除缓存」改 `AVBoxAlertDialog` 确认框(取消左/确定右,`LocalSheetDismissThen` 惯例),4 语文案 `settings_clear_cache_confirm_text`,防误触。
+7. **诊断日志**:分集映射失败分支补 `echo-tmdb episodes skip`;轮播临时埋点 `echo-hero`(验证后已删,含 LOG 白名单项与 import);`echo-tmdb` 保留。
+
+**验证**:`assembleDebug` 绿 + `testDebugUnitTest` **852 例 / 0 失败**(较阶段二 +25);行尾全 LF;已装机(vivo 10AF1J04JX0016G)。
+
+**文档**:规范 §6.21 增补收尾批六条口径、§7 更新走查结论与遗留;`.codebuddy`/`.trae` 两镜像同步。**方案档 `文档/tmdb-support-plan.md` 已由用户删除**(2026-10-10,本地计划档使命结束),阶段三口径以本条目与规范 §7 为准。
+
+**遗留/待定**:①衍生条目(斗破苍穹特别篇/三年之约/年番动态漫画、斗罗大陆5重生唐三动态漫画等)TMDB 无收录 = 数据源限制不修;②站点按年番拆季 vs TMDB 单季合并(斗破苍穹第3季 12 集 vs 1:45)无集号依据不出图,终极解 = 手动季绑定(webhtv `TmdbSeasonMatchCache` 三态模型,阶段三后评估);③季 `air_date` 年份校验;④特别篇在站点末尾排序的头几集错位(待观察,常见则上集名对位)。
+
+**同日走查修复(用户报"详情页海报没效果"的定位与修复)**:
+- **现场取证**:详情页海报仍是站点图;KV(`run-as cat files/mmkv/avbox_kv`,脚本解析)里 `cache_tmdb_*`/`cache_tmdb_images_*` **全是负缓存**(`-1792181802878` 等,反解写入时刻 = 用户当天试错的那几分钟,一批 4 秒内写完);当前 `tmdb_api_key` = 32 位 hex v3 密钥、`tmdb_api_base`/`tmdb_image_base` 空(默认)、`tmdb_poster_style` = 2(轮播)。设备侧 `curl` 实测:`api.tmdb.org` DNS 正常(CloudFront 143.204.160.79)、无密钥 401(预期)、**带该密钥 `/3/configuration` 200 且 `search/multi?query=庆余年` 首条即命中** —— 网络与密钥均无问题。
+- **真因**:用户先用中文文本试过密钥(MMKV 内留有 `等你信呢`/`到店几点见` 历史值)⇒ 401 响应被旧逻辑当成"搜索成功但无匹配"写入 7 天负缓存;填对密钥后,又因旧 `notifyConfigChanged()` **不清 KV** ⇒ 负缓存命中即不再重查 ⇒ 一直显示站点图(负缓存锁死)。
+- **修复**:①`DefaultTmdbClient.search`/`images` 对非 2xx 一律抛 `HttpException`(仅 2xx 解析成功后确无匹配才写负缓存);②`TmdbPoster.readApiKey()` 加 `trim()`(输入框不 trim,带空白密钥在测试按钮里 trim 后能通过、实际查询 401);③`notifyConfigChanged()` 改为**同时清 KV 两前缀**(改任何 TMDB 配置即自愈),`clearCachedPosters()` 委托它;④补诊断日志 `echo-tmdb`(`search q= hits= top=` / `pick ->` / `fail code= msg=` / 非 2xx 与空结果的 body 摘要≤180 字符)+ 加进 `LOG.FILE_LOG_PREFIXES`(vivo 吞 logcat,只能靠文件日志)。
+- **处置**:构建绿 + 827 例单测 0 失败,已装机;请用户在设置页点「清除缓存」(或动一下任意 TMDB 配置)清掉历史负缓存后复验;若仍有问题抓 `files/preload_debug.log` 的 `echo-tmdb` 行。
+
+**同日走查二轮(用户提议"解析期不要露出站点图",拍板方案 B)**:
+- **症状**:清缓存后替换生效,但详情页 Hero 是"先站点图(糊)→ TMDB 图替换"的跳变,站点图首帧易被误认为"没生效"。用户提议"点击后先转圈、等 TMDB 就绪再进详情页"。
+- **取舍**:不做"等待再进"——TMDB 有无数据事前不可知(必须超时兜底)、会人为拖慢进入,且详情页数据请求本与解析并行;改"照常秒进 + Hero 海报区解析期转圈"。
+- **实现**:`tmdbPosterUrl` 拆出三态 `tmdbPosterPath`(`ui/components/VodPoster.kt`,`""`=无 / `null`=解析中 / 非空=命中路径,`tmdbPosterUrl` 保留为其 URL 包装);`DetailHeroPoster` 新增 `DetailHeroPosterLoading`(`ContainedLoadingIndicator` 64dp,`ExperimentalMaterial3ExpressiveApi`),在 `(multiEnabled && images == null) || fixedPath == null` 且未超时(1.2s,`HERO_TMDB_LOADING_TIMEOUT_MS`,进入起算不重启)时渲染;超时/无匹配回落站点图;缓存命中/未启用不转圈;解析期 `onBackdropPic` 仍上报站点图(背景模糊层不空)。只改详情页 Hero,首页 Hero 与列表不动。
+- **验证**:构建绿 + 827 例单测 0 失败,已装机。待走查:①首次进未解析过的片 → 转圈 ≤1.2s → 直出 TMDB 海报;②二次进入同片 → 无转圈直出;③TMDB 无匹配的片 → 转圈后回落站点图;④关 TMDB 开关 → 无转圈零变化。
+
+**同日三轮:"同片多次解析"合并优化(用户拍板做)**:
+- **问题**:日志里「庆余年」一天内被 search 4 次 —— 缓存键是 `md5(名字|年份)`,而列表页与详情页的名字/年份常有差异(后缀、"第二季"、year 0 vs 具体年),每变体各自发请求、各自跳变一次。
+- **改法**:`TmdbPoster` 缓存重构为两层 —— ①`cache_tmdb_hits_<md5(归一化片名)>` 存**搜索命中列表**(Gson JSON,空列表=`-<expire>` 负缓存 7 天);②`cache_tmdb_images_<mediaType>_<id>` 存多图路径列表(按 TMDB id 共享,替代原"按名字|年份"的 images 键)。**`pickBest` 全部在本地做**(读 hits → 归一化比较 → 年份最近),同片任意变体只发一次 search;单图 poster 的独立缓存键删除(结果由本地 pick 现算,值仍不含完整 URL)。原有的"非 2xx 不算无匹配/429 退避/4 路闸门/同键去重/配置变更清缓存/echo-tmdb 诊断"全部保留,`resolvePoster`/`cachedPoster`/`resolveImages`/`cachedImages` 对外契约不变(UI 零改动)。
+- **附带**:升级后旧格式缓存(`cache_tmdb_<md5(name|year)>`)不再被读,首次使用会重新解析一遍(无副作用,`clearCachedPosters` 可清);单测更新为 hits 编解码往返/负缓存/过期/坏数据 4 例+images 3 例。
+- **验证**:构建绿 + 827 例单测 0 失败,已装机。待走查:同一部片先列表后详情(或反复进出)时 `echo-tmdb search` 只应出现一次。
+
+**同日四轮:详情页「TMDB 元数据」+「演员阵容」(用户提供两张参考图)**:
+- **需求**:匹配到 TMDB 时,在详情页简介下方加「TMDB 元数据」块(图一:标题+评分+TMDB 简介+类型标签),并在播放线路与元数据之间加「演员阵容」块(图二:圆形头像横排+名字)。
+- **取数**:`TmdbApi` 加 `/3/{media}/{id}?language=<App 语言>&append_to_response=credits`(一次拿 overview/vote_average/genres/credits.cast)+ `parseDetail`/`parseCast`(只保留有 `profile_path` 的、按 `order` 排序取前 12)+ `profileUrl`(w185);接口方法加 `detail`。`TmdbPoster` 加 `cachedDetail`/`resolveDetail`(先走 hits 层本地 pick 拿 id → detail 缓存 `cache_tmdb_detail_<media>_<id>`,失败不缓存、空数据缓存)+ `profileUrl` 门面。
+- **UI**:新文件 `ui/activity/DetailTmdbSections.kt`(`TmdbInfoSection` + `rememberTmdbDetail` 数据 hook;元数据块 = titleLarge 无图标标题 + "评分 x.x / 10"(新文案 `tmdb_rating`)+ 简介 + 类型 chips(`Surface`+`detailCardColor()`);演员块 = `LazyRow` 64dp 头像 + `labelMedium` 名字,照 `RelatedSection` 结构);`DetailContent.kt` 在 desc 与 flags 之间插 `item(key = "tmdb_info")`。文案三条三语(`tmdb_meta_title`/`tmdb_rating`/`detail_cast`)。同日后补:头像容器由圆形改**花瓣形**(`MaterialShapes.Cookie12Sided.toShape()`,与「我的」页应用徽章同款,M3E API 项目已有先例)。
+- **五轮(同日,用户追加"点击演员头像弹 bottom sheet 显示演员信息")**:`TmdbCastMember` 补 `id`(person id);新增 `TmdbApi.TmdbPerson`(`/3/person/{id}?language=xx`:name/biography/birthday/place_of_birth/profile_path)+ `parsePerson`;`TmdbPoster` 加 `cachedPerson`/`resolvePerson`(缓存 `cache_tmdb_person_<id>`,失败不缓存);`DetailTmdbSections` 头像加 `clickable` → `TmdbCastSheet`(项目 `AVBoxBottomSheet` 容器:头像+名字即时用列表数据渲染,资料到达补生日·出生地(` · ` 拼接,零新文案)与简介,加载中 40dp `ContainedLoadingIndicator`)。**旧详情缓存(cast 无 id)由 `decodeValidDetail`(cast 非空且全 id<=0 ⇒ 视为无效)自动失效重拉**,不写版本前缀、无残留键。单测 +2(parsePerson、decodeValidDetail 旧格式),832 例绿,已装机。
+- **兜底**:未启用/未匹配/数据为空时整块不渲染;`TmdbApi` 片名清洗词表补 `// i18n: keep`(数据值非文案,gate 非 ui 计数 39→37 回基线)。
+- **验证**:构建绿 + **830 例**单测 0 失败(+3:parseDetail 排序过滤/缺字段/profidUrl);i18n 三件套(check_keys 567/567、gate ui 0 处、align PASS)已过;已装机。待走查:①匹配到 TMDB 的片 → 简介下方见元数据+演员、空数据片两块的缺失不影响布局;②头像/类型 chips 随主题与深色正常;③未启用 TMDB 时详情页零变化。
+
+- **六轮(同日,用户报「灵异女仆第三季」类不匹配,拍板 A+B+C)**:
+  - **根因(设备实测)**:站点名清洗正确(「第三季」已剥),TMDB 搜索也搜得到(id 88055),但该条目 zh-CN **无中文主标题**(返回 `name=Servant`),译名只存在于别名接口(`/alternative_titles` 的 CN="灵异女仆"/TW="靈異女僕");「标题完全相等」策略必然失败。日志另暴露:站点名带**零宽字符**(`神探之痕迹‎`)全等也比不上、**裸语言后缀**(`一个部门的诞生粤语`)与**裸尾部年份**(`隐秘而伟大2013`)未被清洗。
+  - **修复 A(别名回退)**:`TmdbApi` 加 `alternativeTitles`(tv 字段 `results`/movie 字段 `titles`,已 curl 实测区分)+ `parseAlternativeTitles`;`TmdbPoster` 的 `pickBestWithAlias` = 主标题精确匹配 → `cache_tmdb_alias_<md5(归一化名)>` 同步命中 → 对前 2 个候选查别名(列表缓存 `cache_tmdb_alts_<media>_<id>`)命中则写别名缓存(**同步路径 `cachedPoster/cachedImages` 也要读它**,否则只当次有效);`resolvePoster/resolveImages/resolveDetail` 三处共用。
+  - **修复 B/C(清洗)**:`cleanTitle` 增剥不可见字符(U+200B–200F/2060/FEFF/00AD)与尾部裸标注(国语/粤语/中字/双语/HD/4K 等,**循环剥但不剥空**,`i18n: keep` 标注词表)。
+  - **验证**:构建绿 + **835 例**单测 0 失败(+3:清洗增强、别名解析双形态、别名命中解码);i18n gate 无新增(37 基线);已装机。待走查:`灵异女仆`类应命中(日志出现 `echo-tmdb alias hit id=...`)、`神探之痕迹`零宽名可直接命中。
+  - **同比走查续修(用户确认修好后抓日志)**:日志证实别名回退生效(`alias hit id=88055 title=Servant`、`alias hit id=1541125 title=年会不能停！2`);另发现**纯标点差异**仍漏(`年会不能停2！`/`年会不能停` vs TMDB `年会不能停！2`/`年会不能停！`)——`normalizeForMatch` 补剥装饰性标点(保留 `.` `-`);顺手补 `cachedDetail` 同步路径漏读 `cachedAliasHit` 的不一致。836 例绿,已装机。
+
+**同日七轮:详情页选集缩略图(用户参考图,拍板形态 A)**:
+- **需求**:匹配到 TMDB 时,详情页「选集」显示带**分集缩略图**的选集卡(参考图 = 16:9 剧照 + 左上集号 + 分集名)。
+- **取数(已 curl 实测)**:`/3/tv/{id}/season/{n}` 每集有中文 `name` 与 `still_path`(w300);`/3/tv/{id}` 的 `seasons[]`(season_number/episode_count)提供映射依据 —— **detail 缓存前缀升 `cache_tmdb_detail2_`**(字段新增,旧缓存自动失效重拉),删旧的 cast-id 判定与对应测试。
+- **映射(`TmdbApi.mapEpisodes` 纯函数,保守口径)**:①季号提示(`parseSeasonHint`:第X季/Season N/S1/中文数字一到九十九,来源 = 站点名优先、线路名兜底)且该季集数 == 站点集数 → 用该季;②唯一数量匹配的季 → 用该季;③全部季总集数匹配 → 跨季累加;④都不等 → **不启用**(整条选集保持原纯文字卡)。结果按 `cache_tmdb_episodes_<md5(名|集数|季提示)>` 缓存;季集按 `cache_tmdb_season_<tvId>_<n>` 缓存。
+- **UI(`DetailEpisodes.kt`)**:`EpisodeCard` 双形态 —— 未启用 = 原 `DetailItemCard` 纯文字卡;启用 = 180dp 16:9 缩略图卡(图 + 左上集号角标(黑 55% 底白字)+ 下方分集名(TMDB 名优先、站点名回退),选中 = 1.5dp primary 描边 + 名称 primary,无图 = `detailCardColor()` 占位);`rememberEpisodeMeta` 数据 hook(epoch 联动、缓存优先)。
+- **验证**:构建绿 + **843 例**(+7:mapEpisodes 四种情形、parseSeasonHint 六形态、parseSeasonEpisodes 排序、stillUrl;并替换 1 例旧 validDetail 测试)0 失败;已装机。待走查:①带季号名的多季剧(灵异女仆第三季,TMDB 4×10)应按提示映射到第 3 季;②单季剧按数量映射;③映射不上/未启用时选集不变;④无图集显示占位、不影响布局。
+
+## 播放器界面重构:顶栏/底栏重排 + 中央三键移除(2026-10-10,用户带两张效果图)
+
+**需求(6 条)**:①右上角电量 / 时间 / 网速**撤下**(资源保留、只是不显示,后续可能调整);②**刷新**控件删除(「真不需要了」);③选集 / 更多**原地不动**,投屏 / 字幕 / 弹幕 / 音轨 / 视轨**五颗移去右上角**;④**中央三键删除**,用户新备图标放**左下角**(`.tubiao/`:上一集 / 下一集 / 后退10秒 / 往前10秒 / 开始状态 / 暂停状态);⑤进度条**加粗**;⑥右下角**分辨率胶囊删除**,分辨率移到**左上角片名下方**。
+
+**两个先问清的选择点**(AskUserQuestion):①右上角五颗 = **纯图标**(用户选,照效果图,不加文字标签);②左上角最左 = **保持「←」**(用户选,不改成效果图的「✕」)。
+
+**图标来源与确认**:`.tubiao/*.svg` 是 Material Symbols Rounded 官方格式(`viewBox="0 -960 960 960"`),转 VectorDrawable 时路径原样保留 ⇒ 可拿官方 CDN 逐字比对。六颗确认 = **filled(fill1)** 字形的 `skip_previous` / `skip_next` / `replay_10` / `forward_10` / `pause` / `play_arrow`。⚠️ **文件名与字形是反的**:`开始状态.svg` 里装的是 pause(两竖)、`暂停状态.svg` 里装的是 play(三角)—— 语义是「当前处于播放态时按钮显示暂停图标」,与既有 `if (playing) pause else play` 一致,故按此映射。
+- **落点**:`player_ic_prev` / `player_ic_next` / `player_ic_play` / `player_ic_pause` 四个既有 drawable **就地换字**为实心版(不新建同名双份图标);`player_ic_replay_10` / `player_ic_forward_10` 新增。副作用 = 预览态播放键与 `PlayerPauseLayer` 同步变实心(有意,统一观感)。
+
+**±10 秒为什么不能复用 `onSeekStep`**:`PlayerActionsDelegate.keySeekIncrement()` 按时长分档(>3h→5min、>30min→60s、>15min→30s、>10min→15s、否则 10s),46 分钟的视频按「10秒」按钮会跳 60 秒,与图标语义不符。故新增 `PlayerActions.onSeekRelative(deltaMs)`(固定相对跳转:`current + deltaMs` coerce 到 `[0, duration]` → `seekTo` → `updateSeekUiHint` 弹一次「已快进到 xx:xx」→ `savePlaybackProgress`),`PlayerBottomBar` 传 `±10_000L`。
+
+**代码落点**:`PlayerTopBar`(左块加分辨率行、右块换五颗纯图标钮、删电量 / 时间 / 网速渲染与 `batteryIcon()`、权重改左 `weight(1f)` + 右按内容包裹、内层 Row 改 `Alignment.Top`)、`PlayerBottomBar`(新增 `PlayerTransportRow` + `TransportButton`,删 `PlayerActionPill` / `PlayerPillDivider` / `VideoSizePill` / 刷新钮,进度条 3→5dp、滑块半径 6/8→8/11dp)、`PlayerOverlay`(删 `PlayerCenterControls` 及其 `Arrangement` / `ScallopShape` import)、`PlayerUiState`(接口删 `onRefreshClicked`、加 `onSeekRelative`)、`PlayerActionsDelegate`(同步)。
+
+**保留未动(刻意)**:`PlayerPauseLayer`(暂停时居中大播放键)、`PlayerUiState.centerControlsVisible`(有 `PlayerUiStateVisibilityTest` 覆盖)、`player_ic_menu_refresh` drawable、`ic_battery_*` 等系统信息 drawable、`refreshSystemInfo()` 采集链 —— 均为「暂时不显示 / 后续可能调整」留的恢复口。
+
+**多语**:新增 `player_seek_back` / `player_seek_forward`(简中 / 英文 / 繁中三份;`values-zh-rHK` 是覆盖式文件、该两词与繁中同形故不加)。`i18n_check_keys`(declared=referenced=572,无未用 / 未声明)、`i18n_gate`(ui 层硬闸门 0 处)均绿。
+
+**验证**:`:app:assembleDebug` + `:app:testDebugUnitTest` → BUILD SUCCESSFUL,**852 用例 / 0 失败 0 错误**;六颗图标与官方 CDN 逐字比对一致。**未真机验证** —— 待走查:①右上角五颗的间距与长片名挤压;②左下角五颗在窄屏(竖屏全屏)是否挤压;③±10 秒跳转与提示文案;④进度条粗细观感;⑤分辨率行与返回箭头的首行对齐。
+
+### 装机后两个返工(同日,用户带一张截图)
+
+**① 未唤出菜单时右上角五颗图标仍常驻**。根因 = `PlayerUiState.topRightVisible` **只在 `applyShowBottom()` 置 true、从未置 false**(`hideBottom()` 只清 `topLeftVisible` / `netSpeedTopRightVisible` / `sysTimeVisible` / `backVisible`)。旧右块之所以没暴露:`rightVisible` 只当粗闸门,真正的内容可见性由 `sysTimeVisible` / `netSpeedTopRightVisible` 逐项判定,而那两项**是会被清掉的**;本次把内容换成五颗图标后只用了 `topRightVisible` ⇒ 收起后常驻(截图里画面全黑、只剩右上角一排图标)。修法 = 在 `hideBottom()` 与 `ComposeVideoController` 的 `PAUSED` 分支(两处都紧挨 `topLeftVisible = false`)补 `topRightVisible = false`。**注**:全部收起路径都收敛在 `hideBottom()`(`toggleControls()` → `hideBottom()` / `applyShowBottom()`),不存在别的漏网点。
+
+**② 点击暂停后屏幕中央出现暂停浮层**。用户要求去掉 ⇒ 删除 `PlayerLayers.PlayerPauseLayer` 及 `PlayerOverlay` 里的调用,连带删除只被它使用的 `PlayerOverlay.CenterControlIcon` 与随之失效的 `Painter` / `Shape` / `CircleShape` / `stringResource` 四个 import。`PlayerUiState.pauseOverlayVisible`(有 `PlayerUiStateVisibilityTest` 三条断言)与 `centerControlsVisible` **保留未动**。
+
+### 控件尺寸按参照图量化校准(同日,用户「控件有些小了,比例不太对」)
+
+**方法**:参照图 1920×864、本机截图 2800×1260(同比例、同 800dp 屏宽),**按同屏宽归一**后逐控件量白色字形包围盒(系统 python + PIL 临时脚本),再由「字形在 em 内的固有占比」反推 em 盒尺寸,折成 dp 对比。原实现与参照图对比:
+
+| 元素 | 参照图 | 原实现 | 处理 |
+|---|---|---|---|
+| 右上角图标 em | ≈29.5dp | 22dp | → **28dp** |
+| 右上角中心间距 | 48.8dp | 40dp | 触摸盒 42dp + 间距 6dp = 48dp |
+| 左下角两侧图标 em | ≈29.7dp | 25dp | → `vs_50`(31.25dp) |
+| 左下角播放键 em | ≈43.4dp | 25dp | → **满盒 `vs_70`**(43.75dp) |
+| 左下角中心间距 | 55.2dp | 37.4dp | 触摸盒 `vs_70` + 间距 `vs_10` = 50dp |
+
+**关键发现**:参照图里**播放键比两侧大近 1.5 倍**(它是主控件),原实现五颗一律 `vs_40` 才显得"比例不对"。现两侧图形 = `box × 5/7`,播放键图形 = 满盒。
+
+**连带必做**:触摸盒从 `vs_50` 放大到 `vs_70` 后,5 颗 + 间距在**竖屏全屏**(可用宽约 328dp)会溢出 ⇒ `PlayerTransportRow` 改为 `BoxWithConstraints` 取 `Modifier.weight(1f)` 的**实宽**做钳制 `box = min(vs_70, (maxWidth - gap×4)/5)`;同时**去掉**原夹在左组与右组胶囊之间的 `Spacer(weight(1f))`(留着会让左侧只拿到一半宽,钳制失效),右下角两颗胶囊改为**不给 weight、先量自身宽**。
+
+**顺带复核(未改)**:进度条参照 4.17dp / 现实现 5dp(用户此前要求"粗一点"),保持 5dp;顶栏片名 `ts_24`(参照折算约 17sp、现 15sp)、分辨率行 `ts_18`、返回箭头 24dp 均未动 —— 用户本次只提"控件"。
+
+**验证**:`:app:assembleDebug` + `:app:testDebugUnitTest` → BUILD SUCCESSFUL,**852 用例 / 0 失败 0 错误**;已装机(vivo V2425A,lastUpdateTime=2026-10-10 08:07:11)。**待真机确认**:①左下角播放键与两侧的大小对比是否与参照图一致;②右上角五颗与片名的挤压;③竖屏全屏下底栏不溢出。
+
+### 第二轮:右下角去标签 + 顶栏片名加粗放大(同日,用户带截图)
+
+**需求**:①右下角「选集 / 更多」图标**还是偏小**,并把**文字标签删掉**;②左上角片名**大一些、粗一些**,照参照图。
+
+**量化**(同屏宽归一后测):
+- 参照图右下角图标 em ≈ **26–29dp**、**无标签**、与左下角控制键(29.7dp)基本同大;原实现 24dp 且带 `ts_18` 标签 ⇒ 视觉上比左侧小一截。改法 = 与左下角**共用 `TransportButton`**,触摸盒 `vs_70`、图形 `vs_50`(31.25dp)。
+- 参照图片名:墨迹 **14.6dp**、横向笔画中位 **2.08dp**(笔画/字高 = 0.142);原实现 `ts_24` + Bold:13.4dp / 1.43dp(0.107)⇒ 参照约在 ExtraBold~Black 档。改法 = **`ts_26` + `FontWeight.Black`**。
+
+**连带清理**:`PlayerPillIconButton` 删除(唯一调用方就是这两颗);`PlayerBottomBar` 的 `iconBox` 参数去掉;`PlayerOverlay` 用项目自带 `.codebuddy/tools/prune_imports.py` 清掉 7 个未使用 import,另手工删掉 `layout.size`(prune 脚本因正文里有同名 lambda 参数 `size` 而漏判)。`playerIconBox` / `ICON_TO_BOX_RATIO` 保留(右侧竖排 `PlayerSideButtons` 仍在用)。
+
+**⚠️ 待验证的假设**:`FontWeight.Black`(W900)依赖设备中文字体有 900 字面;**若只有 Regular/Bold 两个字面,会回落到 Bold**,表现为"加粗没效果"。真机若发现粗度没变,先查字面而不是继续加字号(备选方案 = 描边补粗)。
+
+**验证**:`:app:assembleDebug` + `:app:testDebugUnitTest` → BUILD SUCCESSFUL,**852 用例 / 0 失败 0 错误**;已装机(lastUpdateTime=2026-10-10 08:15:39)。
+
+### 第三轮:关闭图标 / 左块垂直居中 / 质量标签 / 顶部遮罩(同日,用户带两张截图)
+
+**① 返回箭头 → 关闭图标**:用户指定用 `.tubiao/close_24dp_…_FILL1_wght400_GRAD0_opsz24.svg`。新增 `player_ic_close.xml`(路径原样转换),**删除 `player_ic_back.xml`**(全仓 grep 确认唯一引用就是这颗)。渲染仍 24dp、动作仍是 `onBackClicked`(退出播放器)、`contentDescription` 仍复用 `common_back`。
+
+**② 左块垂直居中**:内层 Row 由 `Alignment.Top` 改 **`Alignment.CenterVertically`**,并**去掉** Column 的 `top = vs_5` 内距。原先只有片名首行与图标对齐("只有标题居中"),现在「片名 + 分辨率」两行块整体与图标垂直居中 —— 图标中心落在两行之间的空隙上。
+
+**③ 质量标签(照参照图「1080×607 · 480P」)**:新增 `PlayerUiState.videoQuality` + `VideoSizeGate.qualityTag(w, h)`(companion 纯函数,**按短边分档** ≥2160/≥1440/≥1080/≥720/≥480/≥360/≥240 → `2160P`…`144P`)。参照图的 1080×607 短边 607 → `480P`,与本档一致。取值走**与 `videoSize` 同一个闸门**(`qualityFor` 复用 `isPreviousSessionValue`),换会话期间为空串、行内不画 ` · `。`refreshSystemInfo` 每次一并写入;单测补在 `VideoSizeGateTest`(3 例)。
+
+**④ 顶部遮罩此前根本没渲染(本轮真根因)**:`PlayerTopBar` 里那层 scrim 只有 `Modifier.fillMaxWidth().background(verticalGradient(…))`、**既无高度也无内容** ⇒ 实测高度为 0、渐变从未画出来 —— 这就是用户说的「看不出遮罩」。修法 = 补 `.height(playerDim(vs_140))` + 三档渐变 `0.65 → 0.28(@45%) → 0`(参照图实测:顶部 alpha ≈ 0.68,约 92dp 处衰减到 0)。**底栏渐变同时加强**(`0 → 0.35(@50%) → 0.7`)。⚠️ scrim 加高度会让外层 Box 变高,但 `barTopPx` 读的是 Box 的**顶边 y**,`extraTop` 不受影响。
+
+**验证**:`:app:assembleDebug` + `:app:testDebugUnitTest` → BUILD SUCCESSFUL,**855 用例 / 0 失败 0 错误**(+3 质量标签用例);已装机(lastUpdateTime=2026-10-10 08:25:43)。
+
+### 第四轮:关闭图标尺寸 + 组间距校准(同日,用户带两张截图)
+
+**问**:①「左上角的 ✕ 和图一一样大吗」②「图标控件之间的间距感觉不一样,测量看看哪里不同」。
+
+**量化**(两图同为 1920×864、800dp 屏宽 ⇒ 归一后 1 ref = 0.5714dp,可直接比):
+
+| 项目 | 参照 | 原实现 | 结论 |
+|---|---|---|---|
+| ✕ 墨迹 | 27.0 ref(15.4dp) | 21.1 ref(12.1dp) | **小 22%** |
+| 右上 5 颗中心距 | 48.9dp | 48.0dp | 一致,不动 |
+| 左下 5 颗中心距 | 52.0dp(递减 55.2→48.1) | 50.1dp | 偏紧 2dp |
+| 右下 2 颗中心距 | 53.4dp | 49.6dp | 偏紧 3.8dp |
+| 左下首颗墨迹左边 | 49.6dp | 58.3dp | 右移 8.7dp |
+| 左下末颗墨迹右边 | 276.7dp | 277.9dp | 一致 |
+| 左下视觉间隙(边到边) | 32.8dp(离散 3.8) | 31.1dp(离散 5.9) | 更不均匀 |
+
+**改动**:①`player_ic_close` 渲染 24dp → **30dp**(字形墨迹约占 em 的 50%,30dp 出 15.1dp ✓ 对上参照的 15.4dp);②左下与右下两组间距 `vs_10` → **`vs_12`**(中心距 50.1/49.6 → 51.35dp)。
+
+**未修(已量化,等用户指示)**:①首颗右移 8.7dp —— 本实现把字形居中在 43.75dp 触摸盒里,参照图把字形直接贴 48dp 边距;②视觉间隙离散 5.9dp —— 等中心距下,播放键(墨迹 18.3dp)、上/下一集(16.7dp)与两侧圆环(22.9dp)的墨迹宽度差异导致间隙必然不等。两者都只能靠"按墨迹宽逐颗定盒"解决,代价 = 触摸目标变窄 + 硬编码 5 颗字形的墨迹占比(换图标即失效),故未擅自改。
+
+**验证**:`:app:assembleDebug` + `:app:testDebugUnitTest` + `:app:installDebug` → BUILD SUCCESSFUL,**855 用例 / 0 失败 0 错误**;已装机(lastUpdateTime=2026-10-10 08:29:49)。
+
+### 第五轮:片名降一档字重(同日)
+
+**反馈**:「左上角的标题有点太过粗了,稍微减少一点点一点点」。
+
+**量化**(两图同为 1920×864,笔画中位 / 墨迹高):参照 **0.143** / `Bold`(700) **0.107** / `Black`(900) **0.194** ⇒ 900 **超出参照 36%**,目标落在 700 与 900 之间。
+
+**查设备字体**(决定能不能取到 800):`adb shell grep -A40 '<family name="sans-serif">' /system/etc/fonts.xml` → 本机 `sans-serif` 用 **VivoFont.ttf 可变字体**(`wght`/`opsz` 轴),并**逐个声明了 weight 100–800**,900 通过 `sans-serif-black` 别名接入 ⇒ **800 是独立可用字重**,不是靠合成。
+
+**改动**:`FontWeight.Black`(900) → **`FontWeight.ExtraBold`**(800),预期笔画/字高落在 ~0.15(参照 0.143)。
+
+**⚠️ 换 ROM 要复核**:若目标机中文字体只有 {400, 700} 两档,`ExtraBold` 会回落成 Bold(反而偏细);要更精细可用 `FontVariation.Settings` 直接给 `wght` 轴赋值(需 API 26+,且要处理低版本回退)。
+
+**同日收尾**:用户先要求「改为 750」,核实可行性后**又改口「算了 800 就 800 吧」**,紧接着再要求「改回 700 试试」⇒ **最终值 = `FontWeight.Bold`(700)**。核实 750 时顺手查清了两件事(都写进 §4.4 了):①`TextStyle.fontVariationSettings` 只在**具名字体族**(`FontFamily("sans-serif")` → `PlatformTypefaces.optionalOnDeviceFontFamilyByName`)这条路上被真正下传,`FontFamily.Default` / `GenericFontFamily` 的方法签名里没有 `FontVariation.Settings` 参数 ⇒ 在它们上面设轴值无效;②整数档位也取不到中间值,本机 `fonts.xml` 只声明 100–800 的离散实例,`FontWeight(750)` 会被就近匹配成 700 或 800。⚠️ **700 的实测笔画/字高 = 0.107,比参照图的 0.143 偏细** —— 这是用户明知后的选择。
+
+**验证**:`:app:assembleDebug` + `:app:testDebugUnitTest` + `:app:installDebug` → BUILD SUCCESSFUL,**855 用例 / 0 失败 0 错误**;已装机(lastUpdateTime=2026-10-10 08:32:19)。
+
+### 第六轮:两个 bug(同日)
+
+**① 弹窗关闭 / 从最近任务回来时系统状态栏闪一下**
+
+- **根因**:`BaseActivity.applyHideStatusBarPref()` 在**「隐藏状态栏」偏好为关时会主动 `show(statusBars())`**;而 `onResume` 与 `onWindowFocusChanged` 里都是 `applyHideStatusBarPref()` → `hideSysBar()` 连着调 ⇒ **一次焦点事件内 show→hide**。播放页全屏沉浸时,「Dialog 窗口关闭(焦点回到 Activity)」与「从最近任务回到应用」正好各触发一次焦点变化,于是状态栏闪一下。
+- **修法**:`BaseActivity` 新增 `protected open fun keepStatusBarHidden(): Boolean = false`;`DetailActivity` / `LivePlayActivity` 覆写为 `= fullScreen`;`applyHideStatusBarPref` 判据改为 `KV(HIDE_STATUS_BAR) || keepStatusBarHidden()` ⇒ 沉浸态**只 hide、不 show**。退出全屏路径顺序天然正确(`applyFullscreen(false)` 里先 `hideSysBar()` 后 `applyHideStatusBarPref()`,那时 `fullScreen` 已是 false)。
+- **注**:spec §4.4 早有「ROM 在进应用/旋转/回前台会短暂放出系统栏」的记录(那是顶部安全区取值分岔的成因),本次这条是**应用自己造成的** show→hide,两者别混。
+
+**② 唤出控件时双击暂停,菜单与进度条被收起**
+
+- **根因**:`ComposeVideoController.onPlayStateChanged` 的 `PAUSED` 分支里有 `topLeftVisible/topRightVisible/netSpeedTopRightVisible = false` + `hideBottom()`。这套是当年为「用户暂停 → 收菜单 + 画中央暂停浮层」设计的,而**暂停浮层已在同日第二轮删除** ⇒ 只剩「双击暂停后控件凭空消失」这个副作用,用户明确反对。
+- **修法**:该分支只保留 `savePlaybackProgress`,不再动可见性。暂停/续播保持控件原状,之后按 10s 空闲计时自然收起。`lifecyclePaused`(退后台暂停)与 `pauseOverlayVisible` 判定未改。
+
+**验证**:`:app:assembleDebug` + `:app:testDebugUnitTest` → 编译通过、**855 用例 / 0 失败 0 错误**;`:app:installDebug` 首次因设备侧瞬时异常失败(`DeviceException`),重试成功 —— 已装机(lastUpdateTime=2026-10-10 08:40:32)。**待真机确认**:①弹窗关闭、从最近任务回来时状态栏不再闪;②唤出控件后双击暂停,菜单/进度条保持显示。
+
+### 第七轮:拖动进度条松手闪一帧(同日)
+
+**现象**:用户「感觉拖动进度条再松手会有一瞬间的闪烁」。
+
+**定位(读代码 + 读 media3 字节码)**:
+- `PlayerSeekRow` 的进度取值源是 `state.dragging ? seekPreviewPositionMs : position`。松手时 `onSeekFinished` 把 `dragging` 置 false,进度立刻改读 `state.position` —— 而它只由进度心跳刷新,心跳是 `uiHandler.post(...)`,要等**下一个主线程消息** ⇒ **松手那一帧画的还是旧位置**(滑块 + 时间文字先弹回,下一帧再跳过去),正好是一帧的闪。
+- 顺带确认了"乐观写回"是安全的:`javap -c` 读 media3 1.11.1 `ExoPlayerImpl.getCurrentPosition()` → `getCurrentPositionUsInternal(playbackInfo)` 直接返回 `PlaybackInfo.positionUs`,而 `seekTo` 会乐观更新它 ⇒ 紧接着的心跳读到的就是目标值,不会把乐观值覆盖回旧值。
+
+**改动**:`PlayerActionsDelegate.onSeekFinished` 在 `view.seekTo(target)` 之后、`dragging = false` 之前**写回 `state.position = seekTarget`**;±10 秒的 `onSeekRelative` 同样补 `state.position = target.toInt()`。`onSeekCancelled` **不写**(没发生 seek,回落真实位置才对)。
+
+**验证**:`:app:assembleDebug` + `:app:testDebugUnitTest` + `:app:installDebug` → BUILD SUCCESSFUL,**855 用例 / 0 失败 0 错误**;已装机(lastUpdateTime=2026-10-10 08:51:34)。**待真机确认**:拖动进度条松手时滑块/时间不再回弹一帧。
+
+### 第八轮:电量 + 时间重新挂回右上角(同日)
+
+**起因**:用户问「右上角还能塞得下电量和时间吗,在视轨图标的上方」。
+
+**先量再答**(截图 1920×864 → 800dp 宽):图标墨迹距屏顶 **25.4dp**、图标墨迹高 23.3dp、图标盒 42dp、**`topPad` 只有 12dp** —— 即视觉上的 25.4dp 里有 13.4dp 是"28dp 图形居中在 42dp 盒里"的留白,布局上压不进去。结论:**能塞下,但要么压 `topPad`(做法 A)、要么图标整体下移 16dp(做法 B)**。同时量出横向其实更宽裕(片名块右边缘到图标左边还有 387dp,但片名是 `weight(1f)`、长片名会吃掉)。给用户画了三种布局的竖直位置对比图,用户选 **A**。
+
+**改动(做法 A)**:
+- 右块由一行图标改成**两行 `Column`**:第一行 `电量% + 电池图标(14dp) + 系统时间`,右对齐、`ts_18`、**行高固定 16dp**;第二行 5 颗图标不变。
+- **全屏态 `topPad` 12dp → 2dp**(新增 `FullscreenTopPadding`,预览态仍 `PreviewTopPadding = 4dp`)⇒ 实测图标只下移约 6dp、片名上移 10dp。
+- 外层 Row `verticalAlignment` `CenterVertically` → **`Top`**,让片名首行与"电量时间"行顶边对齐。
+- 恢复 `batteryIcon(state)`(第一轮删掉的映射函数);**网速不恢复**(用户只要电量 + 时间)。
+
+**为什么行高要固定 16dp**:`state.sysTime` / `batteryPercent` 由 `refreshSystemInfo()` 每秒刷新,首帧是空值 ⇒ 不固定行高的话行高会从 0 涨到 16dp,进播放器约 1s 后图标跳一下。
+
+**验证**:`:app:assembleDebug` + `:app:testDebugUnitTest` + `:app:installDebug` → BUILD SUCCESSFUL,**855 用例 / 0 失败 0 错误**;已装机(lastUpdateTime=2026-10-10 08:59:26)。**待真机确认**:①右上角两行是否与左侧两行顶边对齐;②图标位移是否只有 ~6dp;③进播放器 1s 后图标不再跳。
+
+**同日补丁:电池图标与文字不在一条线上(用户带截图)**。量(2800×1260,1px=0.286dp):`21%` 墨迹高 8.3dp / 中心 **13.7dp**,电池图标墨迹高 6.6dp / 中心 **10.0dp**,`09:00` 中心 13.7dp ⇒ 图标比文字**高 3.7dp**,且墨迹比文字小一圈。
+- **根因**:那一行固定 16dp,但文字的**自然行高约 18dp** —— 文字被裁到贴底、图标却按行居中,于是错开 3.7dp。图标本身没变形(drawable 是 960×960 正方形)。
+- **修法**:两个 `Text` 显式给 `lineHeight = 16dp`(用 `LocalDensity` 把 `TopBarSysInfoHeight` 转 sp,默认 `LineHeightStyle` 会把字形在行盒里居中);电池图标 14dp → **16dp**(墨迹 6.6 → 7.5dp,与文字的 8.3dp 同档)。行高仍是 16dp ⇒ **下方图标行位置不变**。
+- **验证**:BUILD SUCCESSFUL,855 用例 / 0 失败 0 错误;已装机(lastUpdateTime=2026-10-10 09:02:45)。
+
+### 第九轮:底栏加网速胶囊 + 进度条手柄缩小(同日)
+
+**① 右下角网速胶囊**。位置 = 进度条上方那一行的**右端**(时间胶囊在同一行左端),**直接复用 `PlayerInfoPill` 容器** ⇒ 底色 / 圆角 / 内距与时间胶囊完全同源(用户要求「设计风格和左下角进度胶囊一致」)。文案 `state.netSpeedTopRight`(字符串一直由 `refreshSystemInfo()` 每秒采集,第一轮只是把渲染撤了)、字号 `ts_20`、`FontWeight.Medium`;守卫 = `netSpeedTopRightVisible && 字符串非空` —— 顺带给这个此前**无读取方**的 flag 恢复了消费方。仍**只在全屏出现**(整行在 `if (!previewMode)` 内),**网速不回顶栏**。
+
+**② 进度条手柄缩小**。实测缩小前手柄直径 **16.0dp**(半径 8dp,与代码一致)⇒ 半径 `8/11dp` → `7/10dp` → **`6/9dp`**(用户先说「稍微缩小一点点」,随后直接定「半径改为 6dp」;拖动态的 `+3dp` 增量保持不变)。
+
+**验证**:`:app:assembleDebug` + `:app:testDebugUnitTest` + `:app:installDebug` → BUILD SUCCESSFUL,**855 用例 / 0 失败 0 错误**;已装机(lastUpdateTime=2026-10-10 09:06:33)。**待真机确认**:①网速胶囊与时间胶囊同高、右端与进度条右端对齐;②手柄观感。
+
+**验证**:`:app:assembleDebug` + `:app:testDebugUnitTest` → BUILD SUCCESSFUL,**852 用例 / 0 失败 0 错误**。
+
+## 播放器覆盖层:删 500ms 点击防抖 + 零涟漪按压弹性(2026-10-10)
+
+**诉求**:用户三连问 + 拍板 —— 「播放器界面 500ms 点击防抖能否舍弃,能否增加点无涟漪、图标弹性的效果」;选定**全部删掉(含 play_pause)**、**全部播放器图标接入**、**不要写注释**。
+
+**范围清点(先分清 4 处 500ms,别连带删)**:①`PlayerActionsDelegate.fastClickAllowed(key)` = 按按键分键的独立计时窗口(`fastClickMap`,命中即 `return` 静默丢弃),13 个调用点;②`VideoGestureHandler.longPressTimeoutMs = 500` = 长按判定阈值;③`HlsErrorHandlingPolicy.RETRY_DELAY_MS = 500` = 重试退避;④`util/FastClickCheckUtil`(内部 500ms 的 `isClickable = false` 原生防抖)= **全仓零调用的死代码**。只删 ①、④。
+
+**判据**:①的覆盖面对除播放暂停外的动作**全部幂等** —— 面板类动作在 500ms 内根本打不到按钮(`PlayerDialog` 是独立窗口、自己铺遮罩吃手势,且 `overlayPanelOpen` 让 `idleHideRunnable` 只续期不收起),旋转类重复执行收敛,长按类重复执行结果相同。播放暂停按用户要求**无任何节流直连内核**(`AppPlayerView.togglePlay() = if (isPlaying) pause() else start()`),与画面双击切播放(`togglePlayFromGesture`)口径统一。顺带修掉一个潜伏问题:`onPlayPauseClicked` 的 `tipVisible` 守卫原来排在节流之后 ⇒ 加载态误触会吃掉一个 500ms 窗口、加载结束瞬间第一次点播放无效。
+
+**按压弹性设计 = 无涟漪**:播放器覆盖层的交互控件**一律保持 `pointerInput` + `detectTapGestures`**(不改成 `Modifier.clickable`,那会引入涟漪、也会碰 `Theme.kt` 的全站 2 倍 `LocalRippleConfiguration`;同时继续满足 `VideoGestureLayerWiringTest` 锁的「子控件消费的触摸不进手势层」契约)。新增 `player/ui/PlayerPressScale.kt`:`Modifier.playerPressEffect(onTap, onLongClick)` = `onPress`/`tryAwaitRelease` 驱动 `PlayerPressState.pressed`,经 `animateFloatAsState` + `spring(dampingRatio = 0.75f, stiffness = StiffnessMediumLow)` 写进 `graphicsLayer` 的 `scaleX/scaleY`(阻尼比 < 1 才有回弹,观感约 9% 过冲),按压目标 `PLAYER_PRESS_SCALE = 0.9f`。⚠️ **`pointerInput` 的键取 `hasLongClick`(布尔)而不是 `onClick` 方法引用**:方法引用每次重组都是新实例,会把指针协程在按压途中重启、`tryAwaitRelease()` 被取消 ⇒ 有卡在缩小态的风险(与规范 §4.11 「指针手势的键必须是实例身份」是同一条教训的两个方向);键恒定后协程只被组合销毁取消,`onTap` / `onLongClick` 各经 `rememberUpdatedState` 取最新值。
+
+**接入点**:底栏 5 颗 `TransportButton` + 预览态 `PreviewPlayPauseButton`(**缩放只给 `Image`,触摸盒 `Box` 不动** ⇒ 命中区与布局不受缩放影响,也不带动 `Spacer`/`weight` 重算);顶栏 5 颗 `TopBarIconButton`(字幕 / 弹幕两颗**保留长按语义**:长按保持缩小态、抬手回弹);右侧竖排 `SideButton` 两颗(只在 `visible` 时挂);**进度条滑块半径改弹簧** —— `thumbActive` 驱动的 6dp → 9dp 由硬切改 `animateFloatAsState` + 同一组 spring,`with(density){ dp.toPx() }` 后再进 Canvas(⚠️ 不能用 `playerDim` 做尺寸动画,负 padding / 负尺寸直接抛 `IllegalArgumentException`)。**未改**:`PlayerSheets.kt` 的 `SheetButton` / `SheetActionButton`(面板子系统,已有 `onPressChange` 钩子与 100ms 点亮)与 `PlayerMenuButton`(沿用按压底色 + 加粗)。
+
+**测试**:新增 `PlayerPressScaleTest`(纯 JVM:按压状态机、缩放常量区间)+ `PlayerPressHoldTest`(Robolectric Compose:单击只派发一次 / 长按只派发长按 / **按住控件 700ms 不漏给手势层**(即不误触发画面长按倍速)/ 空白区按住仍能触发长按)。写这条「不漏给手势层」用例时发现一个值得记的探针性质:**子控件消费触摸后,父层的观察者可能一个事件都收不到**(父层 `parentSeen` 为空)⇒ 断言必须写成「父层收到的事件全是已消费」而不是「父层必须收到事件」,否则用例会因为没事件可看而假失败。该用例顺带确认:现状下按住这三个图标**不会**触发画面长按倍速。
+
+**验证**:`:app:compileDebugKotlin` + `:app:testDebugUnitTest` → BUILD SUCCESSFUL,**865 用例 / 0 失败 0 错误**(新增 10 条;删掉节流后 `PlayerPressHoldTest` 的 4 条与既有 `VideoGesture*` / `ComposeGestureHarnessTest` 全绿)。**待真机确认**:①按压回弹幅度(0.9 + 0.75 阻尼)是否偏跳;②底栏 5 颗缩的是图标、触摸盒未动的命中区观感;③长按倍速不再被底栏按钮误触发;④滑块弹簧手感;⑤连点播放键的观感与状态机抖动(用户已明确接受此风险,若报抖动改 `togglePlay` 那一层加护栏,别回退成 UI 点击节流)。
+
+## 播放器浮层进出场动画(2026-10-10,紧接上一条)
+
+**起因与结论**:用户问「点击屏幕唤出播放器控件有动画效果吗,还是硬切的」,查证结论是**全硬切** —— `player/ui/` 下 `androidx.compose.animation` 只有 `animation.core`(本次新加的按压弹性与滑块弹簧)与 `PlayerSheets` 的 `Animatable`,`AnimatedVisibility` / `Crossfade` / `AnimatedContent` 一处都没有;底栏、顶栏、信息 OSD、提示类浮层、侧边钮全是 8 处 `if (!visible) return` 条件渲染。即观感 = 「点一下 → 等 300ms 双击窗口超时 → 控件啪地弹出」,两头都没缓冲;10s 自动隐藏同样是瞬间消失。
+
+**方案(用户一次拍板做 4 步,「1234一起做了」)**:参数与时机的完整口径已进活规范(见 `avbox-mobile-ui-spec.md` 的「播放器浮层进出场动画」条),这里只记实施与踩到的坑。
+
+**改动落点**:新文件 `player/ui/PlayerControlsAnimation.kt`(常量 + `playerEnterFromTop/Bottom`、`playerExitToTop/Bottom`、`playerHintEnter/Exit`、`playerSideAlpha/Scale`、`Modifier.playerSideEffect`、`PlayerHintVisibility`、`PlayerFadeVisibility`)。`PlayerOverlay` 在调用点给顶栏/底栏套 `AnimatedVisibility`(底栏那层同时承载 `Modifier.align(BottomCenter)`,与原调用点一致);`PlayerSlideHint` / `PlayerSeekHint` / `PlayerSpeedBoostHint` 改为 `PlayerHintVisibility` 包裹;**8 处 `if (!visible) return` 全部删除** —— 这是本批的硬要求,详见下面的铁律。`SideButton` 的 `alpha = if (visible) 1f else 0f` 改成 `animateFloatAsState` + `spring(0.7)` 的缩放,挂到触摸盒 `Box` 上。
+
+**⚠️ 实施中真正花时间的三个坑(全部已修)**:
+1. **退场必须真的离树,不能用「恒在树里 + 动画 alpha」**。底栏声明高度约 100dp,根节点一旦以 alpha 0 留在树里,它的 `pointerInput` 仍会 `consume()` down ⇒ **屏幕底部 100dp 内的单击唤不出控件**。故一律走 `AnimatedVisibility`(退场播完自动摘出树)。为把这条钉死,专门写了 `PlayerControlsAnimationWiringTest.hiddenControlsKeepTheBottomBandClickable`(收起后在底部带点一下,断言手势层收到 `singleTap`)。
+2. **`PlayerInfoOsd` 的触摸热区要条件挂载**。它自带 `pointerInput { detectTapGestures(onInfoOsdClicked) }`,否则退场那 200ms 里会边淡出边吞手势。改成 `if (visible) Modifier.pointerInput(…) else Modifier`。
+3. **顶栏 `onGloballyPositioned` 会留下陈旧基准**。`extraTop` 用 `barTopPx` 反推刘海避让量,而 `slideOutVertically` 只改绘制偏移、不改布局 ⇒ 回调不会重跑,`barTopPx` 会停在离场前的旧值,重新进场时顶栏会跳一帧。改成 `onGloballyPositioned { if (anyVisible) barTopPx = … }`,离场期间冻结在最后一次可见值。
+   另:`PlayerTopBar` 原结构是「可选 scrim `Box` + `Row`」并列在 `Box` 里,改成动画后必须把两者包进同一个 `Column` 才同组淡出 —— 改这一处时一度括号失衡(函数少一个 `}`、后面的 `TopBarIconButton` 被当成局部函数),编译器报的是 `Modifier 'private' is not applicable to 'local function'`,按这个报错反查括号最快。
+
+**测试踩坑**:`collapsingControlsRemovesTheBarFromTheTree` 与 `transportButtonStillFiresItsAction` 起初用 `onNodeWithContentDescription("播放")` 定位播放键,**两条都失败** —— 单测跑在默认 locale 下,拿到的是英文串。改为在 `PlayerBottomBar` 的播放键上挂稳定 `testTag`(`TRANSPORT_PLAY_PAUSE_TAG = "playerTransportPlayPause"`,经 `TransportButton` 的**可选** `testTag: String? = null` 参数传入,其余 4 颗不传、行为不变)。
+
+**验证**:`:app:compileDebugKotlin --rerun-tasks`(改动文件零警告)+ `:app:testDebugUnitTest` + `:app:assembleDebug` → BUILD SUCCESSFUL,**878 用例 / 0 失败 0 错误 1 跳过**(865 → 878,新增 9 条参数关系用例 + 4 条接线用例)。**待真机确认**:①进出场手感(180ms / 12dp 是否够「吸附上来」而不像整页滑入);②连续快速点击画面时控件反复进出是否跟手;③顶栏在刘海屏上进出场时不再跳那一帧;④10s 自动隐藏的淡出观感;⑤侧边钮弹性浮现与按压弹性是否显得一致。
+
+### 时长统一为 180ms(同日,用户要求)
+
+**诉求**:「除了提示浮层,其他的进场出场动画都统一改为 180ms」。
+
+**改动**:`PLAYER_OUT_MS` 240→180、`PLAYER_SIDE_IN_MS` 160→180、`PLAYER_SIDE_OUT_MS` 200→180、`PLAYER_OSD_IN_MS` 160→180、`PLAYER_OSD_OUT_MS` 200→180(`PLAYER_IN_MS` 本就是 180)。⇒ **栏 / 侧边钮 alpha / 信息 OSD 现在进出同拍 180ms**;提示浮层保持 150↔140(用户明确保留的例外);曲线分工不变(进 `LinearOutSlowIn`、出 `FastOutLinearIn`)。连点预算由 420ms 降到 **360ms**。
+
+**连带两处**:①进度条滑块半径原本是 `spring(0.75 / MediumLow)`(与全栈不同拍),改为 `tween(180ms)` + 同一对曲线 —— 它属"进出场"语义,故纳入统一;**按压弹性(`playerPressEffect`)与侧边钮缩放(`playerSideScale`)仍是弹簧**,它们是"手指直接操纵的反馈",不受这条统一约束。②测试 `PlayerControlsAnimationTest` 里两处"谁更快"的关系断言(`controlsEnterFasterThanTheyLeave`、`sideButtonsAnimateFasterThanTheBars`、`osdFadesFasterThanTheBars`)在统一后不再成立,改写为 `everyChromeAnimationRunsForOneHundredEightyMillis`(六个常量全部等于 180)+ `hintsStayTheOnlyFasterAnimation` + 两条"与栏同拍"的 `assertEquals`。
+
+**为什么第一版用不对称时长**:当时的理由是「出场时用户不看它、出慢显得从容;进场时用户在等它、必须抢时间」。统一后该理由作废,但**如果日后要再拉开,只需改 `PLAYER_OUT_MS` 一处**,测试会先失败提醒。
+
+**验证**:`:app:testDebugUnitTest` + `:app:installDebug` → BUILD SUCCESSFUL,**881 用例 / 0 失败 0 错误 1 跳过**;已装机。**待真机确认**:缩放/淡出/位移同拍 180ms 后,栈内多元素同时进出是否更整齐、以及出场是否偏"急"。
+
+### 时长再降到 120ms(同日第三版,用户"180 太慢")
+
+**诉求**:「唤出 180ms、退回 180ms,统一改为 120ms,不要 180 了太慢」。
+
+**改动**:八个常量**全部改成 120**(`PLAYER_IN_MS` / `PLAYER_OUT_MS` / `PLAYER_SIDE_IN_MS` / `PLAYER_SIDE_OUT_MS` / `PLAYER_OSD_IN_MS` / `PLAYER_OSD_OUT_MS` 由 180 → 120;`PLAYER_HINT_IN_MS` 150 → 120、`PLAYER_HINT_OUT_MS` 140 → 120)。⇒ **提示浮层不再是"更快的例外",八个时长完全统一**。连点预算降至 **240ms**。曲线(进 `LinearOutSlowIn`、出 `FastOutLinearIn`)、位移(栏 12dp / 提示 8dp)、接入点、弹簧(按压弹性、侧边钮缩放)全部未动 —— 三版演进只动这组常量。
+
+**为什么不给提示浮层留 150/140**:第二版曾把它作为"1s 存活、动画要更短"的例外保留;第三版用户要求统一 120,而 120 **比它原来的 150/140 更快**,与"太慢"的诉求同向,故一并降。⚠️ 副作用要知道:提示浮层出场从 140 → 120,占用 1s 存活时间略微减少(仍只占 24%),可接受。
+
+**测试同步**:`everyChromeAnimationRunsForOneHundredEightyMillis` → 改名 `everyChromeAnimationRunsForOneHundredTwentyMillis` 并增加两条提示类断言(共八个);`hintsStayTheOnlyFasterAnimation`(断言提示比栏更快)在统一后不再成立 → 删除,替换为 `everyTimingConstantIsUnified`(断言提示类与栏同值)。`hintAnimationIsFarShorterThanItsOneSecondLifetime`(和 ≤ 1000/3)与 `reentryBudgetStaysUnderHalfASecond` 两条上限断言仍成立、未动。
+
+**验证**:`:app:testDebugUnitTest` + `:app:installDebug` → BUILD SUCCESSFUL,**891 用例 / 0 失败 0 错误 1 跳过**;已装机(10:29)。**待真机确认**:120ms 是否够"看得见"—— 若觉得一闪而过、来不及看清控件位置,回调到中间档(如 150)只改这一组常量即可,测试会先失败提醒。
+
+
+**验证**:`:app:testDebugUnitTest` + `:app:installDebug` → BUILD SUCCESSFUL,**881 用例 / 0 失败 0 错误 1 跳过**;已装机。**待真机确认**:缩放/淡出/位移同拍 180ms 后,栈内多元素同时进出是否更整齐、以及出场是否偏"急"。
+
+
+### 真机 bug:唤出控件后顶栏卡在屏幕偏下(同日,用户带截图)
+
+**现象**:全屏 1920×1080 片源(横屏)唤出控件后,顶栏的返回键 / 片名 / 电量时间 / 5 颗动作钮整条**没有回到屏幕顶部,而是停在偏下的位置**(截图里约在屏高 26%–30% 处),底栏正常。
+
+**定位(第一轮走错,第二轮靠真机埋点纠正)**:第一轮凭代码阅读判定为"我顺手加的 `onGloballyPositioned` 去抖门槛"(`if (anyVisible) barTopPx = …`),理由是 `extraTop = (topInsetPx - barTopPx).coerceAtLeast(0f)` 被放大并冻结。**这个诊断是错的**,改回无条件测量后用户复测**现象不变**。第二轮上真机埋点(`LOG.i` 加 `echo-player-topbar` 前缀落盘,再用 `adb shell run-as … cat files/preload_debug.log` 读),拿到硬数据:
+
+```
+echo-player-topbar: any=true topInsetPx=0 barTopPx=-42.0 extraTopDp=0.0 topPadDp=6.0 density=3.5 slidePx=42 scrimPx=306.0
+echo-player-topbar-row: y=306.0 h=32      ← 静止态内容就在 306px
+```
+
+`topInsetPx=0`、`extraTopDp=0.0` ⇒ **`extraTop` 全程没参与**,该机 `displayCutout` 顶边为 0。真因是**布局流**:给「可选 scrim + 行」套同组淡出时我用了 `Column`,而 `Column` 纵向依次排列 ⇒ `height(playerDim(R.dimen.vs_140))` 的渐变条**先占掉自己的高度**(本机 306px ≈ 87dp),把下面的行整体顶下去。原版是 `Box` 里「渐变 `Box` + `Row`」并列,渐变只当背景垫底、不占内容流 —— 我换容器时把它变成了内容流的一部分。
+
+**修法**:容器 `Column` → `Box`(渐变 + 行并列),渐变只作背景绘制层;`extraTop` 的测量那一行保持**无条件**(与改造前一致,不加门槛)。埋点全部撤除。
+
+**方法论(值得记)**:①同一个症状"整块下移"有至少两个候选因(布局流 vs 位置探测),**不要凭代码阅读择一,先埋点量数据**;②量**内容本体**的坐标(`onGloballyPositioned` 打在行上)比量容器有效 —— 外 `Box` 一直是贴顶的,量它永远看不出问题;③`LOG` 的落盘日志只认 `FILE_LOG_PREFIXES` 白名单,前缀不在表里就**只进 logcat 不落盘**;而 logcat 缓冲会被刷掉/清空(这次连踩两次"抓不到"),落盘文件才是可靠取证手段;④强制重启要用 `adb shell am force-stop` 并**确认 `pidof` 为空** —— 装包后系统会立刻把进程拉起来继续跑**旧代码**,埋点会"装了不生效"(这次也踩了一次)。
+
+**顺带查清的一个观感误导**:顶栏那条 scrim 的 `vs_140` = **140mm**,经 `playerDim` 的 mm 缩放后在本机 ≈ **306px(屏高 24%)**,并不是"细窄的顶部渐变"。
+
+**回归锁**:`PlayerControlsAnimationWiringTest.topBarContentSitsAtTheTopEdgeNotBelowTheScrim`(量 `TOP_BAR_BACK_TAG` 的**中心 y ≤ 屏高 15%**,新增该 `testTag`)+ 既有的 `topBarStaysAnchoredToTheTopEdge`(根节点贴顶且不成满屏)+ **`PlayerTopBarDeviceLayoutTest`(真机几何 `w2800dp-h1260dp-xxhdpi` 复跑贴顶断言)**。⚠️ 第三条是这次补的关键:Robolectric 默认 320×470dp 下 `playerMmScale` 只有 0.367、scrim 才 132dp,**bug 在默认档位下根本不暴露** —— 几何依赖 mm 缩放的组件必须有一条按真机档位跑的用例。写这些用例时又踩一个坑:**不要包 `AVBoxTheme`**(静态初始化炸 `ExceptionInInitializerError`,`AppThemeState` 依赖 `KV`/MMKV),排版断言不需要主题色。
+
+**验证**:`:app:testDebugUnitTest` + `:app:installDebug` → BUILD SUCCESSFUL,**881 用例 / 0 失败 0 错误 1 跳过**;已装机。**待真机确认**:顶栏内容回到贴顶(返回键中心在屏高 15% 以内)。
+
+## 屏显(OSD)加「音频解码方式 + 真实解码器名」(2026-10-10)
+
+**诉求**:用户在 OSD 截图上问「能否在播放器 osd 显示音频解码器是硬解码还是软解码」。
+
+**第一版做错了一半(值得记)**:先用 `MediaCodecList` 遍历 + 能力过滤取"第一个能吃的",那是**列表预测值**;用户追问「读取的是键值还是真实值啊」,核对后确认:视频侧本来就是真值(`ReplayableCacheVideoRenderer.onCodecInitialized` → `PlayerCodecStats.videoDecoderName`),而音频侧**没有**这类钩子,我那一版是预测。遂改为真值:查 media3 1.11.1 的 `MediaCodecRenderer.getCodecInfo()`(**`protected final`**,返回**已初始化**的 `MediaCodecInfo`)→ `EngineRenderersFactory.buildAudioRenderers` 覆写里抓住 ExoPlayer 新建的 `MediaCodecAudioRenderer` 实例(只记引用,不改构建逻辑;非该类型如扩展软解 `DecoderAudioRenderer` 时只记类名、不给硬/软结论)→ `AudioCodecProbe` 反射调它拿 `name / hardwareAccelerated / softwareOnly`。**只有反射拿不到时才回落 `MediaCodecList` 预测**,并在 `echo-player-audio-codec` 日志里标 `source=live` / `source=predicted`。
+
+**硬/软判据收敛成一份**:`PlayerHelper.decodeKindOf(name, hw, swOnly)` → `PlayerDecodeKind`(纯 JVM,零 Android 依赖)。软解名判据 = `c2.android.` / `OMX.google.` / `OMX.ffmpeg.` / 含 `.sw.` / **结尾 `.sw`**(⚠️ 最后这条是测试逼出来的:我最初只写了 `.sw.` 带点版,`c2.qti.aac.decoder.sw` 这种结尾式命名会漏判)。文案复用既有 `player_decode_hard` / `player_decode_soft`,**未新增 string**。
+
+**真机取证(vivo V2425A / SM8650)与结论**:
+```
+echo-player-audio-codec: source=live mime=audio/mp4a-latm name=c2.android.aac.decoder hw=false swOnly=true kind=SOFTWARE renderer=MediaCodecAudioRenderer
+echo-player-audio-renderer: bound MediaCodecAudioRenderer
+echo-exo-selector: mime=video/avc preferSoft=false count=3 first=c2.qti.avc.decoder
+```
+⇒ 音频确实走了软解,但**这是设备的硬限制,不是 App 或 ExoPlayer 的选择**:该机 `audio/mp4a-latm` 的解码器清单**只有** `c2.android.aac.decoder`(别名 `OMX.google.aac.decoder`);同机却有 `OMX.vivo.flac/mp3/ape/ac3/dts/alac/wma.decoder` 与 `OMX.qcom.video.decoder.avc/hevc/vp9`。即**厂商 vendor 配置没给 AAC 硬解**。另:该机 AAC 输入仅 `c2.android.aac.decoder` 一个候选,故 `MediaCodecList` 预测与真值恰好一致 —— 但**结论不能建立在"恰好一致"上**,这正是当初要改成真值的原因。用户对 `mp4a.40.2` 与"aac"的疑问已澄清:`mp4a` = MP4 的 MPEG-4 Audio fourcc、`.40` = AAC、`.2` = AAC-LC,Android 映射为 MIME `audio/mp4a-latm`,同一件事的三个名字。**用户已表态"这个问题到此为止"**。
+
+**测试**:`PlayerHelperTest` +6 条(空名→UNKNOWN、软解名优先于 hw 标志、`softwareOnly` 优先、厂商名+hw→HARDWARE、厂商名无 hw→UNKNOWN);新增 `AudioDecoderLookupTest` 5 条契约用例(NULL format / 无 mime / 视频 mime / 非音频 mime → null、`decodeKind` 与 `choiceFor` 同名)。⚠️ **"真机能否查到解码器"在 JVM 里无法验证**:实测 Robolectric 的 `MediaCodecList` 是空壳(`count=0`,android-all 不随包 codec 配置),所以那条依赖真机的断言已删,只锁契约(与顶栏那次 `playerMmScale` 的教训同源:**环境档位不同,单测覆盖不到的现象必须靠真机日志**)。
+
+**验证**:`:app:testDebugUnitTest` + `:app:installDebug` → BUILD SUCCESSFUL,**891 用例 / 0 失败 0 错误 1 跳过**;已装机,真机 OSD 显示 `音频 mp4a.40.2 · 软解码 · c2.android.aac.decoder · 2.0 · 48kHz`,与日志 `source=live` 一致。
+
+## 详情页信息流重排:选集上移到线路/清晰度之前(2026-10-11,用户拍板)
+
+**诉求**:选集使用频率最高,要求提到线路之前。用户给定的目标顺序 = Hero 海报区 → 简介 → TMDB 信息区 → **选集** → 清晰度 → **线路** → 换源 → 相关推荐(与旧顺序的差别有两处:选集从第 3 个分区提到第 1 个;清晰度与线路相对顺序对调成 清晰度 → 线路)。
+
+**改动**:只动 `ui/activity/DetailContent.kt` 页面级 `LazyColumn` 的 item 排列(`episodes` 提到 `quality` / `flags` 之前),三个 item 的 `key` 与内部实现零改动。改动前核对:页面级列表没有按 `firstVisibleItemIndex` / 下标定位的逻辑(`scrollToItem` 全部在选集行 / 换源行 / 搜索 / 直播各自的子列表内部)⇒ 重排不影响滚动定位。活规范 `avbox-mobile-ui-spec.md` 的「信息流顺序」一句同步(连带两镜像)。
+
+**验证**:`:app:assembleDebug` → BUILD SUCCESSFUL(纯 UI 排列改动,按既有约定不跑单测);设备不在线未装机,待真机走查。
+
+## 详情页 Hero:播放胶囊 + 三颗圆钮的弹性按压(2026-10-11,用户拍板)
+
+**诉求**:用户先问「影视详情海报页的播放控件长按后有弹性缩放吗」→ 答"只有全站 2 倍涟漪、没有任何缩放"并列出可复用的两套(播放器覆盖层 `playerPressEffect` = 有回弹;海报卡 `PressableCard` = 无回弹)→ 用户回「播放胶囊和三颗圆扭加上」。
+
+**改动**:`ui/activity/DetailHero.kt` 两处 `.clickable(onClick = …)` → `.playerPressEffect(onTap = …)`,位置落在 `clip` / `background`(胶囊)与 `detailGlass`(圆钮)**之前** —— `graphicsLayer` 只作用于其后绘制的层,挂在后面会变成"底色不动、只有内容缩";零新增实现,直接复用 `player/ui/PlayerPressScale.kt`(`internal`、同模块可跨包引用,已有 `MusicPlayerScreen` 引 `player.ui.CastSheet` 的先例)。
+
+**两处口径差别(已在回复中向用户点明,可反悔)**:①`playerPressEffect` 是 `pointerInput` + `detectTapGestures`,**不带涟漪** ⇒ 这两个控件原有的 2 倍涟漪被替换(与播放器覆盖层"无涟漪 + 弹性"同款);要"涟漪 + 缩放"得另写 modifier,本轮未做。②缩放 = **整颗控件** 0.9 + `spring(dampingRatio = 0.75f, StiffnessMediumLow)`(约 9% 过冲),与 `PressableCard`(0.97、无过冲、带涟漪、用于海报卡)是两套,别混。③两者都没有长按动作 ⇒ 按住保持缩小态、抬手回弹,长按与单击一致。`pointerInput` 的键是 `hasLongClick` 常量 ⇒ 指针协程不会在按压途中被重启(既有教训);`graphicsLayer` 不改布局 ⇒ 位置与间距不抖动。
+
+**验证**:`:app:assembleDebug` BUILD SUCCESSFUL(纯 UI 改动,按约定未跑单测);设备不在线未装机。待真机走查:①幅度是否偏跳(0.9 对 180dp 胶囊 = 缩 18dp;对 52dp 圆钮 = 缩 5.2dp);②无涟漪的观感;③从胶囊/圆钮上起手滚动页面不受影响。
+
+
+
+
+

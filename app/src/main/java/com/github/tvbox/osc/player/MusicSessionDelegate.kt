@@ -83,11 +83,9 @@ class MusicSessionDelegate(private val host: Host) {
     fun isAudioOnlyContent(): Boolean = java.lang.Boolean.TRUE == isAudioOnlyPlayback()
 
     fun setMusicAudioOnly(enabled: Boolean) {
-        if (musicPage == enabled && host.view()?.isAudioOnlyMode() == enabled) return
-        val view = host.view() ?: return
+        if (musicPage == enabled) return
         musicPage = enabled
         LOG.i("echo-music audio-only forced=$enabled")
-        view.setAudioOnlyMode(enabled)
     }
 
     fun handlePlayStateForMusicSession(playState: PlayState): Boolean {
@@ -168,11 +166,6 @@ class MusicSessionDelegate(private val host: Host) {
 
     fun ensureAudioOnlyRender() {
         val view = host.view() ?: return
-        if (musicPage) {
-            // 音乐页已禁用视频渲染器：画面不再解码，避免 1x1 Surface 在翻页时失效导致硬解崩溃。
-            view.switchRenderToTexture()
-            return
-        }
         val audioOnly = isAudioOnlyPlayback()
         if (java.lang.Boolean.TRUE == audioOnly) {
             view.switchRenderToTexture()
@@ -188,7 +181,6 @@ class MusicSessionDelegate(private val host: Host) {
         if (!PlaybackService.isSupported(context)) return
         val st = host.attemptState()
         if (st.switchingPlayback) return
-        if (musicPage) view.setAudioOnlyMode(true)
         val trackInfo = currentTrackInfo()
         val hasAudio: Boolean? = trackInfo != null && trackInfo.getAudio().isNotEmpty()
         val audioOnly: Boolean? = if (musicPage && java.lang.Boolean.TRUE == hasAudio) {

@@ -3,6 +3,7 @@ package com.github.tvbox.osc.ui.theme
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
+import android.graphics.drawable.ColorDrawable
 import android.os.Build
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
@@ -14,10 +15,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RippleConfiguration
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.dynamicDarkColorScheme
-import androidx.compose.material3.dynamicLightColorScheme
-import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.SideEffect
@@ -39,6 +36,7 @@ internal fun ComponentActivity.enableTransparentEdgeToEdge() {
             android.graphics.Color.TRANSPARENT,
         ),
     )
+    window.setBackgroundDrawable(ColorDrawable(AppThemeState.windowSurfaceArgb(this)))
 }
 
 @Composable
@@ -59,11 +57,7 @@ fun AVBoxTheme(
             AppThemeState.customScheme(config.seedArgb, darkTheme, config.style)
         }
 
-        Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ->
-            if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-
-        darkTheme -> darkColorScheme()
-        else -> lightColorScheme()
+        else -> AppThemeState.resolveScheme(context, config, darkTheme)
     }
     val colorScheme = if (darkTheme && config.pureBlack) baseScheme.toPureBlack() else baseScheme
 

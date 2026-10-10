@@ -40,9 +40,11 @@ class EngineSurfaceRenderView @JvmOverloads constructor(
         mediaPlayer = player
         val surfaceHolder = holder
         val surface = surfaceHolder.surface
-        if (surface != null && surface.isValid) {
+        val valid = surface != null && surface.isValid
+        if (valid) {
             player.setDisplay(surfaceHolder)
         }
+        LOG.i("echo-surface: attach player valid=$valid")
     }
 
     override fun setVideoSize(videoWidth: Int, videoHeight: Int) {
@@ -69,7 +71,7 @@ class EngineSurfaceRenderView @JvmOverloads constructor(
 
     override fun release() {
         released = true
-        mediaPlayer?.clearDisplay()
+        mediaPlayer?.detachVideoSurface()
         mediaPlayer = null
     }
 
@@ -89,18 +91,19 @@ class EngineSurfaceRenderView @JvmOverloads constructor(
 
     override fun surfaceCreated(holder: SurfaceHolder) {
         if (released) return
-        LOG.i("echo-surface: created valid=" + holder.surface?.isValid)
+        LOG.i("echo-surface: created valid=" + holder.surface?.isValid + " player=" + (mediaPlayer != null))
         mediaPlayer?.setDisplay(holder)
     }
 
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
         if (released) return
+        LOG.i("echo-surface: changed ${width}x$height player=" + (mediaPlayer != null))
         mediaPlayer?.setDisplay(holder)
     }
 
     override fun surfaceDestroyed(holder: SurfaceHolder) {
         if (released) return
-        LOG.i("echo-surface: destroyed -> detach")
+        LOG.i("echo-surface: destroyed -> detach player=" + (mediaPlayer != null))
         mediaPlayer?.detachVideoSurface()
     }
 }

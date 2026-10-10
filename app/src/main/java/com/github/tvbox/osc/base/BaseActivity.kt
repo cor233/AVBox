@@ -22,6 +22,8 @@ import androidx.core.view.WindowInsetsControllerCompat
 import com.github.tvbox.osc.R
 import com.github.tvbox.osc.ui.WindowSize
 import com.github.tvbox.osc.util.AppManager
+import com.github.tvbox.osc.util.HawkConfig
+import com.github.tvbox.osc.util.KV
 import com.github.tvbox.osc.util.LanguageManager
 
 import java.io.BufferedReader
@@ -87,12 +89,26 @@ abstract class BaseActivity : AppCompatActivity(), CustomAdapt {
     override fun onResume() {
         super.onResume()
         applyOrientationPolicy()
+        applyHideStatusBarPref()
         hideSysBar()
         if (shouldRefreshAutoSize()) {
             refreshAutoSize()
             scheduleRefreshAutoSize()
         }
     }
+
+    internal fun applyHideStatusBarPref() {
+        val controller = WindowCompat.getInsetsController(window, window.decorView)
+        if (KV.get(HawkConfig.HIDE_STATUS_BAR, false) || keepStatusBarHidden()) {
+            controller.systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            controller.hide(WindowInsetsCompat.Type.statusBars())
+        } else {
+            controller.show(WindowInsetsCompat.Type.statusBars())
+        }
+    }
+
+    protected open fun keepStatusBarHidden(): Boolean = false
 
     open fun hideSysBar() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
@@ -132,6 +148,7 @@ abstract class BaseActivity : AppCompatActivity(), CustomAdapt {
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (hasFocus) {
+            applyHideStatusBarPref()
             hideSysBar()
             if (shouldRefreshAutoSize()) {
                 scheduleRefreshAutoSize()

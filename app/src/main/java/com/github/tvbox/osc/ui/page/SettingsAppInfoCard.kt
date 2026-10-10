@@ -26,6 +26,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.github.tvbox.osc.R
 
 private val HeaderCardShape = RoundedCornerShape(32.dp)
@@ -69,14 +70,15 @@ internal fun AppInfoHeaderCard(versionName: String) {
             Spacer(Modifier.width(20.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "AVBox",
+                    text = "AudioVideoBox",
                     style = MaterialTheme.typography.headlineMedium,
+                    fontSize = 24.sp,
                     fontWeight = FontWeight.Bold,
                     color = contentColor,
                 )
                 Text(
                     text = stringResource(R.string.settings_app_tagline),
-                    style = MaterialTheme.typography.bodyLarge,
+                    style = MaterialTheme.typography.bodyMedium,
                     color = contentColor.copy(alpha = 0.75f),
                 )
             }
@@ -113,6 +115,7 @@ private fun VersionPill(versionText: String) {
             Text(
                 text = versionText,
                 style = MaterialTheme.typography.titleLarge,
+                fontSize = 16.sp,
                 color = contentColor,
             )
         }
