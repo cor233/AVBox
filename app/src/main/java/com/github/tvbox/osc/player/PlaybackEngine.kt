@@ -114,7 +114,7 @@ class PlaybackEngine(context: Context) : PlaybackHostApi {
         if (playState == PlayState.ERROR) {
             LOG.i(
                 "echo-player error: kernel="
-                    + (if (videoView.mediaPlayer == null) "null" else videoView.mediaPlayer!!.javaClass.simpleName)
+                    + (videoView.mediaPlayer?.javaClass?.simpleName ?: "null")
                     + " pos=" + videoView.currentPosition
                     + " started=" + controller.isPlaybackStarted()
                     + " url=" + controller.webPlayUrl()
@@ -690,7 +690,7 @@ class PlaybackEngine(context: Context) : PlaybackHostApi {
         private const val IDLE_RELEASE_DELAY_MS = 60_000L
 
         private fun prewarmEnabled(): Boolean {
-            return KV.get(HawkConfig.KERNEL_PREWARM, false)
+            return KV.get(HawkConfig.KERNEL_PREWARM, HawkConfig.KERNEL_PREWARM_DEFAULT)
         }
     }
 }

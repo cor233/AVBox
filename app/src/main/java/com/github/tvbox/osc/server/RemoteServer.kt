@@ -14,6 +14,7 @@ import com.github.tvbox.osc.event.ServerEvent
 import com.github.tvbox.osc.io.LocalSourceTree
 import com.github.tvbox.osc.net.OkGoHelper
 import com.github.tvbox.osc.net.Proxy
+import com.github.tvbox.osc.net.ProxyResponsePolicy
 import com.github.tvbox.osc.util.AppContextHolder
 import com.github.tvbox.osc.util.LOG
 import com.github.tvbox.osc.util.RegexUtils
@@ -27,6 +28,7 @@ import java.io.File
 import java.io.FileInputStream
 import java.io.IOException
 import java.io.InputStream
+import java.io.PushbackInputStream
 import java.net.Inet4Address
 import java.net.Inet6Address
 import java.net.InetAddress
@@ -73,7 +75,7 @@ class RemoteServer(port: Int, context: Context) : NanoHTTPD(port) {
         isStarted = false
     }
 
-    private fun getProxy(rs: Array<Any?>?): NanoHTTPD.Response {
+    private fun getProxy(rs: Array<Any?>?, url: String?): NanoHTTPD.Response {
         try {
             if (rs == null || rs.size < 3) {
                 LOG.e("echo-proxy error: empty proxy result")
@@ -82,9 +84,23 @@ class RemoteServer(port: Int, context: Context) : NanoHTTPD(port) {
             if (rs[0] is NanoHTTPD.Response) return rs[0] as NanoHTTPD.Response
             val code = rs[0] as Int
             val mime = rs[1] as String
-            val stream = if (rs[2] != null) rs[2] as InputStream else null
+            val body = if (rs[2] != null) rs[2] as InputStream else null
+            val probe = if (body != null) PushbackInputStream(body, 1) else null
+            val firstByte = try {
+                probe?.read() ?: -1
+            } catch (th: Throwable) {
+                -1
+            }
+            val m3u8 = ProxyResponsePolicy.isM3u8Mime(mime)
+            val status = ProxyResponsePolicy.effectiveStatus(code, mime, firstByte)
+            if (status != code) {
+                LOG.e("echo-proxy-m3u8 empty body code=$code url=" + url.orEmpty().takeLast(80))
+                return NanoHTTPD.newFixedLengthResponse(nanoStatus(status), NanoHTTPD.MIME_PLAINTEXT, "empty m3u8")
+            }
+            if (firstByte >= 0) probe?.unread(firstByte)
+            val stream = if (probe != null && m3u8) ProxyBodyStream(probe, url) else probe
             val response = NanoHTTPD.newChunkedResponse(
-                NanoHTTPD.Response.Status.lookup(code),
+                nanoStatus(status),
                 mime,
                 stream
             )
@@ -101,6 +117,42 @@ class RemoteServer(port: Int, context: Context) : NanoHTTPD(port) {
         } catch (th: Throwable) {
             LOG.e("echo-proxy error: " + th.message)
             return NanoHTTPD.newFixedLengthResponse(NanoHTTPD.Response.Status.INTERNAL_ERROR, NanoHTTPD.MIME_PLAINTEXT, "500")
+        }
+    }
+
+    private fun nanoStatus(code: Int): NanoHTTPD.Response.Status =
+        NanoHTTPD.Response.Status.lookup(code) ?: NanoHTTPD.Response.Status.INTERNAL_ERROR
+
+    private class ProxyBodyStream(private val delegate: InputStream, private val url: String?) : InputStream() {
+
+        private var count = 0
+
+        private var closed = false
+
+        override fun read(): Int {
+            val value = delegate.read()
+            if (value >= 0) count += 1
+            return value
+        }
+
+        override fun read(b: ByteArray, off: Int, len: Int): Int {
+            val read = delegate.read(b, off, len)
+            if (read > 0) count += read
+            return read
+        }
+
+        override fun available(): Int = delegate.available()
+
+        override fun close() {
+            synchronized(this) {
+                if (closed) return
+                closed = true
+            }
+            try {
+                delegate.close()
+            } finally {
+                LOG.i("echo-proxy-m3u8 served bytes=$count url=" + url.orEmpty().takeLast(80))
+            }
         }
     }
 
@@ -139,7 +191,7 @@ class RemoteServer(port: Int, context: Context) : NanoHTTPD(port) {
                                 LOG.d("RemoteServer", "file open failed, fallback to tree grant")
                             }
                         }
-                        val granted = if (isLocalRequest(session)) LocalSourceTree.open(AppContextHolder.context()!!, f) else null
+                        val granted = if (isLocalRequest(session)) LocalSourceTree.open(requireNotNull(AppContextHolder.context()) { "app context not initialized" }, f) else null
                         if (granted != null) {
                             return NanoHTTPD.newChunkedResponse(NanoHTTPD.Response.Status.OK, "application/octet-stream", granted)
                         }
@@ -152,9 +204,9 @@ class RemoteServer(port: Int, context: Context) : NanoHTTPD(port) {
                     var rs = ByteArray(0)
                     try {
                         val dnsOverHttps = OkGoHelper.dnsOverHttps
-                        if (dnsOverHttps != null && !TextUtils.isEmpty(name)) {
-                            val host = name!!
-                            rs = buildDnsResponse(host, dnsOverHttps.lookup(host))
+                        val hostName = name
+                        if (dnsOverHttps != null && !hostName.isNullOrEmpty()) {
+                            rs = buildDnsResponse(hostName, dnsOverHttps.lookup(hostName))
                         }
                     } catch (th: Throwable) {
                         rs = ByteArray(0)
@@ -224,22 +276,23 @@ class RemoteServer(port: Int, context: Context) : NanoHTTPD(port) {
             if (isDanmuProxy) normalizeDanmuParams(params)
             if (isDanmuProxy) LOG.i("echo-proxy-danmu params: " + params.toString())
             val rs = ApiConfig.get().proxyLocal(params)
-            return getProxy(rs)
+            return getProxy(rs, params["url"])
         }
         if (params.containsKey("go")) {
             val rs = Proxy.proxy(params)
-            return getProxy(rs)
+            return getProxy(rs, params["url"])
         }
-        return getProxy(null)
+        return getProxy(null, null)
     }
 
     private fun normalizeDanmuParams(params: MutableMap<String, String>) {
         try {
             val vodInfo = App.getInstance()?.getVodInfo() ?: return
-            if (!TextUtils.isEmpty(vodInfo.name)) params["vodName"] = vodInfo.name!!
+            val vodName = vodInfo.name
+            if (!vodName.isNullOrEmpty()) params["vodName"] = vodName
             if (!isNumeric(params["vodIndex"])) {
                 val episode = getCurrentEpisodeIndex(vodInfo)
-                if (!TextUtils.isEmpty(episode)) params["vodIndex"] = episode!!
+                if (!episode.isNullOrEmpty()) params["vodIndex"] = episode
             }
         } catch (th: Throwable) {
             LOG.e("echo-proxy-danmu normalize error: " + th.message)
@@ -247,8 +300,9 @@ class RemoteServer(port: Int, context: Context) : NanoHTTPD(port) {
     }
 
     private fun getCurrentEpisodeIndex(vodInfo: VodInfo): String? {
-        if (vodInfo.seriesMap != null && !TextUtils.isEmpty(vodInfo.playFlag)) {
-            val series = vodInfo.seriesMap!![vodInfo.playFlag]
+        val seriesMap = vodInfo.seriesMap
+        if (seriesMap != null && !TextUtils.isEmpty(vodInfo.playFlag)) {
+            val series = seriesMap[vodInfo.playFlag]
             if (series != null && vodInfo.playIndex >= 0 && vodInfo.playIndex < series.size) {
                 val current: VodInfo.VodSeries? = series[vodInfo.playIndex]
                 if (current != null && !TextUtils.isEmpty(current.name)) {
@@ -261,7 +315,7 @@ class RemoteServer(port: Int, context: Context) : NanoHTTPD(port) {
     }
 
     private fun isNumeric(text: String?): Boolean {
-        return !TextUtils.isEmpty(text) && text!!.matches("\\d+".toRegex())
+        return !text.isNullOrEmpty() && text.matches("\\d+".toRegex())
     }
 
     private fun extractNumber(text: String?): String {
@@ -370,7 +424,8 @@ class RemoteServer(port: Int, context: Context) : NanoHTTPD(port) {
         @SuppressLint("DefaultLocale")
         @JvmStatic
         fun getLocalIPAddress(context: Context?): String {
-            val wifiManager = context!!.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            val appContext = context ?: return ""
+            val wifiManager = appContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
             val ipAddress = wifiManager.connectionInfo.ipAddress
             if (ipAddress == 0) {
                 try {
@@ -383,7 +438,7 @@ class RemoteServer(port: Int, context: Context) : NanoHTTPD(port) {
                             while (enumIpAddr.hasMoreElements()) {
                                 val inetAddress = enumIpAddr.nextElement()
                                 if (!inetAddress.isLoopbackAddress && inetAddress is Inet4Address) {
-                                    return inetAddress.hostAddress!!
+                                    return inetAddress.hostAddress ?: ""
                                 }
                             }
                         }

@@ -74,12 +74,9 @@ class PlaybackService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         releaseEngineOnDestroy = false
         val action = intent?.action
-        if (ACTION_UPDATE == action) {
+        if (action != null) {
             startForegroundSafely()
-            handleSessionIntent(intent!!)
-        } else if (action != null) {
-            startForegroundSafely()
-            handleSessionIntent(intent!!)
+            handleSessionIntent(requireNotNull(intent))
         }
         if (stopWhenStarted) {
             stopWhenStarted = false
@@ -502,7 +499,7 @@ class PlaybackService : Service() {
 
         @JvmStatic
         fun prewarm(context: Context, delayMs: Long) {
-            if (!KV.get(HawkConfig.KERNEL_PREWARM, false)) return
+            if (!KV.get(HawkConfig.KERNEL_PREWARM, HawkConfig.KERNEL_PREWARM_DEFAULT)) return
             val app = context.applicationContext
             prewarmHandler.removeCallbacksAndMessages(null)
             prewarmHandler.postDelayed({ ensurePrewarmed(app) }, Math.max(0L, delayMs))
@@ -521,7 +518,7 @@ class PlaybackService : Service() {
         }
 
         private fun ensurePrewarmed(app: Context) {
-            if (!KV.get(HawkConfig.KERNEL_PREWARM, false)) return
+            if (!KV.get(HawkConfig.KERNEL_PREWARM, HawkConfig.KERNEL_PREWARM_DEFAULT)) return
             try {
                 var current = engine
                 if (current == null) {
