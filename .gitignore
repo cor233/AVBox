@@ -105,6 +105,7 @@ output-metadata.json
 .catpaw/
 .opencode/
 .workbuddy-ai/
+.workbuddy
 .qoder/
 git推送命令.txt
 # Python 构建缓存
@@ -121,3 +122,6 @@ logs/
 日志/
 .kotlin/
 文档/
+.deepseek/
+.iso_forensics/
+.tools/

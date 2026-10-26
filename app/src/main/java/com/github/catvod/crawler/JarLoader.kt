@@ -7,15 +7,16 @@ import android.util.Log
 
 import com.github.catvod.Proxy
 import com.github.catvod.net.OkHttp
-import com.github.tvbox.osc.io.FileUtils
-import com.github.tvbox.osc.server.ControlManager
-import com.github.tvbox.osc.server.RemoteServer
-import com.github.tvbox.osc.util.AppContextHolder
-import com.github.tvbox.osc.util.LOG
-import com.github.tvbox.osc.util.MD5
-import com.github.tvbox.osc.util.RegexUtils
-import com.github.tvbox.osc.util.SpiderReaper
-import com.github.tvbox.osc.util.net.Http
+import com.github.avbox.osc.io.FileUtils
+import com.github.avbox.osc.server.ControlManager
+import com.github.avbox.osc.server.RemoteServer
+import com.github.avbox.osc.util.AppContextHolder
+import com.github.avbox.osc.boot.BootGuard
+import com.github.avbox.osc.util.AppLog
+import com.github.avbox.osc.util.MD5
+import com.github.avbox.osc.util.RegexUtils
+import com.github.avbox.osc.util.SpiderInitWatch
+import com.github.avbox.osc.util.net.Http
 
 import org.json.JSONObject
 
@@ -41,6 +42,7 @@ class JarLoader {
     private val locks = ConcurrentHashMap<String, Any>()
     private val siteJarKeys = ConcurrentHashMap<String, String>()
     private val aliases = ConcurrentHashMap<String, String>()
+    private val liveJars = ConcurrentHashMap.newKeySet<String>()
 
     @Volatile
     private var recent: String = MAIN_KEY
@@ -61,6 +63,7 @@ class JarLoader {
 
     fun loadLiveJar(jar: String?) {
         val key = jarKey(jar)
+        liveJars.add(key)
         parseJar(key, jar)
         setRecentJarKey(key)
     }
@@ -75,6 +78,7 @@ class JarLoader {
         spiders.clear()
         siteJarKeys.clear()
         aliases.clear()
+        liveJars.clear()
         recent = MAIN_KEY
         for (spider in stale) {
             SpiderReaper.retire(spider)
@@ -85,6 +89,14 @@ class JarLoader {
         if (Thread.interrupted()) return false
         if (!exists(file)) return false
         if (loaders.containsKey(key)) return true
+        if (BootGuard.isJarDisabled(file.absolutePath)) {
+            AppLog.i("echo-boot-guard: blocked jar key=" + key + " file=" + file.absolutePath)
+            return false
+        }
+        if (key != MAIN_KEY) {
+            val scope = if (liveJars.contains(key)) BootGuard.SCOPE_LIVE else BootGuard.SCOPE_VOD
+            BootGuard.onJarLoadStart(file.absolutePath, scope)
+        }
         try {
             file.setReadOnly()
             val cachePath = jarDir().absolutePath
@@ -94,11 +106,12 @@ class JarLoader {
             invokeDanmaku(key, loader)
             injectProxyPort(loader)
             loaders[key] = loader
-            LOG.i("echo--jar-load success key=" + key + ", file=" + file.absolutePath)
+            BootGuard.scheduleStableRunReset()
+            AppLog.i("echo--jar-load success key=" + key + ", file=" + file.absolutePath)
             return true
         } catch (e: Throwable) {
-            LOG.i("echo--jar-load error key=" + key + ", msg=" + e.javaClass.simpleName + ":" + e.message)
-            LOG.e("JarLoader", e)
+            AppLog.i("echo--jar-load error key=" + key + ", msg=" + e.javaClass.simpleName + ":" + e.message)
+            AppLog.e("JarLoader", e)
             return false
         }
     }
@@ -109,7 +122,7 @@ class JarLoader {
             val method = clz.getMethod("init", Context::class.java)
             method.invoke(null, AppContextHolder.context())
         } catch (e: Throwable) {
-            LOG.e("JarLoader", e)
+            AppLog.e("JarLoader", e)
         }
     }
 
@@ -119,7 +132,7 @@ class JarLoader {
             val method = clz.getMethod("proxy", Map::class.java)
             proxyMethods[key] = method
         } catch (e: Throwable) {
-            LOG.e("echo-proxy-jar: register fail key=" + key + " | " + e)
+            AppLog.e("echo-proxy-jar: register fail key=" + key + " | " + e)
         }
     }
 
@@ -129,15 +142,15 @@ class JarLoader {
             try {
                 danmuClickMethods[key] = clz.getMethod("onClick", String::class.java, String::class.java)
             } catch (ignored: Throwable) {
-                LOG.d("JarLoader", "danmaku onClick method not found")
+                AppLog.d("JarLoader", "danmaku onClick method not found")
             }
             try {
                 danmuLongClickMethods[key] = clz.getMethod("onLongClick", String::class.java, String::class.java)
             } catch (ignored: Throwable) {
-                LOG.d("JarLoader", "danmaku onLongClick method not found")
+                AppLog.d("JarLoader", "danmaku onLongClick method not found")
             }
         } catch (ignored: Throwable) {
-            LOG.d("JarLoader", "danmaku class not found in jar")
+            AppLog.d("JarLoader", "danmaku class not found in jar")
         }
     }
 
@@ -160,7 +173,7 @@ class JarLoader {
                 md5 = value?.trim { it <= ' ' } ?: ""
             }
             val file = fileForJar(source)
-            if (!TextUtils.isEmpty(md5) && exists(file) && MD5.getFileMd5(file).equals(md5, ignoreCase = true)) {
+            if (!TextUtils.isEmpty(md5) && exists(file) && MD5.fileMd5(file).equals(md5, ignoreCase = true)) {
                 load(key, file)
             } else if (TextUtils.isEmpty(md5) && exists(file) && !FileUtils.isWeekAgo(file)) {
                 load(key, file)
@@ -182,7 +195,7 @@ class JarLoader {
             parseJar(key, jar)
             return loaders[key]
         } catch (e: Throwable) {
-            LOG.e("JarLoader", e)
+            AppLog.e("JarLoader", e)
             return null
         }
     }
@@ -218,14 +231,16 @@ class JarLoader {
                 val spider = loader.loadClass("com.github.catvod.spider." + className(spiderApi)).newInstance() as Spider
                 spider.siteKey = spiderKey
                 spider.initApi(SpiderApi())
+                SpiderInitWatch.begin()
                 spider.init(AppContextHolder.context(), spiderExt)
+                SpiderInitWatch.end()
                 if (generation != clearGeneration.get()) return SpiderNull()
                 spiders[spKey] = spider
                 Log.i(TAG, "getSpider success key=" + spKey)
                 return spider
             } catch (e: Throwable) {
                 Log.i(TAG, "getSpider error key=" + spKey + ", msg=" + e.message)
-                LOG.e("JarLoader", e)
+                AppLog.e("JarLoader", e)
                 return SpiderNull()
             }
         }
@@ -238,7 +253,7 @@ class JarLoader {
             if (method == null) return
             method.invoke(null, name, episode)
         } catch (e: Throwable) {
-            LOG.e("JarLoader", e)
+            AppLog.e("JarLoader", e)
         }
     }
 
@@ -252,7 +267,7 @@ class JarLoader {
             val method = clz.getMethod("parse", LinkedHashMap::class.java, String::class.java)
             return method.invoke(null, jxs, url) as JSONObject?
         } catch (e: Throwable) {
-            LOG.e("JarLoader", e)
+            AppLog.e("JarLoader", e)
             return null
         }
     }
@@ -263,7 +278,7 @@ class JarLoader {
             val method = clz.getMethod("parse", LinkedHashMap::class.java, String::class.java, String::class.java, String::class.java)
             return method.invoke(null, jxs, name, flag, url) as JSONObject?
         } catch (e: Throwable) {
-            LOG.e("JarLoader", e)
+            AppLog.e("JarLoader", e)
             return null
         }
     }
@@ -282,7 +297,7 @@ class JarLoader {
             result = proxyInvoke(entry.value, params)
             if (result != null) return result
         }
-        LOG.e("echo-proxy-jar: no result, siteKey=" + siteKey + " recent=" + recent + " jars=" + proxyMethods.keys)
+        AppLog.e("echo-proxy-jar: no result, siteKey=" + siteKey + " recent=" + recent + " jars=" + proxyMethods.keys)
         return null
     }
 
@@ -308,7 +323,7 @@ class JarLoader {
                     }
                 }
             }
-            LOG.e("echo-proxy-jar: invoke error | " + cause + " | nonAsciiKeys=" + bad)
+            AppLog.e("echo-proxy-jar: invoke error | " + cause + " | nonAsciiKeys=" + bad)
             return null
         }
     }
@@ -327,7 +342,7 @@ class JarLoader {
             try {
                 return loader.loadClass(name)
             } catch (ignored: ClassNotFoundException) {
-                LOG.d("JarLoader", "class not in cached loader: " + name)
+                AppLog.d("JarLoader", "class not in cached loader: " + name)
             }
         }
         loader = loaders[MAIN_KEY]
@@ -352,7 +367,7 @@ class JarLoader {
             }
             output.flush()
         } catch (e: Throwable) {
-            LOG.e("JarLoader", e)
+            AppLog.e("JarLoader", e)
         } finally {
             close(inputStream)
             close(outputStream)
@@ -376,7 +391,7 @@ class JarLoader {
             }
             output.flush()
         } catch (e: Throwable) {
-            LOG.e("JarLoader", e)
+            AppLog.e("JarLoader", e)
         } finally {
             close(inputStream)
             close(outputStream)
@@ -458,7 +473,7 @@ class JarLoader {
             val set = proxy.getMethod("set", Int::class.javaPrimitiveType)
             set.invoke(null, getServerPort())
         } catch (ignored: Throwable) {
-            LOG.d("JarLoader", "inject proxy port into jar failed")
+            AppLog.d("JarLoader", "inject proxy port into jar failed")
         }
     }
 
@@ -470,7 +485,7 @@ class JarLoader {
                 return baseUrl.substring(baseUrl.lastIndexOf(":") + 1).toInt()
             }
         } catch (ignored: Throwable) {
-            LOG.d("JarLoader", "parse server port failed, use RemoteServer.serverPort")
+            AppLog.d("JarLoader", "parse server port failed, use RemoteServer.serverPort")
         }
         return RemoteServer.serverPort
     }
@@ -479,7 +494,7 @@ class JarLoader {
         try {
             if (closeable != null) closeable.close()
         } catch (ignored: Throwable) {
-            LOG.d("JarLoader", "close failed")
+            AppLog.d("JarLoader", "close failed")
         }
     }
 

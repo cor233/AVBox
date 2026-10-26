@@ -3,7 +3,6 @@
 
     <string name="settings_language">語言</string>
     <string name="settings_group_language_layout">語言與佈局</string>
-    <string name="settings_language_subtitle">切換應用程式的介面語言</string>
     <string name="settings_collect_columns">收藏頁佈局</string>
     <string name="settings_collect_columns_three">三列佈局</string>
     <string name="settings_collect_columns_two">雙列佈局</string>
@@ -56,7 +55,11 @@
     <string name="toast_subtitle_not_found">未查詢到符合的字幕</string>
 
     <string name="player_error_sniff">嗅探錯誤</string>
-    <string name="player_error_play">影片播放發生錯誤</string>
+    <string name="player_error_play">片源播放失敗，請切換線路或更換片源</string>
+    <string name="player_error_play_http">片源播放失敗（HTTP %1$d），請切換線路或更換片源</string>
+    <string name="player_site_failed">%1$s：%2$s</string>
+    <string name="player_decode_exceeds_capability">超出核心解碼能力上限</string>
+    <string name="player_decode_10bit_tip">此線路為 10-bit 編碼，裝置不支援</string>
     <string name="player_no_audio_track">沒有音軌</string>
     <string name="player_switch_audio_track">切換音軌</string>
     <string name="player_no_video_track">沒有視訊軌</string>
@@ -194,7 +197,6 @@
     <string name="player_picture_reset">恢復預設</string>
     <string name="player_picture_unavailable_tunnel">隧道模式起播，畫面參數本集不生效；關閉隧道並重新起播後生效</string>
     <string name="player_picture_unavailable_hdr">HDR 片源不支援畫面參數，目前依原樣輸出</string>
-    <string name="player_picture_unavailable_restart">畫面參數已儲存，重新起播後生效</string>
     <string name="player_picture_unavailable_decoder">目前解碼方式不支援畫面參數</string>
 
     <string name="music_queue">播放佇列</string>
@@ -229,15 +231,16 @@
     <string name="toast_added_to_collect">已加入收藏夾</string>
 
     <string name="preload_next_episode">下一集預載</string>
-    <string name="preload_next_episode_subtitle">僅Media3播放器和部分源支援</string>
+    <string name="preload_next_episode_subtitle">僅部分源支援</string>
     <string name="preload_duration">預載時長</string>
     <string name="preload_play_cache">邊播邊快取</string>
-    <string name="preload_play_cache_subtitle">開啟後可能導致Media3播放器無法使用</string>
+    <string name="preload_play_cache_subtitle">開啟後可能導致播放錯誤</string>
     <string name="preload_cache_size">快取容量</string>
 
     <string name="search_field_hint">搜尋片名、演員</string>
-    <string name="search_result_layout">結果顯示方式</string>
+    <string name="search_result_layout">搜尋結果顯示方式</string>
     <string name="search_site_empty">該站點暫無結果</string>
+    <string name="search_site_filter_hint">過濾</string>
     <string name="common_clear">清空</string>
     <string name="common_loading_more">載入中…</string>
     <string name="common_no_more">沒有更多了</string>
@@ -255,6 +258,7 @@
     <string name="following_no_schedule">未設定更新日</string>
     <string name="following_update_days">每%1$s</string>
     <string name="following_update_time">%1$s 更新</string>
+    <string name="following_update_today_time">今天 %1$s 更新</string>
     <string name="following_not_watched">還沒有看</string>
     <string name="following_watched">已經看了</string>
     <string name="following_delete_selected_message">確定刪除選中的 %1$d 部追劇嗎？</string>
@@ -270,11 +274,11 @@
     <string name="music_previous">上一首</string>
     <string name="music_next">下一首</string>
 
-    <string name="search_home_poster">首頁海報</string>
+    <string name="search_home_poster">海報樣式</string>
     <string name="search_layout_horizontal">沉浸</string>
     <string name="search_layout_vertical">普通</string>
-    <string name="search_result_layout_horizontal">橫向展示</string>
-    <string name="search_result_layout_vertical">縱向展示</string>
+    <string name="search_result_layout_horizontal">卡片檢視</string>
+    <string name="search_result_layout_vertical">清單檢視</string>
     <string name="search_exact">精準搜尋</string>
     <string name="search_sites">搜尋站點</string>
     <string name="search_sites_none_hint">未選擇站點，將搜尋不到結果</string>
@@ -324,7 +328,6 @@
     <string name="detail_source">來源：%1$s</string>
     <string name="detail_collapse">收合</string>
     <string name="detail_expand">展開</string>
-    <string name="detail_quality">畫質</string>
     <string name="detail_line">線路</string>
     <string name="detail_line_video_count">共 %1$d 個視頻</string>
     <string name="detail_episodes">選集</string>
@@ -343,10 +346,16 @@
     <string name="history_delete_title">刪除紀錄</string>
     <string name="history_delete_message">刪除「%1$s」的觀看紀錄？</string>
     <string name="history_delete_selected_message">確定刪除選中的 %1$d 條觀看紀錄嗎？</string>
-    <string name="history_last_watched">上次看到%1$s</string>
     <string name="source_unavailable">當前源不可用</string>
+    <string name="history_episode_num">第%1$d集</string>
+    <string name="history_see_percent">看到 %1$d%%</string>
     <string name="history_episode_progress">第%1$d集/共%2$d集</string>
     <string name="history_watched_percent">已看%1$d%%</string>
+    <string name="time_ago_just_now">剛剛</string>
+    <string name="time_ago_minutes">%1$d 分鐘前</string>
+    <string name="time_ago_hours">%1$d 小時前</string>
+    <string name="time_ago_days">%1$d 天前</string>
+    <string name="time_ago_months">%1$d 個月前</string>
 
     <string name="theme_color">主題顏色</string>
     <string name="theme_app_effects">應用效果</string>
@@ -486,9 +495,7 @@
     <string name="settings_hide_status_bar">隱藏狀態列</string>
     <string name="settings_hide_status_bar_subtitle">開啟後封面延伸至螢幕頂部</string>
     <string name="settings_nav_animation_disable">停用導覽動畫</string>
-    <string name="settings_nav_animation_disable_subtitle">開啟後將停用底部導覽的側滑動畫</string>
     <string name="settings_nav_live_hidden">導覽列隱藏直播</string>
-    <string name="settings_nav_live_hidden_subtitle">開啟後導覽列不再顯示直播入口</string>
     <string name="settings_auto_switch_line">自動換線</string>
     <string name="settings_m3u8_purify">M3U8 淨化</string>
     <string name="settings_danmu_switch">彈幕開關</string>
@@ -520,8 +527,15 @@
     <string name="player_get_info_error">取得播放資訊錯誤</string>
     <string name="player_getting_info">正在取得播放資訊</string>
     <string name="player_play_url_empty">取得播放位址為空</string>
-    <string name="player_play_error_retry">播放出錯，自動重試</string>
+    <string name="player_iso_unsupported">ISO 格式的藍光原盤無法播放</string>
+    <string name="player_iso_music_unsupported">ISO 藍光原盤不支援音樂模式</string>
+    <string name="player_source_invalid">該線路返回的資源不完整</string>
+    <string name="player_iso_cast_unsupported">ISO 格式的藍光原盤暫不支援投屏</string>
+    <string name="player_iso_bandwidth_low">網盤限速，頻寬不足</string>
+    <string name="player_play_error_retry">片源播放失敗，正在重試</string>
     <string name="player_decode_fallback_tip">硬解失敗，已切換軟解重試</string>
+    <string name="player_decode_fallback_hard_tip">軟解失敗，已切換硬解重試</string>
+    <string name="player_audio_track_fallback_tip">音軌無法解碼，自動切換</string>
     <string name="player_call_external_play">推送到%1$s進行播放</string>
     <string name="player_call_external_result">推送到%1$s%2$s</string>
 
@@ -539,6 +553,7 @@
     <string name="tmdb_meta_title">TMDB 元資料</string>
     <string name="tmdb_rating">評分 %1$s / 10</string>
     <string name="detail_cast">演員陣容</string>
+    <string name="detail_genres">分類</string>
     <string name="detail_content_not_ready">內容還沒載入好</string>
     <string name="detail_no_playable_content">暫無可播放的內容</string>
     <string name="filter_title">篩選 · %1$s</string>
@@ -559,6 +574,8 @@
     <string name="thunder_error_parse">解析異常</string>
     <string name="thunder_error_download">下載出錯</string>
     <string name="thunder_error_timeout">解析下載逾時</string>
+    <string name="thunder_parsing">磁力解析中，請稍候</string>
+    <string name="thunder_parse_timeout">磁力解析逾時</string>
     <string name="thunder_error_name_too_long">檔名太長</string>
     <string name="thunder_error_path_too_long">檔案路徑太長</string>
     <string name="thunder_error_file_too_small">檔案太小</string>
@@ -577,7 +594,11 @@
     <string name="cast_device_offline">裝置離線</string>
     <string name="toast_local_config_read_failed">讀取本機設定失敗</string>
     <string name="toast_local_missing_files_hint">還有 %1$d 個同目錄檔案沒搬過來，請選擇該設定所在的資料夾</string>
+    <string name="toast_local_source_imported">已匯入本機源「%1$s」</string>
+    <string name="toast_local_source_already_imported">此源已匯入</string>
+    <string name="toast_local_source_unsupported">只支援 .py 或 .js 本機源</string>
     <string name="toast_local_missing_files_all_files">還有 %1$d 個同目錄檔案沒搬過來，請選擇該設定所在的資料夾（開啟「所有檔案存取」後可直接引用原目錄，不必搬檔案）</string>
+    <string name="toast_storage_asked_by_spider">權限由爬蟲模組申請</string>
     <string name="toast_local_tree_denied">沒取得該設定所在資料夾的授權，已取消匯入（可再點一次重試）</string>
     <string name="toast_local_tree_forbidden">該設定在系統不允許授權的目錄裡（儲存根／下載／Android），請將它放進自建資料夾（例如 手機儲存/AVBox/）後再匯入</string>
     <string name="toast_local_refs_missing">還有 %1$d 個同目錄引用的檔案沒搬過來，該源可能無法使用（可重新匯入）</string>
@@ -598,6 +619,8 @@
     <string name="osd_chip">晶片</string>
     <string name="osd_screen">螢幕</string>
     <string name="osd_network_env">網路環境</string>
+    <string name="osd_memory">PSS</string>
+    <string name="osd_heap">Java 堆</string>
     <string name="osd_state_ready">就緒</string>
     <string name="osd_state_playing">播放中</string>
     <string name="osd_state_buffering">緩衝中</string>

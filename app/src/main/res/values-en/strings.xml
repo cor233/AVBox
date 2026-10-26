@@ -3,7 +3,6 @@
 
     <string name="settings_language">Language</string>
     <string name="settings_group_language_layout">Language &amp; Layout</string>
-    <string name="settings_language_subtitle">Change the app interface language</string>
     <string name="settings_collect_columns">Collect page layout</string>
     <string name="settings_collect_columns_three">Three columns</string>
     <string name="settings_collect_columns_two">Two columns</string>
@@ -56,7 +55,11 @@
     <string name="toast_subtitle_not_found">No matching subtitles found</string>
 
     <string name="player_error_sniff">Sniffing error</string>
-    <string name="player_error_play">Playback error</string>
+    <string name="player_error_play">Source playback failed. Try another line or source.</string>
+    <string name="player_error_play_http">Source playback failed (HTTP %1$d). Try another line or source.</string>
+    <string name="player_site_failed">%1$s: %2$s</string>
+    <string name="player_decode_exceeds_capability">Exceeds the decoding capability limit</string>
+    <string name="player_decode_10bit_tip">This line is 10-bit encoded, which this device does not support</string>
     <string name="player_no_audio_track">No audio track</string>
     <string name="player_switch_audio_track">Switch audio track</string>
     <string name="player_no_video_track">No video track</string>
@@ -194,7 +197,6 @@
     <string name="player_picture_reset">Reset</string>
     <string name="player_picture_unavailable_tunnel">Started in tunneling mode: picture adjustment is off until playback restarts without tunneling</string>
     <string name="player_picture_unavailable_hdr">Picture adjustment is unavailable for HDR sources</string>
-    <string name="player_picture_unavailable_restart">Picture adjustment saved - it takes effect after playback restarts</string>
     <string name="player_picture_unavailable_decoder">The current decoder doesn\'t support picture adjustment</string>
 
     <string name="music_queue">Queue</string>
@@ -229,15 +231,16 @@
     <string name="toast_added_to_collect">Added to favorites</string>
 
     <string name="preload_next_episode">Preload next episode</string>
-    <string name="preload_next_episode_subtitle">Only supported by the Media3 player and some sources</string>
+    <string name="preload_next_episode_subtitle">Only some sources are supported</string>
     <string name="preload_duration">Preload duration</string>
     <string name="preload_play_cache">Cache while playing</string>
-    <string name="preload_play_cache_subtitle">May make the Media3 player unusable when enabled</string>
+    <string name="preload_play_cache_subtitle">Enabling this may cause playback errors</string>
     <string name="preload_cache_size">Cache size</string>
 
     <string name="search_field_hint">Search titles and actors</string>
     <string name="search_result_layout">Result layout</string>
     <string name="search_site_empty">No results from this site</string>
+    <string name="search_site_filter_hint">Filter</string>
     <string name="common_clear">Clear</string>
     <string name="common_loading_more">Loading…</string>
     <string name="common_no_more">No more results</string>
@@ -255,6 +258,7 @@
     <string name="following_no_schedule">No update day set</string>
     <string name="following_update_days">Every %1$s</string>
     <string name="following_update_time">Updates at %1$s</string>
+    <string name="following_update_today_time">Updates today at %1$s</string>
     <string name="following_not_watched">Not watched yet</string>
     <string name="following_watched">Already watched</string>
     <string name="following_delete_selected_message">Remove %1$d selected shows from following?</string>
@@ -270,11 +274,11 @@
     <string name="music_previous">Previous</string>
     <string name="music_next">Next</string>
 
-    <string name="search_home_poster">Home posters</string>
+    <string name="search_home_poster">Poster style</string>
     <string name="search_layout_horizontal">Immersive</string>
     <string name="search_layout_vertical">Standard</string>
-    <string name="search_result_layout_horizontal">Horizontal</string>
-    <string name="search_result_layout_vertical">Vertical</string>
+    <string name="search_result_layout_horizontal">Card view</string>
+    <string name="search_result_layout_vertical">List view</string>
     <string name="search_exact">Exact search</string>
     <string name="search_sites">Search sites</string>
     <string name="search_sites_none_hint">No sites selected — searches will return nothing</string>
@@ -324,7 +328,6 @@
     <string name="detail_source">Source: %1$s</string>
     <string name="detail_collapse">Collapse</string>
     <string name="detail_expand">Expand</string>
-    <string name="detail_quality">Quality</string>
     <string name="detail_line">Line</string>
     <string name="detail_line_video_count">%1$d videos</string>
     <string name="detail_episodes">Episodes</string>
@@ -343,10 +346,16 @@
     <string name="history_delete_title">Delete record</string>
     <string name="history_delete_message">Delete the watch record for “%1$s”?</string>
     <string name="history_delete_selected_message">Delete %1$d selected watch records?</string>
-    <string name="history_last_watched">Last watched %1$s</string>
     <string name="source_unavailable">Source unavailable</string>
+    <string name="history_episode_num">Episode %1$d</string>
+    <string name="history_see_percent">Watched %1$d%%</string>
     <string name="history_episode_progress">Episode %1$d/%2$d</string>
     <string name="history_watched_percent">Watched %1$d%%</string>
+    <string name="time_ago_just_now">Just now</string>
+    <string name="time_ago_minutes">%1$d minutes ago</string>
+    <string name="time_ago_hours">%1$d hours ago</string>
+    <string name="time_ago_days">%1$d days ago</string>
+    <string name="time_ago_months">%1$d months ago</string>
 
     <string name="theme_color">Theme Color</string>
     <string name="theme_app_effects">App Effects</string>
@@ -486,9 +495,7 @@
     <string name="settings_hide_status_bar">Hide Status Bar</string>
     <string name="settings_hide_status_bar_subtitle">Extends the home artwork to the top of the screen</string>
     <string name="settings_nav_animation_disable">Disable Navigation Animation</string>
-    <string name="settings_nav_animation_disable_subtitle">Disables the bottom navigation slide animation</string>
     <string name="settings_nav_live_hidden">Hide Live in Navigation Bar</string>
-    <string name="settings_nav_live_hidden_subtitle">Hides the Live entry in the navigation bar</string>
     <string name="settings_auto_switch_line">Auto Switch Line</string>
     <string name="settings_m3u8_purify">M3U8 Purify</string>
     <string name="settings_danmu_switch">Danmaku Switch</string>
@@ -520,8 +527,15 @@
     <string name="player_get_info_error">Failed to get playback info</string>
     <string name="player_getting_info">Getting playback info</string>
     <string name="player_play_url_empty">Playback URL is empty</string>
-    <string name="player_play_error_retry">Playback error. Retrying automatically</string>
+    <string name="player_iso_unsupported">Blu-ray ISO images cannot be played</string>
+    <string name="player_iso_music_unsupported">Blu-ray ISO images are not supported in music mode</string>
+    <string name="player_source_invalid">This line returned incomplete data</string>
+    <string name="player_iso_cast_unsupported">Casting is not supported for Blu-ray ISO images</string>
+    <string name="player_iso_bandwidth_low">Network drive is throttled: not enough bandwidth</string>
+    <string name="player_play_error_retry">Source playback failed. Retrying…</string>
     <string name="player_decode_fallback_tip">Hardware decoding failed. Retrying with software decoding</string>
+    <string name="player_decode_fallback_hard_tip">Software decoding failed. Retrying with hardware decoding</string>
+    <string name="player_audio_track_fallback_tip">Audio track cannot be decoded. Switching automatically</string>
     <string name="player_call_external_play">Casting to %1$s</string>
     <string name="player_call_external_result">Cast to %1$s: %2$s</string>
 
@@ -539,6 +553,7 @@
     <string name="tmdb_meta_title">TMDB Metadata</string>
     <string name="tmdb_rating">Rating %1$s / 10</string>
     <string name="detail_cast">Cast</string>
+    <string name="detail_genres">Genres</string>
     <string name="detail_content_not_ready">Content is not ready yet</string>
     <string name="detail_no_playable_content">Nothing playable yet</string>
     <string name="filter_title">Filter · %1$s</string>
@@ -559,6 +574,8 @@
     <string name="thunder_error_parse">Parsing failed</string>
     <string name="thunder_error_download">Download error</string>
     <string name="thunder_error_timeout">Download timed out</string>
+    <string name="thunder_parsing">Parsing magnet, please wait</string>
+    <string name="thunder_parse_timeout">Magnet parsing timed out</string>
     <string name="thunder_error_name_too_long">File name too long</string>
     <string name="thunder_error_path_too_long">File path too long</string>
     <string name="thunder_error_file_too_small">File too small</string>
@@ -577,7 +594,11 @@
     <string name="cast_device_offline">Device offline</string>
     <string name="toast_local_config_read_failed">Failed to read the local config</string>
     <string name="toast_local_missing_files_hint">%1$d files in the same folder have not been copied. Select the folder containing this config</string>
+    <string name="toast_local_source_imported">Imported local source "%1$s"</string>
+    <string name="toast_local_source_already_imported">This source has already been imported</string>
+    <string name="toast_local_source_unsupported">Only .py or .js local sources are supported</string>
     <string name="toast_local_missing_files_all_files">%1$d files in the same folder have not been copied. Select the folder containing this config (with “All files access”, the original folder can be referenced directly)</string>
+    <string name="toast_storage_asked_by_spider">Requested by the spider module</string>
     <string name="toast_local_tree_denied">Folder access for this config was not granted, import cancelled (tap again to retry)</string>
     <string name="toast_local_tree_forbidden">This config sits in a folder the system never allows granting (storage root / Download / Android). Move it into a folder you created (e.g. Phone storage/AVBox/) and import again.</string>
     <string name="toast_local_refs_missing">%1$d referenced files in the same folder have not been copied, so this source may not work (re-import to fix)</string>
@@ -598,6 +619,8 @@
     <string name="osd_chip">Chip</string>
     <string name="osd_screen">Screen</string>
     <string name="osd_network_env">Network env</string>
+    <string name="osd_memory">PSS</string>
+    <string name="osd_heap">Java heap</string>
     <string name="osd_state_ready">Ready</string>
     <string name="osd_state_playing">Playing</string>
     <string name="osd_state_buffering">Buffering</string>

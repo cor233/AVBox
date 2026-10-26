@@ -87,9 +87,9 @@
 | 6 个 `TYPE_*` | `RefreshEvent` | `TYPE_PUSH_URL/EPG_URL_CHANGE/SETTING_SEARCH_TV/FILTER_CHANGE/LIVE_API_URL_CHANGE/HOME_SOURCE_CHANGE` 全工程既无 post 也无订阅者；**保留常量的数值不动**（EventBus 按 int 分发），并在类注释里记下这些空洞编号避免复用 |
 | `minHeight` 形参 | `CapsuleSegmentedButton` | 2026-09-12 引入后，随着调用方改用 `SegmentStyle`（两段各自 40dp 天然高度），两个调用页都不再传 → 形参 + `heightIn` 调用 + `Dp` import 一并删除；段高下限仍由 M3 `ToggleButton` 自带 |
 
-**刻意保留（扫描命中但绝不能删）** —— 这三类占了"疑似死代码"的绝大多数：
+**刻意保留（扫描命中但绝不能删）** —— 以下三类占了"疑似死代码"的绝大多数；**其中第 1 类已于 2026-10-21 整条移除，仅存历史**：
 
-1. **JNI/native 桥**：`com.p2p.P2PClass` 全部 ~23 个 `P2P*`/`xGFilm*` 方法 —— 由 `libp2p.so` 反向调用，源码里必然"零引用"。
+1. **JNI/native 桥**：`com.p2p.P2PClass` 全部 ~23 个 `P2P*`/`xGFilm*` 方法 —— 由 `libp2p.so` 反向调用，源码里必然"零引用"。**⚠ 已于 2026-10-21 整条移除**（按上游 fongmi 做法删除见片：`libp2p.so` + `P2PClass` + `Jianpian` + 4 处调用点）；本条不再适用，勿再当作"零引用不可删"的依据。
 2. **JS 爬虫 API**：`com.github.catvod.crawler.js.*`（`Global.pdfh/pdfa/rsaX/js2Proxy`、`Json.safeListElement`、`Res.getCode`、`rsa/RSAEncrypt` 等）—— 由 JS 脚本通过 `JsSpider` 注册的全局对象调用；`proguard-rules.pro:208` 有 `-keep class com.github.catvod.**`。这正是 spec §6.3「依赖裁剪不得只看宿主源码静态引用」的例子。
 3. **接口/框架回调**：DLNA 的 `remoteDeviceAdded/onServiceConnected/createStreamServer…`、`Service.onBind/onStartCommand`、`TimedTextFileFormat.toSRT/toASS/…`、OkHttp `Authenticator.authenticate`、`SSLSocketFactory.getDefaultCipherSuites`、Gson `ExclusionStrategy.shouldSkipField`、弹幕 `danmakuShown/drawingFinished` 等 —— 都由框架按接口调用。
 
@@ -5725,8 +5725,284 @@ echo-exo-selector: mime=video/avc preferSoft=false count=3 first=c2.qti.avc.deco
 
 **文档同步**：`skill/avbox-mobile-ui-spec.md` §4.8 追加一条（判据/机身/网格/半屏预算 + "别再改回 fillMaxHeight"）；`.codebuddy` / `.trae` 两镜像同位置同步。
 
+## 偏好设置页：两项开关副标题移除（2026-10-14，用户要求）
+
+**诉求**：移除偏好设置页「禁用导航动画」与「导航栏隐藏直播」两张选项卡片的副标题。
+
+**改动（2 文件）**：①`ui/page/PreferenceSettingsPage.kt` 两处 `SettingsSwitchRow` 删掉 `subtitle = stringResource(...)` 参数 —— `subtitle: String? = null` 本就可选，行高 `heightIn(min = 64.dp)` 不变，删后只剩标题行（与「无痕模式」同形态）；②四语字符串 `settings_nav_animation_disable_subtitle` / `settings_nav_live_hidden_subtitle` 一并删除（`values` / `values-en` / `values-b+zh+Hant` / `values-zh-rHK`）—— 跟随 2026-09-13「无痕模式」删副标题的先例，不留死资源。
+
+**验证**：`:app:assembleDebug` 绿（纯 UI/文案改动，按约定不跑单测）。**真机待走查**：两张卡只剩标题、无副标题文案（四语一致），开关与生效行为不变。
+
+**文档同步**：`skill/avbox-mobile-ui-spec.md` §4.9 两条开关行描述改为「无副标题」并登记副标题字符串已删；`.codebuddy` / `.trae` 两镜像同位置同步。
+
+## 历史页卡片改造：进度条下方「时间 · 站点名」+ 右侧圆形播放徽标（2026-10-14，用户给设计图要求对齐）
+
+**诉求**：把历史页卡片对齐用户给的参考图 —— 进度条**下方**显示「x 小时前」、右侧显示站点名称、播放控件图标用详情页那颗并用**圆形容器**包裹。三处歧义已问过用户并拍板：①圆形按钮**仅做展示、没有功能**；②**只改历史页**，追剧页 `FollowRow` 保持现状；③副标题「上次看到xx」保留不动（只在进度条下方新增一行）。
+
+**改动 5 文件**：①`bean/VodInfo.kt` 加 `updateTime: Long`（运行期装配字段）；②`data/HistoryRepository.kt` —— `vodInfoStrategy` 里排除 `updateTime`（同 `seriesFlags` 先例，**不污染历史 JSON**）+ `getAllVodRecord` 用 `record.updateTime` 回填；③新增 `util/TimeAgo.kt`（`timeAgoValueOf` 纯函数：刚刚 / x 分钟 / x 小时 / x 天 / x 个月，月按 30 天）+ `TimeAgoTest` 6 例；④`ui/page/HistoryRow.kt` —— 标题行**去掉右上源名胶囊**，进度条下方新增「x 小时前 · 源名」一行（`bodySmall`，源不可用整行走 `error` 色并附 `source_unavailable`），卡片右侧新增 44dp `primary` 圆底 + `player_ic_play` 22dp（无点击回调）；⑤四语 `time_ago_*` 5 条（香港差异层覆盖 `time_ago_days` = 「日前」）。
+
+**保留未动**：副标题「上次看到xx」、进度条右侧「第x集/共y集」、卡片圆角 16dp / 封面 64dp / 进度条 5dp 等既有尺寸。**站名由右上胶囊挪到底行**（避免两处重复），源不可用的红字提示语义随之一并搬到底行。
+
+**验证**：`:app:assembleDebug` 绿；`:app:testDebugUnitTest` **959 用例 / 0 失败 / 121 类**（+`TimeAgoTest` 6 例）。**未装机**。走查判据：①卡片底部一行显示「x 小时前 · 源名」；②右上不再有源名胶囊；③右侧圆形播放徽标与详情页播放胶囊同形（同 `player_ic_play` 图标）；④点圆钮无反应、点卡片仍进详情页；⑤源不可用时该行为 `error` 色。
+
+**文档同步**：`skill/avbox-mobile-ui-spec.md` §4.2 改写源名位置描述 + 追加 2026-10-14 条；`.codebuddy` / `.trae` 两镜像同位置同步。
+
+## 历史页卡片二轮微调：卡片/海报圆角 22dp、圆钮缩到 34dp（2026-10-14 同日二轮，用户指定）
+
+**诉求**：卡片圆角改 22dp、海报圆角也改 22dp、右侧圆形按钮直径缩小 10dp（44 → 34dp）。
+
+**改动（`ui/page/HistoryRow.kt` 单文件）**：①卡片圆角 16dp → **22dp** —— `Surface.shape` 与外层 `Row.clip` 两处**必须同值**，抽成私有常量 `HistoryCardCorner` 一处改就够；②海报圆角 8dp → **22dp**（常量 `HistoryPosterCorner`；海报本体仍 64dp × 96dp）；③播放徽标直径 `HistoryPlayBadgeSize` 44dp → **34dp**（**图标仍 22dp 未动**，如需同比缩到 ~18dp 需另行指定）。
+
+**验证**：`:app:assembleDebug` 绿（纯样式改动，按约定不跑单测）；已装 MuMu（`127.0.0.1:16384`，`Success`）。走查判据：①卡片四角与海报四角都是 22dp（海报 64dp 宽、圆角 22dp ⇒ 左右圆弧已接近胶囊感，属用户指定效果）；②右上圆钮 34dp、与详情页播放胶囊同图标同配色。
+
+**文档同步**：`skill/avbox-mobile-ui-spec.md` §4.2 —— 修正"28dp 圆角卡片"这个 2026-09-09 旧值（代码实际长期是 16dp），并在 2026-10-14 条补 ⑤ 圆角与 34dp 直径。⚠️ **自本次起不再同步 `.codebuddy` / `.trae` 镜像**（用户 2026-10-14 要求"我自己同步"）。
+
+**三轮（同日，装包后复看）**：用户看实机后要求「降到16dp」⇒ **海报圆角 22dp → 16dp**（`HistoryPosterCorner`），**卡片圆角保持 22dp 不动**。已重新 `:app:assembleDebug` + 装 MuMu（`Success`）。
+
+**四轮（同日）**：用户继续要求「海报改为12dp」⇒ **海报圆角 16dp → 12dp**（卡片仍 22dp）。海报 64dp × 96dp 下的圆角最终停在 12dp；参照值是圆角上限 = 宽度一半 32dp。`:app:assembleDebug` + 装 MuMu（`Success`）。
+
+**五轮（同日）**：用户要求「将上次看到1改为第xx集中间一个点看到 xx%」⇒ 卡片**第二行文案**改写为「**第xx集 · 看到 xx%**」。①新增四语 `history_episode_num`（第%1$d集）、`history_see_percent`（看到 %1$d%%），旧 `history_last_watched`（上次看到%1$s）**四语删除**（改后已无引用，grep 复核 0 命中）；②取向口径：集号 = `playIndex + 1`（**非数字集名回退 `playNote` 原文、无集号回退 `note`**，复用既有 `EpisodeTotals.isNumberedEpisode` 判定）；百分比 = `PlaybackProgress` 快照的**真实播放进度**，**无快照则整段不显示**（**不拿进度条的集进度顶替** —— 那样文字会与进度条互相矛盾）；两段用 `HistoryMetaSeparator`（`" · "`）拼接；③计算块从进度条前**上移**到 Column 顶部（第二行要用到集号判定），列布局由三段变**四段**（标题 / 第二行 / 进度条 / 时间·源名）；④**进度条右侧的「第x集/共y集」仍保留**（与第二行集号会有重复，用户知悉未要求删）。`:app:assembleDebug` 绿 + 装 MuMu（`Success`，`06:12:12`）。
+
+## 追剧页卡片圆角对齐历史页（2026-10-14，用户要求）
+
+**诉求**：追剧页卡片（`FollowRow`）圆角改 22dp、里面海报圆角改 **12dp**，"其他的不变"。
+
+**改动（`ui/page/FollowRow.kt` 单文件）**：①卡片圆角 16dp → **22dp**（`Surface.shape` 与外层 `Row.clip` 两处同源，抽常量 `FollowCardCorner`）；②海报圆角 8dp → **12dp**（常量 `FollowPosterCorner`）—— 与历史页卡片取同值（历史页：卡片 22dp / 海报 12dp）。**其余零改动**：标题行「已看/未看」⋮ 菜单、`ic_follow_update_time` 星期行与「21:00 更新」行、进度条 +「第X集/共Y集」、已看角标、编辑态 `SelectCircle` 全部未动。
+
+**验证**：`:app:assembleDebug` 绿（纯样式改动，按约定不跑单测）；装 MuMu（`Success`，`lastUpdateTime=2026-10-14 06:14:03`）。走查判据：卡片四角 22dp、海报四角 12dp，与历史页卡片观感一致。
+
+**文档同步**：`skill/avbox-mobile-ui-spec.md` §4.12 卡片 `FollowRow` 条补记「卡片 22dp / 海报 12dp」（该条原先只记了海报 8dp，没记卡片圆角）。
+
+## 追剧卡片「已看」指示改版：右上角状态点（2026-10-14，用户要求）
+
+**诉求**：已看的卡片改为在**右上角显示绿点**，没看的显示**红点**（用户点名用 material error）。
+
+**改动（2 文件）**：①`ui/theme/Color.kt` 新增绿色语义色 `val SuccessGreen: Color = Color(0xFF4CAF50)`（M3 无 success 色，项目此前只有取色种子 `theme_seed_green`，不能当语义色用）；②`ui/page/FollowRow.kt` —— **删掉海报右下角那枚 18dp `primary` 圆底 + `onPrimary` 对勾(`ic_check`)**，改为**标题行右侧、⋮ 左侧一颗 10dp 圆点**（新常量 `FollowStatusDotSize`）：`watched` 为真 ⇒ `SuccessGreen`，否则 ⇒ `colorScheme.error`；带 `Modifier.semantics { contentDescription }`，复用既有 `following_watched` / `following_not_watched` 字符串；⋮ 前的间距由 4dp 调成 8dp。
+
+**为什么放标题行内而不是卡片右上角 overlay**：右上角已被「已看/未看」⋮ 菜单占着；且该卡片有一条既有尺寸支点 ——「右侧文字列总高 ≈ 96dp、与海报等高」（2026-10-07 记录：往这列塞独占一行的元素会撑高卡片、用户会报"海报显小"）。点挂进标题行内不增加行数，尺寸支点不受影响。
+
+**验证**：`:app:assembleDebug` 绿（纯样式改动，按约定不跑单测）；装 MuMu（`Success`，`lastUpdateTime=2026-10-14 06:16:31`）。走查判据：①已看的卡右上角（⋮ 左侧）为绿点、未看的为红点；②点与会随筛选/菜单切换同步变色；③卡片高度未变、海报观感未变小；④点不可点、操作仍走 ⋮ 菜单。
+
+**文档同步**：`skill/avbox-mobile-ui-spec.md` §4.12 卡片 `FollowRow` 条把「已看角标 = 海报右下角对勾」整段改写为「右上状态点」，并作废原「放右下避开编辑态 `SelectCircle`」的理由。
 
 
 
 
 
+
+
+## 记录页数据面收成响应式流（2026-10-14，六面收口）
+
+收藏列表、播放进度百分比、追剧「已看」、换源 cid、历史条目列表五个数据面从「写方 EventBus post + VM 拉全表」收成响应式流（播放状态面此前已完成）：收藏/历史走 Room DAO `observeAll` Flow；进度/已看/换源 cid = `PlaybackProgress.percents` / `FollowWatched.state` / `AppBootstrap.subscriptionCid`（私有 MutableStateFlow + 只读暴露，**`by lazy` 种子化**——object init 读 KV 会炸 JVM 单测）。删掉 `TYPE_COLLECT_REFRESH` / `TYPE_API_URL_CHANGE` 事件与全部 post；播放链路 5 处 `TYPE_HISTORY_REFRESH` post 摘除，事件保留但收窄为「滚顶信号 + reloadTick + sweepDuplicates」。历史读路径副作用归位：条数修剪（reserver）移进 `insertVodRecord` 写入后，`HistoryMerge.dedupe` 由 `HistoryViewModel.onRefreshEvent` 的 `sweepDuplicates()` 承接（事件时先 sweep 再 tick，防重复条目闪一帧）；`getAllVodRecord` 删除。无痕门控在各 VM 流收集侧（KV 写被拦但流里有旧值）。换源 cid 在 `onApiUrlChanged` 内 invalidate 之后赋流（与旧 post 时序一致）；Boot.Ready 后 `reloadTick++` 兜住开机 ConfigLoader 改 `API_URL` 不发事件的时刻。口径与走查判据登记在 `skill/avbox-mobile-ui-spec.md` §4.2。
+
+**审查修复 3 处**：①cid 赋值时机移回 invalidate 之后；②追剧页 `loading` 关闸移进 combine 收集（防首帧闪空态）；③历史事件处理先 sweep 再 tick。
+
+**验证**：`:app:assembleDebug` + `:app:testDebugUnitTest` 绿；null_assert/i18n 门禁 PASS；装 MuMu。走查判据见 §4.2。
+
+## F2 修复：删除历史后继续观看条目复活（2026-10-14，走查配方实测未触发后定位）
+
+2026-10-11 审查登记的低-中级项：删除历史/进度后继续看/听同一内容，`TYPE_PLAYBACK_STARTED → insertVod` 链不被 discard 拦，条目无进度复活。实测复现配方 = 删后重进同集**不拖动**播满 1 秒（`advancedMs` 只计平滑推进，拖动大跳被单步 10s 上限丢弃不计入；音乐链路跨页持续播，连重进都省）。首测未触发是因重进后拖了进度条、平滑推进仅 220ms。
+
+**修法（消费侧拦截）**：`DetailViewModel.onPlaybackStarted()` 补 `PlaybackService.peek()?.controller()?.isSameStartedContent()` 守卫——删除动作经 `discardStartedContentOf → clearStartedContent` 清掉起播内容后该判定恒 false，与采样器 `shouldWrite` / 换线迁移同一把闸，零误伤（未删时恒真）。打点链源头（flush 重置 watchedToken 后信号照发）保留不动，只是消费侧被拦；将 discard 状态引入数据层属过度设计，不做。修复后「删除历史」与 ZeroStartGate（删进度后重进从头播）口径对齐。
+
+**验证**：`:app:assembleDebug` + `:app:testDebugUnitTest` 绿；装 MuMu（07:35:28）。走查判据：删条目 → 重进同集不拖动播满 1s → 记录页该条**保持已删**；换集/重进详情产生新起播会话后照常入库。
+
+## 历史卡片时间改为「最后观看时刻」（2026-10-14 晚，方案 A 用户拍板）
+
+**现象（用户报告 + MuMu 取证）**：历史卡片「x 分钟前」不准。真因 = `vodRecord.updateTime` 只在起播（`TYPE_PLAYBACK_STARTED`）/换集/改播放器 cfg 时写，**观看中与退出播放都不刷新** ⇒ 时间停在最后一次起播时刻，偏差 = 观看时长。证据链：DB `updateTime=1791986047908`（=21:54:07.908）恰为日志最后一条 `echo-history insert on playback-started`（21:54:07.901）；用户实际播放到 21:56:23（`echo-progress flush pos=2016741/2722819`=「看到 74%」，与截图一致）、21:56:25 退出播放页，期间零历史写入。
+
+**落地（3 文件 + 1 测试）**：①`WatchProgressStore.save(...)` 改返回 Boolean（`true`=真正入队写入；作废/无痕/短看 SKIP 均 false），新增 `canRecord(key)`（无痕 + 作废门禁）；②`HistoryWriter` 新增 `touch(sourceKey, vod)`——键回退 `resolveWriteKey`（空则回退 `vod.sourceKey`）、集名对齐 `resolvePlayNote`（`getOrNull`，越界不崩）；③`PlaybackProgressSampler`：`flush()`（PAUSED/IDLE）以 `saved` 为门禁、`markFinished()`（COMPLETED）以 `canRecord` 为门禁，均调 `HistoryWriter.touch(controller.sourceKey(), controller.vod())`；日志新增 `echo-history touch key=…|… ep=…`、`echo-progress flush` 行补 `history=` 字段。
+
+**边界（有意为之）**：不接 `onSinkSave`（拖动落档不刷时间，防「拖动即置顶」）、不写 `EpisodeTotals`、**播放中（未暂停）查看历史页仍是旧值**（要实时需显示层读进度 KV 时间戳 = 方案 B，用户已否）。**与 F2 的关系**：新写入点复用同一把闸——flush 路径被 `isSameStartedContent`（F2 同款守卫）拦、COMPLETED 路径被 `canRecord` 的 discarded 拦 ⇒ 「删历史后仍在播」不复活条目，无需额外改动。**写入键口径**：`controller.sourceKey()` = `PlaybackSession.sourceKey()` = 详情页 `sourceKey`/`firstsourceKey`（三处赋值同源，已核对），采样器不依赖 DetailViewModel 存活。
+
+**验证**：`:app:assembleDebug` + `:app:testDebugUnitTest` 绿（979 例 / 125 类，新增 `HistoryWriterTest` 5 例）；装 MuMu（22:08:49，versionName 1.2.5，`lastUpdateTime` 已核对）。走查判据：①播满 ≥min(30s, 片长×30%) 后暂停/退出/放完 → 该条时间立刻变「刚刚」（日志出 `echo-history touch`）；②短看（不足阈值）退出不刷（与进度口径一致，别当回归）；③后台播放中删该条 → 暂停/停止不复活；④无痕/直播不写。
+
+**审查修复（同日，独立审查 + 自查一轮；重装 22:22:36）**：
+
+- **【高】touch 原实现会用「会话预览对象」整行覆写 `dataJson`**：`preparePlaySession()` 只往会话对象拷 10 个字段（`reverseSort`/`note`/`state`/`year` 等缺失），而详情页会从历史读回 `reverseSort` 并据此 `info.reverse()`（DetailViewModel.kt:410-421）⇒ 暂停/退出一次就会把倒序设置清掉、续播到镜像集。**改为 `VodRecordDao.touch` 只 `UPDATE updateTime`**（行不存在 0 行、不新建）——顺带消除两个中危发现：「COMPLETED 路径可凭空建行（0% 空壳卡片）」与「删历史后仍在播时 touch 重建行（touch 不复查 discard、跨队列无顺序）」。随之删除 `resolvePlayNote` 及其 3 例测试（不再改写写库内容）。
+- **补三条"不经过状态沿"的漏刷路径**：`PlaybackEngine.release()`（原只 `progressSampler.stop()`，划任务/服务销毁/换内核时不刷）、`releasePlayer()`（释放内核前）、`enterLive()`（`clearStartedContent()` 在 `detach` 之前 ⇒ 原 flush 早退），统一改/加 `progressSampler.flushNow()`（stop + flush，同门禁）。复查确认 `detach`（退页面，`pause()` 在前）与 `enterLiveState`（先 `detach` → `pause`）已有覆盖，**不要重复加**。
+- **回归面复查（无新发现）**：`WatchProgressStore.save` 返回值变更的 4 个调用点都是 Kotlin 语句位忽略返回、无 Java 调用方；F2 守卫（`onPlaybackStarted` 的 `isSameStartedContent`）、音乐页 `syncHistory`、直播链路、`detach` 语义均未触碰；`DataLayerSuspendContractTest` 的 suspend 契约满足（DAO/Repository 新方法均 suspend）；4 个改动文件零注释、无 `!!`、行尾 LF。
+- **验证**：976 例 / 125 类绿（删 3 例集名对齐测试）+ `assembleDebug` 绿；MuMu 重装（22:22:36）。
+
+**第二轮复查（同日，用户要求"再看还有没有高和中"；重装 22:28:00）**：**无新增高/中**。两条被证伪的怀疑存档：①`release()`（idle 释放/服务销毁路径）会重复刷时间 —— 停播后 `AppPlayerView.currentPosition/duration` 均返回 0（`isInPlaybackState()` 链），`flush()` 的 `position/duration > 0` 门禁即早退；②`PlaybackStarter` 的 `scope.launch`（`pl>=10` 外接分支，第 344 行）会从非主线程调 `releasePlayer()` —— 实测 `scope = Dispatchers.Main`，且全部 `release/releasePlayer/enterLive` 调用点均在主线程。顺手加固一处风格一致性：`PlaybackProgressSampler.flushNow()` 补主线程守卫（非主线程调用会撞 ExoPlayer wrong-thread，与 `discardStartedContentOf`/`markZeroStartKeys` 同类入口对齐）。另核实覆盖：通知栏停止/继续（`stopFromMediaSession`/`pauseFromMediaSession` 均走 `pause()`）、服务回收保留内核（`keepKernelAfterServiceDestroy` 内 `videoView.pause()`）都有 PAUSED 沿，无需补。⇒ **已连续一轮无阻断/高/中，达收尾线**。验证：976 例 / 125 类绿 + `assembleDebug` 绿。
+
+## 调色「重新起播后生效」提示整条删除（2026-10-15，方案 A 用户拍板）
+
+**现象（用户报告 + 截图）**：首次点调色预置出现「画面参数已保存，重新起播后生效」，但画面实际已生效；第二次切其他预置时提示消失，疑为 bug。**定性 = 提示层 bug**：`onPresetSelected` → `restartForPictureIfNeeded()` 已在同一操作内触发 `requireKernelRebuild()` + `replay(false)`（内核重建 + 自动重播，异步入队），而紧随其后的 `refreshParamsSheet()` 在 `openedThisSession` 置位前判定 `!pipeOpen && hasLook → RestartRequired` ⇒ 误报；重播完成（新内核 `onPrepare` 置 `openedThisSession=true`）后没有任何入口再刷面板 ⇒ 提示滞留；第二次操作时才转 None。直接证据 = 第二次提示消失本身就证明中间发生过 `prepareAsync`（`openedThisSession` 全类只在 `PictureEffects.onPrepare` 置 true，其余路径不可能翻真）。该提示是 10-01「方案 b」的历史产物（当时首次启用需下次起播才生效），10-07 引入自动重建重播后被架空 —— 其触发条件与 `restartForPictureIfNeeded` 同源，主路径上必错。
+
+**落地（7 文件）**：删 `PictureEffectUnavailableReason.RestartRequired` 枚举值 + `of()` 判定分支（`pipeOpen` 参数保留，`DecoderUnsupported` 仍在用）、`PlayerPicturePanel.hintRes()` 分支、三语言 `player_picture_unavailable_restart`（values / values-en / values-b+zh+Hant）、单测断言（`closedPipe_withPendingLook_asksRestart` → `_neverHints` 断言 None）；活规范 §6.17 两处同步（判定优先级去掉「本集未开通」+ 「首次启用」口径改写）。**不动**：`restartNeeded()` / `consumeRestartNeeded()`（负责触发重播，「关闭」场景必需，`PictureEffectsRestartPolicyTest` 保留）。**不选方案 B**（挂 `PlayState.PREPARED` 钩子刷新面板 + 改文案「正在重新起播」）：跨 controller → delegate → UI state 三层，且新文案在「重播被延迟消费」的边缘场景同样不准。
+
+**验证**：`:app:assembleDebug` + `:app:testDebugUnitTest` 绿（986 例 / 127 类）；i18n 三道（`i18n_align.py en` / `b+zh+Hant` / `zh-rHK --subset`）PASS、`i18n_check_keys.py` 无未用残留与悬空引用、`null_assert_gate.py` / `i18n_gate.py` 无回归；装 MuMu。
+
+**走查判据**：①首次点调色预置 → 无任何文字提示、画面自动重播一次后生效；②再切其他预置 → 即时生效、不重播、无提示；③点回「原始」→ 仍重播一次回无调色（关闭路径保留）。
+
+**已知取舍（方案 A 接受）**：`restartForPictureIfNeeded()` 里 `videoView` / `listener` 为空导致重播未触发的极端场景（面板可交互时不可达）不再有文字兜底；参数已落 KV，下次起播照样带效果。另：重播完成前连点多个预置会重复触发 rebuild+replay，属既有行为，本次不涉及。
+
+## 详情页移除海报下拉放大与上滑缩小淡出（2026-10-15，用户拍板）
+
+**背景**：47a1472 引入的两个 hero 滚动效果（下拉弹性放大 / 上滑视差缩小淡出）经走查后用户要求整体移除；此前「顶部下拉松手整页抖一下」的观感问题排查两轮未定位根因（已排除系统 overscroll 与回弹曲线两种可能），随本次一并清掉。
+
+**落地（两文件）**：①`DetailContent.kt`：删 `pullExtra` / `pullConnection`（NestedScrollConnection 整块：下拉累加 + `onPostFling` spring 回弹）、`.nestedScroll(pullConnection)`、`pullExtraPx` / `scrollProgress` 两处传参、`PullDragMaxPx` 常量与相关 import；LazyColumn 恢复系统默认 overscroll 行为。②`DetailHero.kt`：删 `pullExtraPx` / `scrollProgress` 参数、`PullDamping` / `PullMaxExtraHeight` / `HeroScrollScaleDrop` / `HeroScrollAlphaDrop` 常量、图区高度增量与 pullScale 内层 Box（DstIn 蒙版层直接挂 layerBackdrop 海报）、图区外层 graphicsLayer（scale/alpha 视差）。**保留**：`heroScrollProgress` / `HeroScrollFadeDistance`（DetailScreen 独立持有，供 DetailTopScrim alpha 淡出）与 heroGone 状态栏图标换挡（不在移除范围）。
+
+**验证**：`:app:assembleDebug` + `:app:testDebugUnitTest` 绿（986 例 / 127 类；HeroScrollProgressTest 保留 —— 纯函数仍被 scrim 淡出使用）；装 MuMu。**走查判据**：①详情页顶部下拉无放大与回弹、列表跟手（overscroll 回到系统默认拉伸）；②上滑海报不再缩小淡出、正常滚出屏幕；③Hero 滚出后状态栏图标仍换挡、顶部 scrim 仍随滚动淡出。
+
+## 详情页追剧/演员弹窗面板色改为渲染点 App 主题（2026-10-15，用户报「追剧弹窗颜色和选集弹窗不一样」）
+
+**根因（两重）**：① 选集弹窗 `EpisodeSheet` 不传 `containerColor` → 走 `BottomSheetDefaults.ContainerColor`，在**渲染点**（`SheetHostScaffold` 的 `SheetHost`，位于页面取色 `MaterialTheme` 之外、`AVBoxTheme` 之内）解析 = App 主题色；② 追剧 `FollowReminderSheet` 显式传 `containerColor = MaterialTheme.colorScheme.surfaceContainer`，该值在**调用点**求值 —— 详情页内容包在 `MaterialTheme(colorScheme = 海报取色)` 里 ⇒ 拿到海报取色主题的值。而面板内容（按钮/文字/chips）在渲染点解析 = App 主题 ⇒ 同面板底色与内容色来自两套配色。
+
+**落地（2 文件各删 1 行）**：`FollowReminderSheet.kt`、`DetailTmdbSections.kt`（`TmdbCastSheet`，同源一并改）删掉 `containerColor` 传参；其他页面 sheet 的 `surfaceContainer` 传参不动（调用点与渲染点同主题，无错配）。
+
+**验证**：`:app:assembleDebug` 绿（UI 改动仅构建）；装 MuMu。**走查判据**：①「追更记录」面板底色 = App 主题色、与「选集」面板一致、不随海报变化；②演员弹窗底同样；③首页/设置页弹窗观感不变。
+
+## 选集面板删除线路行（换线 chips）（2026-10-15，用户拍板）
+
+**背景**：竖屏贴底选集面板顶部的线路 chips 行与详情页「线路」分区重复（同一换线动作两个入口），用户要求删除。
+
+**落地（1 文件）**：`DetailEpisodes.kt` 的 `EpisodeSheet` 删掉 `if (flags.size > 1 && !slideFromEnd)` 整块（线路 `FilterChip` 行 + 8dp 间距）与随之未使用的 `flags` 变量；`vm.onFlagClick` 保留（详情页 LineCard 仍在用）。面板结构 = 标题 → 分组 chips(可选) → 选集网格；横屏右侧滑出形态本来就不含此行，无变化。
+
+**验证**：`:app:assembleDebug` 绿（UI 改动仅构建）；装 MuMu。**走查判据**：①竖屏选集面板顶部无线路 chips、直接是分组/集号；②详情页「线路」分区换线照常；③横屏右侧滑出面板不变。
+
+## 详情页三圆钮 50dp + 演员阵容/分类标题挂图标（2026-10-15，用户带图拍板）
+
+**需求（两条）**：①图一三颗圆钮（音乐/投屏/追剧）高度 40dp → **50dp**；②给「演员阵容」「分类」两个分区标题补 `.tubiao` 画稿图标。
+
+**落地（3 文件 + 2 新资源）**：①`DetailHero.kt` 的 `HeroCircleButtonSize` 40→50dp（间距 24dp / 图标 24dp 不动；`DetailActionRow` 竖屏 playing 态那份共用同一常量，自动同步）；②`.tubiao/演员阵容.svg` → `drawable/ic_detail_actors.xml`、`.tubiao/分类.svg` → `drawable/ic_detail_genres.xml`（既有转换范式：viewport 960 + `translateY 960` 抵消 `viewBox="0 -960 960 960"`、pathData 照抄、fillColor `#FF1F1F1F`）；③`DetailTmdbSections.kt` 的 `TmdbCastBlock` / `TmdbGenreSection` 标题行由裸 `Text` 改为 `Row + SectionTitleIcon(22dp) + Text(start 8dp)`，与详情页其余分区标题行同款，两处 bottom padding 保持 8dp。
+
+**验证**：`:app:assembleDebug` 绿（UI 改动仅构建）；装 MuMu。**走查判据**：①详情页 Hero 下三圆钮直径 50dp（间距 24dp 不变）；②「演员阵容」「分类」标题左侧出现 22dp 画稿图标、文字间距 8dp；③playing 态内容首项那份 `DetailActionRow` 圆钮同为 50dp。
+
+## 外置私有目录补 .nomedia 标记（2026-10-20，用户要求）
+
+**背景**：用户问「数据私有目录是不是没有 .nomedia」。核查：全仓（含隐藏文件、build 产物、`git log --all -S nomedia`、`.gitignore`）**没有任何 `.nomedia`**，代码里也没有创建逻辑。目录实况：内部 `filesDir`/`cacheDir` 不在 MediaStore 扫描域；外置 `Android/data/com.github.avbox.osc/files` 只放 `config/` 副本与配置里的 `./` 引用（引用不限扩展名，见 `LocalConfigHelper.copyRefs`），`cache/` 只放 `qjscache_*.js` 与 `exo-video-cache`。现代 Android 的 MediaStore 通常不把 `Android/data`/`Android/obb` 当媒体目录扫描，但 `minSdk = 24`（Android 7+）覆盖的低版本与个别 ROM 口径不一，且配置副本理论上会落 `.png`/`.jpg` 引用 ⇒ 采纳「低成本防御」：补一个外置 `files/.nomedia`。
+
+**落地（2 文件 + 1 测试）**：
+
+- `FileUtils.ensureNoMediaMarker()`：直接取 `getExternalFilesDir(null)`（**不走** `getExternalFilesPath()` 的 `filesDir` 回落，避免在内部目录写无意义标记），null 直接返回；`createNoMediaMarkerIfAbsent(dir: File)` 幂等创建 `dir/.nomedia`（返回本次是否新建），目录缺失先 `mkdirs`；`mkdirs`/`createNewFile` 失败与异常都落 `LOG.e`、不中断启动。
+- 调用点：`App.onCreate` 现有 `exo-cache-boot` 后台线程首行（`App.kt:87`）——避开主线程 `echo-boot` 耗时埋点与 debug StrictMode 磁盘写检测；**不放** `cache/`（系统清缓存会删标记），**不只放** `files/config/`（只覆盖一层）。
+- 取证：新建时打 `echo-storage nomedia path=…`（`LOG.FILE_LOG_PREFIXES` 已含 `echo-storage`，debug 包落 `files/preload_debug.log`），真机可 `adb shell run-as com.github.avbox.osc cat files/preload_debug.log` 查。
+- 单测 `FileUtilsNoMediaMarkerTest`（3 例）：已存在目录创建、缺失目录（`mkdirs`）创建、已存在标记不覆盖且返回 `false`。
+
+**验证**：`:app:assembleDebug` + `:app:testDebugUnitTest` → `BUILD SUCCESSFUL`，**1290 例 / 170 类 / 0 失败 / 3 跳过**（新增 3 例全绿）；产物 `app/build/outputs/apk/debug/AVBox_debug.apk`（2026-10-20 08:46）。真机无法靠「相册里没有」证明（本来就没有媒体产物），只能 `run-as … ls -la files/.nomedia` 看文件、或首次启动看 `echo-storage nomedia` 日志。
+
+**取舍**：不覆盖 `cache/`（`exo-video-cache` 是分片缓存、扩展名非媒体，现代系统也不扫）；不加内部 `filesDir`（无意义）；不写进 assets 再拷贝（多一次 IO）。新增 `.nomedia` 不会清除已入库的旧索引，但本项目没有可被索引的文件，无影响。
+
+## 调色对 HDR 片源的跳过失效（2026-10-20，用户报「点调色仍重建内核、关闭才出提示、HDR 画面彩色噪点」）
+
+**根因**：`PlayerEngine.reportVideoSizeFromTracks()` 开头是 `if (!videoEffectsOpen) return`，而 `pictureHdrSource` 的赋值写在这道门之后 ⇒ 未挂链时永远不判 HDR。于是 HDR 片首次点预置时 `PictureEffects.consumeRestartNeeded()` 拿到 `isPictureHdrSource()=false`，照常 `push()` 下发效果并 `restartForPictureIfNeeded()` 重建内核；重建后的 `onTracksChanged`（此时 `videoEffectsOpen=true`）才把标记翻成 true，所以面板提示要等下一次刷新（用户点「关闭」）才出现。彩色噪点的两个嫌疑：①首次点预置时 `push()` 不判 HDR，仍会 `applyVideoEffects`/暂停态 REDRAW；②重建后的 passthrough 用 `BaseGlShaderProgram(false)` 的 8-bit 输出，HDR 纯拷贝被量化。
+
+**修复（3 文件）**：
+
+- `PlayerEngine.reportVideoSizeFromTracks`：`pictureHdrSource` 赋值提到 `videoEffectsOpen` 门控之前（尺寸补报/监听仍只在挂链时做）；未挂链且命中 HDR 打 `echo-picture-hdr: source=true`。
+- `PictureEffects.push` / `setAnime4kSharpen`：`isPictureHdrSource()` 早退——不下发效果、不重绘；配合既有的 `consumeRestartNeeded` HDR 早退，首次点预置只刷新面板提示，不重建内核。
+- `VideoAdjustShaderProgram` / `Anime4kChainProgram`：`BaseGlShaderProgram` 的高精度开关由固定 `false` 改为传 `useHdr`/`hdr`，HDR 纯拷贝走 float 输出（与 media3 `DefaultShaderProgram` 同口径；Anime4k 的 HDR 纯拷贝只用 1 个输出纹理，避免 3×RGBA16F 的 4K 显存开销）；media3 `checkColors` 已对 HDR 输入/输出强制 ES 3.0 上下文，不新增 ES2 兼容风险。
+
+**未做**：不在 `onTracksChanged` 撤链（既有结论：异步派发可能晚于 processor configure；HDR 仍保留 GL sink 纯拷贝，见活规范 §6.17）；不改 `onPrepare` 的起播下发（此刻还拿不到轨道 HDR 信息，预置记忆的 HDR 片仍以纯拷贝链路起播）。
+
+**验证**：`:app:assembleDebug` + `:app:testDebugUnitTest` 绿（**1290 例 / 170 类 / 0 失败 / 3 跳过**）；「轨道 → HDR 判定 → 面板/重播」这条设备链路没有单测可覆盖（`reportVideoSizeFromTracks` 依赖实例与 `Tracks`），待真机走查。**判据**：①HDR 片点任一预置，面板立即出 `player_picture_unavailable_hdr`，无 `echo-picture-effects: rebuild kernel on next start`、无 `release player kernel`；②日志有 `echo-picture-hdr: source=true`；③不出彩色噪点；④SDR 片首次开调色仍照旧重建一次并生效；⑤预置非「原始」时起播 HDR 片仍是纯拷贝，面板提示 HDR。**未提交**。
+
+## 液态玻璃通透度高位的「去材质 + 重调色」修正（2026-10-20，用户报「通透度拉高后底栏/控件像把底部色彩放大、变深」）
+
+**现象**：把「通透度」拉到高位后，底部导航与应用控件的玻璃变成一块深色、高饱和的模糊色块，像给下面的海报重新调了色；选中 tab 一带更暗。用户先问「这是 bug 吗」。
+
+**结论**：不是渲染/状态实现错误（默认 50% 有单测锁恒等），是 09-24 那轮 retune 把高位补偿调过头了；而且那轮改动没有进文档。**当天三轮**：①先按「底板保底 + 补偿减半」改，用户装机带图反馈 100% 变成奶白、失去液态玻璃观感 ⇒ 顶档恢复全透明；②保留补偿减半后用户再报「通透度调高后颜色偏艳、偏深」⇒ 高透端调色归零、饱和度随通透度降到 1.0。
+
+**根因（三条叠加，全在 `LiquidGlassConfig` 派生量）**：
+
+- **底板在 100% 归零**：`containerAlphaScale` 被 09-24 `a984c97 "tune translucency"` 从 `1.25 - 0.5t` 改成 `2 - 2t`；底栏/控件底色 = `surfaceContainer@0.4 × 系数` ⇒ 50% 为 0.40、75% 为 0.20、90% 为 0.08、100% 为 0。玻璃只剩模糊 + 高光。
+- **采样内容被重新调色，幅度比 09-23 初版大 4 倍 / 2 倍**：同一次 retune 把 `contentBrightness` 的 0.06 改成 0.24、`contentContrast` 的 0.24 改成 0.5（`saturation` 恒 1.5）。100% 时 `colorControls` 的 ColorMatrix 偏移 `(0.5 - 1.25/2 - 0.12) × 255 ≈ -62`，即每通道先减 62，再乘 1.25 对比并做 1.5 倍饱和 —— 橙色 (230,120,60) 约变 (255,76,0)，中灰 128 → 98。**用户看到的「放大底部色彩、变深」就是这一步**：它在给玻璃背后的内容重新调色。
+- **文档缺口**：spec/history 仍只有 09-23 的旧系数，09-24 retune 无记录；09-23 条目自述那组系数是「估的、没有实测依据」⇒ 高位观感从未被验证。
+
+**未改（明确保留）**：`lens(30dp)` 在 64dp 高胶囊上的 ~47% 折射比例（既定设计，与 40dp 控件限幅后 ≈50% 同比例）；选中指示层静止时的 10% 黑叠加。
+
+**修复（3 文件 + 1 测试，同日三轮定稿）**：
+
+- `LiquidGlassConfig`：`containerAlphaScale = 2f - 2f * translucency`（0 ~ 2，**100% = 0：底板完全透明**；50% 仍 1.0）；`contentBrightness = (0.5f - translucency).coerceAtLeast(0f) * 0.12f`（只在半透明端提亮，最高 +0.06）、`contentContrast = 1f - (0.5f - translucency).coerceAtLeast(0f) * 0.25f`（最低 0.875）、`contentSaturation = 1.5f - (translucency - 0.5f).coerceAtLeast(0f)`（1.5 → 1.0）。**高透端（>0.5）不再压暗/提对比**，50% 锚点仍是 1 / 0 / 1 / 1.5。
+- `GlassTopBar` 与 `FloatingNavBar` 的两处 `colorControls(saturation = 1.5f)` 改读 `config.contentSaturation`。
+- `LiquidGlassConfigTest`：两端值 2 / 0；新增高透端 0 / 1 / 1.0 与半透明端提亮/降对比的断言（`translucency_dimsContentOnlyAboveDefault`），默认恒等补 1.5。
+- **第一轮方案与否定原因（留档）**：曾改 `1.5f - translucency`（100% 保底 0.5 ⇒ 20% 底板），用户 100% 下截图显示整条变成奶白/浅米色，色彩被浅色底板盖住，「没有液态玻璃的通透感」⇒ 保底方案对浅色主题不成立：`surfaceContainer` 本身就是近白，任何可感知的保底 alpha 都会把底栏推成白玻璃。**发暗只能靠补偿幅度解决，不要再加底板下限。**
+- **第三轮（同日，用户再报「通透度调高后颜色偏艳、偏深」）**：底板归零后，剩下的 -0.06 / 1.125 / 1.5 仍在给采样内容重新调色 —— 把高透端的 brightness/contrast 归零、saturation 线性降到 1.0；半透明端行为不变 ⇒ 100% 是「模糊后的原色」。
+
+**验证**：`:app:assembleDebug` + `:app:testDebugUnitTest` → `BUILD SUCCESSFUL`（47s），**1290 例 / 170 类 / 0 失败 / 3 跳过**；`LiquidGlassConfigTest` 3/3 绿。**未真机** —— 观感类改动只能构建 + 单测。**走查判据**：①通透度 100% 时底板完全透明：能直接看到模糊后的页面颜色（深色海报仍是深色），不再发白/发奶；②高透端不再压暗/提对比、饱和度降到 1.0，100% 应是「模糊后的原色」，不偏艳不偏深；③50%–100% 之间饱和度平滑过渡（75% 约 1.25），无突变；④默认 50% 与改前一致；⑤若仍觉得糊，先确认滑杆确实在 80–100%（低端按定义就是奶白）。**未提交**（等指示）。
+
+## 液态玻璃默认参数调整（2026-10-20，用户拍板「模糊 10 / 扭曲 20 / 通透度 70%」）
+
+**需求**：三个默认值下调 —— 模糊 20dp → **10dp**、扭曲 30dp → **20dp**、通透度 50% → **70%**；两个开关与色散默认不变。
+
+**落地（1 文件 + 1 测试）**：`LiquidGlassState` 的三个 `DEFAULT_*` 常量改为 `10f / 20f / 0.7f`；`restoreDefaults()` 自动跟随（头部「重置」= 回到新默认）。派生量随之变化（50% 的「数学中性点」仍在，但不再是默认）：
+
+| | 旧默认(50%) | 新默认(70%) |
+|---|---|---|
+| 底板 alpha | 0.40 | 0.24 |
+| 采样亮度 / 对比 | 0 / 1 | 0 / 1 |
+| 采样饱和度 | 1.5 | 1.3 |
+| 模糊 | 20dp | 10dp |
+| 扭曲 | 30dp | 20dp |
+
+**⚠️ 存量安装不会自动变**：三个值都存 KV（`LIQUID_GLASS_BLUR/DISTORTION/TRANSLUCENCY`），`KV.get` 只在键不存在时才用默认 ⇒ 已经拖过滑杆的机器保持自己的值；要看新默认可点分组头部「重置」（它只重置后四项，不动两个开关）。不迁移、不覆盖用户值。
+
+**口径变化**：09-23 起的「默认 0.5 ⇒ 与加此项前逐像素一致」锚点**作废**（0.5 仍是公式中性点，仅此而已）；默认观感从此更透、更淡（底板 0.4 → 0.24、饱和 1.5 → 1.3、模糊/折射各降一档）。
+
+**测试**：`LiquidGlassConfigTest` 把原 `defaultTranslucency_isIdentity` 拆成 `halfTranslucency_isNeutralAnchor`（0.5 处 1 / 0 / 1 / 1.5）+ `defaults_areLowerBlurAndMoreTranslucent`（常量 10/20/0.7，70% 处 0.6 / 0 / 1 / 1.3），共 4 例。
+
+**验证**：`:app:assembleDebug` + `:app:testDebugUnitTest` → `BUILD SUCCESSFUL`（35s），**1291 例 / 170 类 / 0 失败 / 3 跳过**；`LiquidGlassConfigTest` 4/4 绿；`git diff --check` 干净。**未真机**。**走查判据**：①全新安装 / 清数据后，设置页显示模糊 10、扭曲 20、通透度 70%；②70% 下底栏底板约 24% 不透明度、颜色不偏艳；③点「重置」回到 10/20/70/色散开；④已调过的机器保持自己的值不被覆盖。**未提交**。
+
+## 电影匹配不再用剧照缩略图，改显示完整资源名（2026-10-20，用户拍板）
+
+**背景**：用户问「能被 TMDB 匹配上的电影会用海报档缩略图吗」。核查：电影（`mediaType != TV`）在 `resolveEpisodeMetaForName` 里走 `ensureStills`，取 `/movie/{id}/images` 的 **backdrops**（textless 优先 / vote 降序 / 前 10）按集号循环填 16:9 选集卡；TV 则按 season/episode 取 `still_path`。所以严格说不是 poster，但很多片的 textless backdrop 就是海报同款 key art，看起来就是「海报被塞进缩略图」。用户要求取消电影这条，改为完整资源名。
+
+**落地（3 文件 + 1 测试）**：
+
+- `TmdbPoster`：movie 分支不再请求 stills，直接 `LOG.i("echo-tmdb episodes movie=… thumbs=off")` + 写 `[]` 并返回空列表（`[]` 作为「movie 命中」标记，区别于未命中的 `null`）；`EPISODES_CACHE_PREFIX` 升 `cache_tmdb_episodes2_`，旧缓存（含旧电影剧照）整体失效一次，TV 会重拉一次，不需要手工清缓存。
+- `DetailEpisodes`：`movieMatch = meta != null && meta.isEmpty()`；命中时不再渲染 16:9 缩略图行，改为 `Column` + 新增 `MovieNameCard`（整宽 `detailGlass` 卡、`titleMedium`、`maxLines = Int.MAX_VALUE` + `softWrap`，完整资源名自动换行；选中态 1.5dp primary 描边 + 文字 primary），点击照常播放；**TV 命中/未命中仍走原来的 LazyRow**（缩略图卡 / 纯文字小卡）不动。auto-scroll 的 `LaunchedEffect` 加 `movieMatch` 提前返回，避免对未挂载的 LazyRow 调 `scrollToItem`。
+- `TmdbPosterTest`：新增 `emptyEpisodesValue_marksMovieMatch` 锁 `[]` 哨兵（`decodeEpisodesValue("[]")` 非 null 且为空）。
+
+**未改**：Hero 的 landscape backdrop（`resolveBackdrops` 仍复用 `ensureStills`）不动；TV 分集缩略图、映射规则、季/集缓存全部不动。
+
+**验证**：`:app:assembleDebug` + `:app:testDebugUnitTest` → `BUILD SUCCESSFUL`（39s），**1292 例 / 170 类 / 0 失败 / 3 跳过**（`TmdbPosterTest` 13/13）。**未真机**。**走查判据**：①TMDB 命中的电影，选集是一张整宽卡、完整显示资源名（不截断、可换行），没有 16:9 缩略图；②同一部片之前看过的旧缓存不会再冒图（前缀已换）；③TMDB 命中的电视剧选集仍是 16:9 剧照卡，集号/标题/选中描边不变；④未命中的片保持原来的纯文字小卡。**未提交**。
+
+## 10-bit 片源给出明确提示（2026-10-20，用户拍板文案）
+
+**背景**：真机播放一条 HLS 线路时报错，日志把原因说得很清楚 —— `format=Format(… video/mp2t, video/avc, avc1.6E002A, … ColorInfo(BT709, Limited range, SDR SMPTE 170M, false, 10bit Luma, 10bit Chroma))`、`format_supported=NO_EXCEEDS_CAPABILITIES`、`MediaCodecVideoDecoderException: Decoder failed: c2.qti.avc.decoder`；自动切软解后 `c2.android.avc.decoder` 同样失败。`avc1.6E002A` = H.264 **High 10 Profile**（profile_idc 110）@ L4.2，即 10-bit H.264（Hi10P），手机两块 AVC 解码器都只到 8-bit。原提示是通用的「超出内核解码能力上限」，用户看不出是"线路编码"的问题。
+
+**落地（4 文件 + 1 测试）**：
+
+- `PlayerEngine`：新增 `isTenBitFormat(ColorInfo?)`（`lumaBitdepth >= 10 || chromaBitdepth >= 10`，未设置的 `-1` 自然不成立）+ `lastErrorTenBitFormat`，在 `handlePlayerError` 里从 `ExoPlaybackException.rendererFormat.colorInfo` 取值，`resetSessionFlags()` 复位；
+- `ExoPlayer.lastErrorTenBitFormat()` / `PlaybackController.isLastErrorTenBitFormat()`：沿用 `lastErrorExceedsDecodeCapability` 的包装链（同样 try/catch 兜住探针失败）；
+- `PlayContainerOverlays.terminalErrorText()`：**超出能力且是 10-bit** → 新文案 `player_decode_10bit_tip`「该线路为 10-bit 编码，设备不支持」；其余超出能力的情况仍用旧文案「超出内核解码能力上限」，不改语义；
+- `strings.xml` / `values-en` / `values-b+zh+Hant`：`player_decode_10bit_tip` 三套齐（繁中「此線路為 10-bit 編碼，裝置不支援」/ 英「This line is 10-bit encoded, which this device does not support」）。
+
+**未改**：自动重试阶梯不动 —— 仍会先试软解、再换播放器、再换线路（下一条线路可能是 8-bit，换线是有意义的）；只有整条阶梯走完、要落"终态提示"时才换成新文案。也没有给 10-bit 单独做"提前放弃"，因为设备能力是按格式判断的，误判一次就会让本可换线解决的片源直接失败。
+
+**测试**：`PlayerEngineErrorTest` 11 → 12 例（`isTenBitFormat_detectsDeepColorOnly`：null / 默认 / 8-bit → false，10-bit / 12-bit / 仅 luma 10-bit → true）；全量 **1319 例 / 0 失败 / 3 跳过**；`null_assert_gate` PASS、`i18n_gate` TOTAL 44（三套 values 键值齐）；`assembleDebug` 55,939,804 B，已装 V2425A。
+
+**验收缺口与补法**：`terminalErrorText` 原本不落日志 —— 23:48 那次真机复现时，日志能证明"条件都成立"（`NO_EXCEEDS_CAPABILITIES` + `10bit Luma, 10bit Chroma` + `kernel=ExoPlayer` 仍在），却证明不了屏幕上到底显示哪一句。所以补了一条 **`echo-player tip: <文案> | stub=… bandwidth=… exceeds=… tenBit=…`**（每次终态提示 1 行，`echo-player` 已在 `FILE_LOG_PREFIXES`），四个判定值一起打出来。判据 = 出现 `echo-player tip: 该线路为 10-bit 编码，设备不支持` 且 `exceeds=true tenBit=true`。
+
+**真机验证通过（23:51）**：同一条 10-bit 线路重放，阶梯走完后一条：
+
+```
+23:51:30.756  echo-setDataSource: …/index.m3u8
+23:51:31.079  echo-exo-codec-init: name=c2.android.avc.decoder kind=SOFTWARE preferSoft=true
+23:51:31.104  echo-exo-player-error: ERROR_CODE_DECODING_FAILED, avc1.6E002A, 10bit Luma/Chroma
+23:51:31.105  echo-autoRetry switch player and replay current url
+23:51:31.106  echo-autoRetry line switching disabled          ← 阶梯走完
+23:51:31.108  echo-player tip: 该线路为 10-bit 编码，设备不支持 | stub=false bandwidth=false exceeds=true tenBit=true
+```
+
+即四条件全对：`exceeds=true`、`tenBit=true`，文案分支命中，且整次终态只打一行（不重复）。
+
+## 解码回退改为双向（软→硬，2026-10-22）
+
+**背景**：此前只有「硬解失败 → 切软解重播」一个方向；软解档失败时没有任何档位回退（`trySoftDecodeFallback` 第一道判断就是档位必须为「硬解码」）。用户要求补齐对称逻辑。
+
+**落地（4 文件 + 1 测试）**：
+
+- `PlaybackRetryDelegate`：`trySoftDecodeFallback()` → `tryDecodeFallback()`，按 cfg `exo` 决定方向（`硬解码`→`软解码` / `软解码`→`硬解码`），改档、`applyPlayerConfig`、`releasePlayer`、原地址重播、toast 全部复用；日志 `echo-autoRetry hard->soft decode` / `echo-autoRetry soft->hard decode`；调用点同步改名。
+- `PlayerHelper.shouldSkipHardDecodeFallback(hardCandidateName, currentCodecName, currentKind)`：两种情况跳过 —— ①实际 codec 已是硬解器（软解档下内核会按 format 能力把硬解重排到第一位，HDR / 10bit 常见）；②当前是软解器、但 `MediaCodecSelector.DEFAULT` 首候选就是同一个它（设备没有硬解器，如 MuMu 的 HEVC），换档后真实 codec 不变。候选查询失败（`runCatching` 得 null）一律不跳过（fail-open）；日志 `echo-autoRetry skip hard decode: kind=… current=… candidate=…`。
+- `strings.xml` / `values-en` / `values-b+zh+Hant`：新增 `player_decode_fallback_hard_tip`（简「软解失败，已切换硬解重试」/ 繁「軟解失敗，已切換硬解重試」/ 英「Software decoding failed. Retrying with hardware decoding」）。
+- `PlayerHelperTest` +1：`hardDecodeFallbackSkippedOnlyWhenHardwareAlreadyInUse`。
+- 面板刷新时序：`applyPlayerConfig(cfg)` 从 `releasePlayer()` 之前挪到之后（`playUrl` 之前）。原顺序下 `setPlayerConfig → refreshParamsSheet` 读到的是切换前的 `PlayerCodecStats.videoDecodeKind`，面板（若正开着）会被旧 kind 盖住新档位，且此后 `onCodecInitialized` 只写静态统计、无 UI 通知 ⇒ 一直停在旧值；挪到 release 后读到的 kind 是 `UNKNOWN`，按 `decodeDisplayIndex` 的「未初始化回落档位」口径立即显示目标档位。`setRenderViewFactory` 只赋字段、`setScreenScaleType` 对可能为 null 的 renderView 判空，release 后调用安全。
+
+**未改**：额度仍是单布尔 `hasAutoSwitchedDecode`（一轮内只能切一个方向，天然防「硬→软→硬」振荡）；`restoreAutoSwitchedDecode` / `playerCfgForPersist` / 3 处 `cancelPlayTimeout` 断环方向无关，零改动；音频轨错误、`pl>=10`、`ERROR_KIND_NETWORK` 三类拦截原样继承；`onCodecInitialized` 后通知面板（需跨 renderer/engine/controller）未做。
+
+**审查结论（10-22，收敛：0 阻断 / 0 高 / 0 中）**：F1 已接受 —— 回退刷新时 `PictureEffects.onPlayerReleased` 已把 `current` 置空，面板画质 tab 的 `unavailableReason` 会从真实原因退成 `None`（只少一条提示，重开面板恢复；彻底修需新增「只刷解码项」接口，跨 4 文件）；F3 既有 —— `videoDecodeKind` 无时序，复用内核起播时可携带上一部片的值，只导致少一次回退；F4 口味差异 —— 起播超时 / `ERROR_KIND_UNKNOWN` 在软解档同样会触发切档（`classifyError` 只把 IO/PARSING 归 NETWORK），与既有硬→软对称。
+
+**验证**：`assembleDebug` + `testDebugUnitTest` → `BUILD SUCCESSFUL`（36s），**1350 例 / 0 失败**（`PlayerHelperTest` 12/12）；已装 MuMu（`127.0.0.1:16384`）。**未真机**。**走查判据**：软解档播放失败时日志出现 `soft->hard decode` + toast「软解失败，已切换硬解重试」，面板开着时「解码方式」应立即变成「硬解码」，面板档位不落库、换线后恢复软解档；HDR 源或设备无硬解时应只见 `skip hard decode`（带 `kind=` / `candidate=`）而不重播。**未提交**。
